@@ -1,0 +1,11 @@
+# Backend
+jarvis-backend/venv/
+jarvis-backend/__pycache__/
+*.pyc
+
+# Frontend
+jarvis-frontend/node_modules/
+jarvis-frontend/dist/
+
+# OS Files
+.DS_Store
