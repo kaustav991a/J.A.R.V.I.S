@@ -4,33 +4,58 @@ import { Battery, Wifi, Bluetooth, MapPin, Sun } from "lucide-react";
 import Visualizer from "./components/Visualizer";
 import "./App.scss";
 
-// A reusable wrapper for the draggable widgets
-const Widget = ({ title, children, defaultPos }) => {
-  const [isMoveMode, setIsMoveMode] = useState(false);
-  const nodeRef = useRef(null); // 1. Create a reference
+// Reusable Typewriter Effect Component
+const Typewriter = ({ text, delay = 50, start = false }) => {
+  const [currentText, setCurrentText] = useState("");
+  const [currentIndex, setCurrentIndex] = useState(0);
 
-  // Toggle move mode on right click
+  useEffect(() => {
+    if (start && currentIndex < text.length) {
+      const timeout = setTimeout(() => {
+        setCurrentText((prevText) => prevText + text[currentIndex]);
+        setCurrentIndex((prevIndex) => prevIndex + 1);
+      }, delay);
+      return () => clearTimeout(timeout);
+    }
+  }, [currentIndex, delay, text, start]);
+
+  return <span>{currentText}</span>;
+};
+
+// Upgraded Widget Wrapper (Now using Absolute Positioning)
+const Widget = ({ title, children, defaultPos, delayIndex, hasWokenUp }) => {
+  const [isMoveMode, setIsMoveMode] = useState(false);
+  const nodeRef = useRef(null);
+
   const handleContextMenu = (e) => {
     e.preventDefault();
     setIsMoveMode(!isMoveMode);
   };
 
   return (
-    // 2. Tell Draggable to use our reference instead of findDOMNode
     <Draggable
       nodeRef={nodeRef}
       disabled={!isMoveMode}
       defaultPosition={defaultPos}
+      // Forces standard left/top absolute positioning
+      useCSSTransforms={false}
     >
-      {/* 3. Attach the reference to the actual div */}
       <div
         ref={nodeRef}
-        className={`panel widget ${isMoveMode ? "move-mode-active" : ""}`}
+        className={`panel widget ${isMoveMode ? "move-mode-active" : ""} ${
+          hasWokenUp ? "widget-awake" : "widget-sleep"
+        }`}
+        style={{ animationDelay: `${delayIndex * 0.15}s` }}
         onContextMenu={handleContextMenu}
       >
         {isMoveMode && <div className="move-badge">▤ MOVE MODE</div>}
         <div className="panel-header">{title}</div>
-        <div className="widget-content">{children}</div>
+        <div
+          className="widget-content"
+          style={{ animationDelay: `${delayIndex * 0.15 + 0.3}s` }}
+        >
+          {children}
+        </div>
       </div>
     </Draggable>
   );
@@ -39,8 +64,13 @@ const Widget = ({ title, children, defaultPos }) => {
 function App() {
   const [time, setTime] = useState(new Date());
   const [status, setStatus] = useState("offline");
+
+  const [hasWokenUp, setHasWokenUp] = useState(false);
+  const [commandCount, setCommandCount] = useState(0);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+
   const [log, setLog] = useState({
-    speaker: "J.A.R.V.I.S.",
+    speaker: "J.A.R.V.I.S",
     text: "SYSTEM ONLINE // STANDING BY",
   });
   const socket = useRef(null);
@@ -51,6 +81,17 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    setTimeout(() => setIsInitialLoad(false), 500);
+  }, []);
+
+  const getGreeting = () => {
+    const hour = time.getHours();
+    if (hour < 12) return "Good Morning, Sir.";
+    if (hour < 18) return "Good Afternoon, Sir.";
+    return "Good Evening, Sir.";
+  };
+
   // WebSocket Logic
   useEffect(() => {
     socket.current = new WebSocket("ws://127.0.0.1:8000/ws");
@@ -58,7 +99,7 @@ function App() {
     socket.current.onopen = () => {
       setStatus("online");
       setLog({
-        speaker: "SYS",
+        speaker: "J.A.R.V.I.S",
         text: "UPLINK ESTABLISHED // WAKE WORD ACTIVE",
       });
     };
@@ -66,44 +107,35 @@ function App() {
     socket.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
 
-      // 1. Update the overall system status (Turns the blob blue/orange/etc)
       if (data.status) {
         setStatus(data.status);
+
+        if (
+          data.status === "waking" ||
+          data.status === "calibrating" ||
+          data.status === "listening"
+        ) {
+          setHasWokenUp(true);
+        }
+
+        if (data.status === "complete") {
+          setCommandCount((prev) => prev + 1);
+        }
       }
 
-      // 2. Extract the text payload
       let textContent = data.message || data.text;
 
-      // Special case: If executing an action, format the JSON intent into text
       if (data.status === "executing" && data.intent) {
         textContent = `EXEC_PROTOCOL: ${data.intent.action_type.toUpperCase()}`;
       }
 
-      // 3. Route the text to the correct "Speaker" tag
       if (textContent) {
+        // THE FIX: Simplified Speaker Tags
         let currentSpeaker = "J.A.R.V.I.S";
-
-        switch (data.status) {
-          case "calibrating":
-          case "listening":
-            currentSpeaker = "J.A.R.V.I.S";
-            break;
-          case "processing_llm":
-            currentSpeaker = "J.A.R.V.I.S";
-            break;
-          case "executing":
-          case "speaking":
-          case "complete":
-            currentSpeaker = "J.A.R.V.I.S";
-            break;
-          case "error":
-            currentSpeaker = "J.A.R.V.I.S";
-            break;
-          default:
-            currentSpeaker = "J.A.R.V.I.S";
+        if (data.status === "calibrating" || data.status === "listening") {
+          currentSpeaker = "USER";
         }
 
-        // Push to the UI state
         setLog({ speaker: currentSpeaker, text: textContent });
       }
     };
@@ -111,6 +143,7 @@ function App() {
     socket.current.onclose = () => {
       setStatus("offline");
       setLog({ speaker: "J.A.R.V.I.S", text: "CONNECTION LOST" });
+      setHasWokenUp(false);
     };
 
     return () => socket.current.close();
@@ -118,89 +151,87 @@ function App() {
 
   const startVoiceCommand = () => {
     if (socket.current.readyState === WebSocket.OPEN) {
-      // Clear the log and notify the backend
-      setLog({ speaker: "J.A.R.V.I.S", text: "INITIALIZING MIC..." });
+      if (!hasWokenUp) setHasWokenUp(true);
+      setLog({ speaker: "J.A.R.V.I.S", text: "INITIALIZING MIC FORCED..." });
       socket.current.send("START_LISTENING");
     }
   };
 
   return (
     <div className="dashboard-container">
-      {/* Top Navigation */}
-      {/* <nav className="top-nav">
-        <div className="brand">J.A.R.V.I.S.</div>
-        <div className="nav-links">
-          <span>HOME</span>
-          <span className="active">DASHBOARD</span>
-          <span>SETTINGS</span>
-          <span>ABOUT</span>
-        </div>
-      </nav> */}
-
-      {/* DRAGGABLE WIDGETS */}
-
-      {/* Left Area Widgets */}
-      <Widget title="📍 LOCATION" defaultPos={{ x: 40, y: 40 }}>
+      <Widget
+        title="📍 LOCATION"
+        defaultPos={{ x: 40, y: 40 }}
+        delayIndex={1}
+        hasWokenUp={hasWokenUp}
+      >
         <div className="loc-data">
-          <h3>Bengaluru</h3>
-          <p>Karnataka, India</p>
-          <div className="coords">LAT: 12.9057° LNG: 77.6107°</div>
+          <h3>Ichhapur</h3>
+          <p>West Bengal, India</p>
+          <div className="coords">LAT: 22.81° LNG: 88.37°</div>
         </div>
       </Widget>
-
-      <Widget title="SYSTEM STATUS" defaultPos={{ x: 40, y: 300 }}>
+      <Widget
+        title="HARDWARE TELEMETRY"
+        defaultPos={{ x: 40, y: 300 }}
+        delayIndex={2}
+        hasWokenUp={hasWokenUp}
+      >
         <div className="status-grid">
           <div className="status-item">
-            <Battery size={16} color="#00ffcc" /> <span>62%</span>
+            <Battery size={16} color="#00ffcc" /> <span>88%</span>
           </div>
           <div className="status-item">
-            <Wifi size={16} color="#00ffcc" /> <span>ONLINE</span>
+            <Wifi size={16} color="#00ffcc" /> <span>SECURE</span>
           </div>
           <div className="status-item">
-            <Wifi size={16} color="#00ffcc" /> <span>4G</span>
+            <MapPin size={16} color="#00ffcc" /> <span>SYNCED</span>
           </div>
           <div className="status-item">
-            <Bluetooth size={16} color="#00ffcc" /> <span>READY</span>
+            <Bluetooth size={16} color="#00ffcc" /> <span>AUDIO_ON</span>
           </div>
         </div>
       </Widget>
-
-      {/* Right Area Widgets */}
       <Widget
-        title="SYSTEM STATUS"
+        title="SYSTEM PROTOCOLS"
         defaultPos={{ x: window.innerWidth - 340, y: 40 }}
+        delayIndex={3}
+        hasWokenUp={hasWokenUp}
       >
         <ul className="checklist">
           <li>
             SYSTEM ONLINE <span className="dot on"></span>
           </li>
           <li>
-            J.A.R.V.I.S. ACTIVE <span className="dot on"></span>
+            J.A.R.V.I.S. ACTIVE{" "}
+            <span className={`dot ${hasWokenUp ? "on" : "off"}`}></span>
           </li>
           <li>
             MICROPHONE{" "}
             <span
-              className={`dot ${status === "online" ? "on" : "off"}`}
+              className={`dot ${status !== "offline" ? "on" : "off"}`}
             ></span>
           </li>
           <li>
-            MIC PERMISSION <span className="dot on"></span>
+            TTS SPEAKING{" "}
+            <span
+              className={`dot ${status === "speaking" || status === "executing" ? "on" : "off"}`}
+            ></span>
           </li>
           <li>
-            TTS SPEAKING <span className="dot off"></span>
-          </li>
-          <li>
-            WAKE DETECTED <span className="dot off"></span>
+            WAKE DETECTED{" "}
+            <span className={`dot ${hasWokenUp ? "on" : "off"}`}></span>
           </li>
           <li>
             API CONNECTION <span className="dot on"></span>
           </li>
         </ul>
       </Widget>
-
       <Widget
         title="SYSTEM_INFO 🟢"
         defaultPos={{ x: window.innerWidth - 340, y: 415 }}
+        delayIndex={4}
+        hasWokenUp={hasWokenUp}
       >
         <div className="info-panel-content">
           <div className="time-display">
@@ -227,28 +258,29 @@ function App() {
             </div>
             <div>
               <span>COMMANDS</span>
-              <br />1
+              <br />
+              {commandCount}
             </div>
           </div>
         </div>
       </Widget>
-
-      {/* CENTER IMMOBILE ELEMENTS */}
-
-      {/* The Blob Visualizer Placeholder */}
-      <div className="center-visualizer" onClick={startVoiceCommand}>
+      <div
+        className={`center-visualizer ${isInitialLoad ? "blob-loading" : "blob-ready"}`}
+        onClick={startVoiceCommand}
+      >
         <Visualizer status={status} />
       </div>
-
-      {/* The Greeting Box */}
-      <div className="greeting-box">
-        <h2>Good Afternoon, Sir</h2>
+      <div
+        className={`greeting-box ${hasWokenUp ? "fade-in" : "hidden-start"}`}
+      >
+        <h2>
+          <Typewriter text={getGreeting()} delay={80} start={hasWokenUp} />
+        </h2>
         <p>Standing by for instructions.</p>
         <span className="signature">- J.A.R.V.I.S. -</span>
       </div>
-
-      {/* The Horizontal Subtitle Log */}
-      <div className="system-log-horizontal">
+      {/* ${hasWokenUp ? "slide-up" : "hidden-start"}` */}
+      <div className={`system-log-horizontal `}>
         <div className="log-header">
           <span className="pulse-dot"></span> SYSTEM_LOG // J.A.R.V.I.S.
         </div>

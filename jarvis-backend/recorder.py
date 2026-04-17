@@ -6,7 +6,7 @@ def listen_to_mic(status_callback=None):
     recognizer = sr.Recognizer()
     
     # Sensitivity and silence thresholds
-    recognizer.energy_threshold = 300 
+    recognizer.energy_threshold = 150 
     recognizer.pause_threshold = 2.0
     
     # Force Python to use the ZEB-THUNDER Headset mic

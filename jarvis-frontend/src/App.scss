@@ -1,12 +1,23 @@
+/* ==========================================================================
+   1. VARIABLES & THEME
+   ========================================================================== */
 $cyan: #00ffcc;
 $cyan-dim: rgba(0, 255, 204, 0.1);
 $bg-dark: #020b12;
 $panel-bg: rgba(4, 18, 28, 0.85);
+$accent-red: #ff3366;
 
+/* ==========================================================================
+   2. BASE STYLES & BACKGROUND
+   ========================================================================== */
 body {
   margin: 0;
   background-color: $bg-dark;
-  // Honeycomb background
+  color: $cyan;
+  font-family: "Orbitron", sans-serif;
+  overflow: hidden;
+
+  /* Honeycomb background */
   background-image:
     linear-gradient(
       30deg,
@@ -64,10 +75,6 @@ body {
     40px 70px,
     0 0,
     40px 70px;
-
-  color: $cyan;
-  font-family: "Orbitron", sans-serif; /* Applied exact font */
-  overflow: hidden;
 }
 
 .dashboard-container {
@@ -76,45 +83,17 @@ body {
   position: relative;
 }
 
-/* TOP NAVIGATION */
-.top-nav {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 40px;
-  border-bottom: 1px solid rgba($cyan, 0.2);
-
-  .brand {
-    font-size: 1.5rem;
-    letter-spacing: 4px;
-  }
-  .nav-links {
-    display: flex;
-    gap: 30px;
-    font-size: 0.8rem;
-    letter-spacing: 2px;
-    span {
-      color: rgba(255, 255, 255, 0.5);
-    }
-    .active {
-      color: $cyan;
-    }
-  }
-}
-
-/* DRAGGABLE WIDGETS */
+/* ==========================================================================
+   3. DRAGGABLE WIDGETS
+   ========================================================================== */
 .widget {
-  position: absolute; /* Crucial for react-draggable */
+  position: absolute;
   background: $panel-bg;
   border: 1px solid rgba($cyan, 0.3);
-  border-radius: 8px;
+  border-radius: 8px 20px 8px 20px; /* Shorthand for custom tech corners */
   padding: 15px 20px;
   width: 260px;
   box-shadow: 0 0 15px rgba(0, 0, 0, 0.8);
-
-  // Custom tech corners
-  border-top-left-radius: 20px;
-  border-bottom-right-radius: 20px;
 
   &.move-mode-active {
     border-color: $cyan;
@@ -147,24 +126,28 @@ body {
   }
 }
 
-/* WIDGET CONTENT */
-.loc-data h3 {
-  margin: 0 0 5px 0;
-  font-size: 1.2rem;
-}
-.loc-data p {
-  margin: 0;
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 0.8rem;
-}
-.loc-data .coords {
-  margin-top: 15px;
-  font-size: 0.7rem;
-  color: rgba($cyan, 0.6);
-  background: rgba($cyan, 0.05);
-  padding: 5px;
-  text-align: center;
-  border-radius: 4px;
+/* ==========================================================================
+   4. WIDGET CONTENT (Telemetry, Checklists, Info)
+   ========================================================================== */
+.loc-data {
+  h3 {
+    margin: 0 0 5px 0;
+    font-size: 1.2rem;
+  }
+  p {
+    margin: 0;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.8rem;
+  }
+  .coords {
+    margin-top: 15px;
+    font-size: 0.7rem;
+    color: rgba($cyan, 0.6);
+    background: rgba($cyan, 0.05);
+    padding: 5px;
+    text-align: center;
+    border-radius: 4px;
+  }
 }
 
 .status-grid {
@@ -172,6 +155,7 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 15px;
   font-size: 0.7rem;
+
   .status-item {
     display: flex;
     align-items: center;
@@ -184,6 +168,7 @@ body {
   list-style: none;
   padding: 0;
   margin: 0;
+
   li {
     display: flex;
     justify-content: space-between;
@@ -193,10 +178,12 @@ body {
     letter-spacing: 1px;
   }
 }
+
 .dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+
   &.on {
     background: $cyan;
     box-shadow: 0 0 8px $cyan;
@@ -208,16 +195,20 @@ body {
 
 .info-panel-content {
   text-align: center;
-  .time-display h1 {
-    font-size: 2.3rem;
-    margin: 0 0 10px 0;
-    text-shadow: 0 0 10px $cyan;
+
+  .time-display {
+    h1 {
+      font-size: 2.3rem;
+      margin: 0 0 10px 0;
+      text-shadow: 0 0 10px $cyan;
+    }
+    p {
+      font-size: 0.7rem;
+      margin: 0 0 20px 0;
+      color: rgba(255, 255, 255, 0.6);
+    }
   }
-  .time-display p {
-    font-size: 0.7rem;
-    margin: 0 0 20px 0;
-    color: rgba(255, 255, 255, 0.6);
-  }
+
   .weather-display {
     display: flex;
     justify-content: center;
@@ -229,6 +220,7 @@ body {
       font-size: 1.5rem;
     }
   }
+
   .stats-row {
     display: flex;
     justify-content: space-around;
@@ -243,12 +235,14 @@ body {
   }
 }
 
-/* CENTER ELEMENTS */
+/* ==========================================================================
+   5. CENTER CORE & LOG
+   ========================================================================== */
 .center-visualizer {
   position: absolute;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -60%); /* Shifted up slightly to make room for bottom elements */
+  transform: translate(-50%, -60%);
   width: 300px;
   height: 300px;
   border-radius: 50%;
@@ -288,11 +282,10 @@ body {
   }
 }
 
-/* THE HORIZONTAL LOG PANEL */
 .system-log-horizontal {
   position: absolute;
   bottom: 20px;
-  right: 20px; /* Positioned bottom right as requested */
+  right: 20px;
   width: 500px;
   background: rgba(4, 18, 28, 0.95);
   border: 1px solid rgba($cyan, 0.4);
@@ -313,7 +306,7 @@ body {
     .pulse-dot {
       width: 6px;
       height: 6px;
-      background: #ff3366;
+      background: $accent-red;
       border-radius: 50%;
       animation: pulse 2s infinite;
     }
@@ -325,8 +318,9 @@ body {
     display: flex;
     align-items: center;
     gap: 10px;
+
     .speaker-tag {
-      color: #ff3366;
+      color: $accent-red;
       font-size: 0.8rem;
     }
     .cursor-block {
@@ -335,6 +329,74 @@ body {
       background: $cyan;
       animation: blink 1s infinite;
     }
+  }
+}
+
+/* ==========================================================================
+   6. CINEMATIC ANIMATIONS (THE UPDATE)
+   ========================================================================== */
+
+/* Blob Entry */
+.blob-loading {
+  opacity: 0;
+  transform: translate(-50%, -60%) scale(0.3); /* Preserved centering translate */
+}
+
+.blob-ready {
+  opacity: 1;
+  transform: translate(-50%, -60%) scale(1);
+  transition: all 1.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Widget Sleep State */
+.widget-sleep {
+  opacity: 0;
+  transform: scale(0.6) translate(50px, 50px);
+  pointer-events: none;
+}
+
+/* Diagonal Widget Wake State */
+.widget-awake {
+  animation: widgetExpand 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+
+  .widget-content {
+    opacity: 0;
+    animation: contentFadeIn 0.5s ease-out forwards;
+  }
+}
+
+.fade-in {
+  opacity: 0;
+  animation: contentFadeIn 1s ease-out forwards;
+  animation-delay: 1s;
+}
+
+.slide-up {
+  opacity: 0;
+  animation: contentFadeIn 0.8s ease-out forwards;
+  animation-delay: 0.8s;
+}
+
+/* Keyframes */
+@keyframes widgetExpand {
+  0% {
+    opacity: 0;
+    // transform: scale(0.6) translate(50px, 50px);
+  }
+  100% {
+    opacity: 1;
+    // transform: scale(1) translate(0, 0);
+  }
+}
+
+@keyframes contentFadeIn {
+  0% {
+    opacity: 0;
+    // transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    // transform: translateY(0);
   }
 }
 
@@ -347,6 +409,7 @@ body {
     opacity: 0;
   }
 }
+
 @keyframes pulse {
   0%,
   100% {
@@ -354,6 +417,30 @@ body {
   }
   50% {
     opacity: 1;
-    box-shadow: 0 0 5px #ff3366;
+    box-shadow: 0 0 5px $accent-red;
   }
+}
+
+/* --- STARTUP ANIMATIONS --- */
+
+/* Initially hides elements before the wake word is triggered */
+.hidden-start {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The Blob starts tiny and invisible */
+.blob-loading {
+  opacity: 0;
+  transform: translate(-50%, -60%) scale(0.1);
+  transition: all 0s;
+}
+
+/* The Blob smoothly scales up and glows when the page loads */
+.blob-ready {
+  opacity: 1;
+  transform: translate(-50%, -60%) scale(1);
+  transition:
+    opacity 1.5s ease-in,
+    transform 2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
