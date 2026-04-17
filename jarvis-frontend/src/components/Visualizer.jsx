@@ -3,8 +3,6 @@ import * as THREE from "three";
 
 export default function Visualizer({ status }) {
   const mountRef = useRef(null);
-
-  // 1. THE FIX: We use a ref to track status inside the Three.js animation loop
   const statusRef = useRef(status);
 
   // Web Audio API Refs for your microphone
@@ -13,22 +11,18 @@ export default function Visualizer({ status }) {
   const dataArrayRef = useRef(null);
   const micVolumeRef = useRef(0);
 
-  // This ref holds the base animation targets
   const targets = useRef({
     timeScale: 0.8,
     brightness: 1.2,
-    scale: 0.2, // Shader noise scale
+    scale: 0.2,
     rotationSpeedY: 0.005,
   });
 
-  // Update targets and microphone state whenever the status changes
   useEffect(() => {
     statusRef.current = status;
-
     let stream = null;
 
-    // Handle Microphone access when listening
-    if (status === "listening") {
+    if (status === "listening" || status === "waking") {
       navigator.mediaDevices
         .getUserMedia({ audio: true })
         .then((mediaStream) => {
@@ -47,7 +41,6 @@ export default function Visualizer({ status }) {
         })
         .catch((err) => console.error("Mic access denied:", err));
     } else {
-      // Close mic when not listening to save resources
       if (
         audioContextRef.current &&
         audioContextRef.current.state !== "closed"
@@ -57,25 +50,25 @@ export default function Visualizer({ status }) {
       micVolumeRef.current = 0;
     }
 
-    // Set Three.js Base Targets
     switch (status) {
-      case "processing_llm": // Thinking
+      case "processing_llm":
         targets.current = {
-          timeScale: 2.5,
-          brightness: 2.0,
+          timeScale: 2.0,
+          brightness: 1.8,
           scale: 0.35,
-          rotationSpeedY: 0.03,
+          rotationSpeedY: 0.02,
         };
         break;
-      case "executing": // J.A.R.V.I.S. is Talking
+      case "executing":
+      case "speaking":
         targets.current = {
-          timeScale: 1.8,
-          brightness: 2.5,
+          timeScale: 1.5,
+          brightness: 2.2,
           scale: 0.25,
           rotationSpeedY: 0.01,
         };
         break;
-      case "offline": // Dead
+      case "offline":
         targets.current = {
           timeScale: 0.1,
           brightness: 0.2,
@@ -83,7 +76,7 @@ export default function Visualizer({ status }) {
           rotationSpeedY: 0.001,
         };
         break;
-      default: // 'online' / Idle / Listening
+      default:
         targets.current = {
           timeScale: 0.8,
           brightness: 1.2,
@@ -117,14 +110,15 @@ export default function Visualizer({ status }) {
       alpha: true,
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // OPTIMIZATION 1: Cap pixel ratio to save GPU fragment shading costs
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 0.9;
 
     const mainGroup = new THREE.Group();
     scene.add(mainGroup);
 
-    // --- GLSL NOISE FUNCTIONS (Unchanged) ---
+    // --- GLSL NOISE FUNCTIONS ---
     const noiseFunctions = `
         vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
         vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -187,19 +181,27 @@ export default function Visualizer({ status }) {
         }
     `;
 
-    // 2. LIGHTS
     const pointLight = new THREE.PointLight(0x00ffcc, 2.0, 10);
     mainGroup.add(pointLight);
 
-    // 3. OUTER SHELL (Glass)
+    // OPTIMIZATION 2: Slashed vertex count by 75% (from 128 to 64)
     const shellGeo = new THREE.SphereGeometry(1.0, 64, 64);
     const shellShader = {
       vertexShader: `
+            uniform float uSpike;
+            uniform float uTime;
             varying vec3 vNormal;
             varying vec3 vViewPosition;
+            ${noiseFunctions}
             void main() {
                 vNormal = normalize(normalMatrix * normal);
-                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                float noiseVal = fbm(position * 8.0 + uTime);
+                
+                // Tamed outer displacement multiplier
+                float displacement = noiseVal * uSpike * 0.25; 
+                vec3 newPosition = position + normal * displacement;
+                
+                vec4 mvPosition = modelViewMatrix * vec4(newPosition, 1.0);
                 vViewPosition = -mvPosition.xyz;
                 gl_Position = projectionMatrix * mvPosition;
             }
@@ -209,7 +211,6 @@ export default function Visualizer({ status }) {
             varying vec3 vViewPosition;
             uniform vec3 uColor;
             uniform float uOpacity;
-            
             void main() {
                 float fresnel = pow(1.0 - dot(normalize(vNormal), normalize(vViewPosition)), 2.5);
                 gl_FragColor = vec4(uColor, fresnel * uOpacity);
@@ -217,25 +218,14 @@ export default function Visualizer({ status }) {
         `,
     };
 
-    const shellBackMat = new THREE.ShaderMaterial({
-      vertexShader: shellShader.vertexShader,
-      fragmentShader: shellShader.fragmentShader,
-      uniforms: {
-        uColor: { value: new THREE.Color(0x002233) },
-        uOpacity: { value: 0.3 },
-      },
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      side: THREE.BackSide,
-      depthWrite: false,
-    });
-
     const shellFrontMat = new THREE.ShaderMaterial({
       vertexShader: shellShader.vertexShader,
       fragmentShader: shellShader.fragmentShader,
       uniforms: {
         uColor: { value: new THREE.Color(0x00ffcc) },
-        uOpacity: { value: 0.4 },
+        uOpacity: { value: 0.5 },
+        uTime: { value: 0 },
+        uSpike: { value: 0 },
       },
       transparent: true,
       blending: THREE.AdditiveBlending,
@@ -243,29 +233,40 @@ export default function Visualizer({ status }) {
       depthWrite: false,
     });
 
-    mainGroup.add(new THREE.Mesh(shellGeo, shellBackMat));
-    mainGroup.add(new THREE.Mesh(shellGeo, shellFrontMat));
+    const shellMesh = new THREE.Mesh(shellGeo, shellFrontMat);
+    mainGroup.add(shellMesh);
 
-    // 4. PLASMA (Gas)
-    const plasmaGeo = new THREE.SphereGeometry(0.998, 128, 128);
+    // --- PLASMA (Core) ---
+    // OPTIMIZATION 2: Slashed vertex count
+    const plasmaGeo = new THREE.SphereGeometry(0.998, 64, 64);
     const plasmaMat = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
         uScale: { value: 0.2 },
         uBrightness: { value: 1.31 },
         uThreshold: { value: 0.09 },
+        uSpike: { value: 0 },
         uColorDeep: { value: new THREE.Color(0x020b12) },
         uColorMid: { value: new THREE.Color(0x0084ff) },
         uColorBright: { value: new THREE.Color(0x00ffcc) },
       },
       vertexShader: `
+            uniform float uSpike;
+            uniform float uTime;
             varying vec3 vPosition;
             varying vec3 vNormal;
             varying vec3 vViewPosition;
+            ${noiseFunctions}
             void main() {
-                vPosition = position;
                 vNormal = normalize(normalMatrix * normal);
-                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                float noiseVal = fbm(position * 6.0 - uTime);
+                
+                // Tamed inner displacement multiplier
+                float displacement = noiseVal * uSpike * 0.15; 
+                vec3 newPosition = position + normal * displacement;
+                
+                vPosition = newPosition; 
+                vec4 mvPosition = modelViewMatrix * vec4(newPosition, 1.0);
                 vViewPosition = -mvPosition.xyz; 
                 gl_Position = projectionMatrix * mvPosition;
             }
@@ -278,13 +279,10 @@ export default function Visualizer({ status }) {
             uniform vec3 uColorDeep;
             uniform vec3 uColorMid;
             uniform vec3 uColorBright;
-
             varying vec3 vPosition;
             varying vec3 vNormal;
             varying vec3 vViewPosition;
-            
             ${noiseFunctions}
-
             void main() {
                 vec3 p = vPosition * uScale; 
                 vec3 q = vec3(
@@ -292,20 +290,16 @@ export default function Visualizer({ status }) {
                     fbm(p + vec3(5.2, 1.3, 2.8) + uTime * 0.05),
                     fbm(p + vec3(2.2, 8.4, 0.5) - uTime * 0.02)
                 );
-                
                 float density = fbm(p + 2.0 * q);
                 float t = (density + 0.4) * 0.8;
                 float alpha = smoothstep(uThreshold, 0.7, t);
-
                 vec3 cWhite = vec3(1.0, 1.0, 1.0);
                 vec3 color = mix(uColorDeep, uColorMid, smoothstep(uThreshold, 0.5, t));
                 color = mix(color, uColorBright, smoothstep(0.5, 0.8, t));
                 color = mix(color, cWhite, smoothstep(0.8, 1.0, t));
-
                 float facing = dot(normalize(vNormal), normalize(vViewPosition));
                 float depthFactor = (facing + 1.0) * 0.5;
                 float finalAlpha = alpha * (0.02 + 0.98 * depthFactor);
-                
                 gl_FragColor = vec4(color * uBrightness, finalAlpha);
             }
         `,
@@ -318,8 +312,9 @@ export default function Visualizer({ status }) {
     const plasmaMesh = new THREE.Mesh(plasmaGeo, plasmaMat);
     mainGroup.add(plasmaMesh);
 
-    // 5. PARTICLES
-    const pCount = 300;
+    // --- PARTICLES ---
+    // OPTIMIZATION 3: Reduced particle count for efficiency
+    const pCount = 150;
     const pPos = new Float32Array(pCount * 3);
     const pSizes = new Float32Array(pCount);
     for (let i = 0; i < pCount; i++) {
@@ -338,7 +333,7 @@ export default function Visualizer({ status }) {
     const pMat = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
-        uColor: { value: new THREE.Color(0x00ffcc) },
+        uColor: { value: new THREE.Color(0x00ffff) },
       },
       vertexShader: `
             uniform float uTime;
@@ -346,11 +341,11 @@ export default function Visualizer({ status }) {
             varying float vAlpha;
             void main() {
                 vec3 pos = position;
-                pos.y += sin(uTime * 0.2 + pos.x) * 0.02;
-                pos.x += cos(uTime * 0.15 + pos.z) * 0.02;
+                pos *= 1.2; 
+                pos.y += sin(uTime * 0.5 + pos.x) * 0.05;
                 vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
                 gl_Position = projectionMatrix * mvPosition;
-                gl_PointSize = (8.0 * aSize + 4.0) * (1.0 / -mvPosition.z);
+                gl_PointSize = (12.0 * aSize + 4.0) * (1.0 / -mvPosition.z); 
                 vAlpha = 0.8 + 0.2 * sin(uTime + aSize * 10.0);
             }
         `,
@@ -361,8 +356,8 @@ export default function Visualizer({ status }) {
                 vec2 uv = gl_PointCoord - vec2(0.5);
                 float dist = length(uv);
                 if(dist > 0.5) discard;
-                float glow = pow(1.0 - (dist * 2.0), 1.8);
-                gl_FragColor = vec4(uColor, glow * vAlpha);
+                float glow = pow(1.0 - (dist * 2.0), 1.2); 
+                gl_FragColor = vec4(uColor, glow * vAlpha * 2.0); 
             }
         `,
       transparent: true,
@@ -371,7 +366,7 @@ export default function Visualizer({ status }) {
     });
     mainGroup.add(new THREE.Points(pGeo, pMat));
 
-    // 6. ANIMATION LOOP WITH AUDIO REACTIVITY
+    // --- ANIMATION LOOP ---
     const clock = new THREE.Clock();
     let currentParams = {
       timeScale: 0.8,
@@ -379,18 +374,18 @@ export default function Visualizer({ status }) {
       scale: 0.2,
       rotationSpeedY: 0.005,
     };
+    let currentSpike = 0;
     let animationFrameId;
 
     function animate() {
       animationFrameId = requestAnimationFrame(animate);
       const t = clock.getElapsedTime();
 
-      // --- VOLUME LOGIC ---
       let volumeBoost = 0;
 
-      // 1. React to YOUR voice when listening
+      // React to User Voice
       if (
-        statusRef.current === "listening" &&
+        (statusRef.current === "listening" || statusRef.current === "waking") &&
         analyserRef.current &&
         dataArrayRef.current
       ) {
@@ -399,20 +394,31 @@ export default function Visualizer({ status }) {
         for (let i = 0; i < dataArrayRef.current.length; i++) {
           sum += dataArrayRef.current[i];
         }
-        // Normalize 0 to 1
         const avg = sum / dataArrayRef.current.length;
         micVolumeRef.current = avg / 255.0;
-        volumeBoost = micVolumeRef.current;
+
+        if (micVolumeRef.current > 0.02) {
+          // Tamed user spike math
+          volumeBoost = Math.min(micVolumeRef.current * 8.0, 2.0);
+        }
       }
-      // 2. React to J.A.R.V.I.S.'s voice when executing
-      else if (statusRef.current === "executing") {
-        // We use a math wave to fake a voice waveform so the blob stutters beautifully
+      // React to J.A.R.V.I.S. Voice
+      else if (
+        statusRef.current === "executing" ||
+        statusRef.current === "speaking" ||
+        statusRef.current === "waking"
+      ) {
         const fakeWave =
-          (Math.sin(t * 30) * 0.5 + 0.5) * (Math.sin(t * 12) * 0.5 + 0.5);
-        volumeBoost = fakeWave * 0.8;
+          (Math.sin(t * 35) * 0.5 + 0.5) * (Math.sin(t * 18) * 0.5 + 0.5);
+        if (fakeWave > 0.3) {
+          // Tamed J.A.R.V.I.S. spike math
+          volumeBoost = fakeWave * 1.8;
+        }
       }
 
-      // Smoothly Lerp base parameters
+      // Slower lerp for smoother, less violent wave transitions
+      currentSpike = THREE.MathUtils.lerp(currentSpike, volumeBoost, 0.15);
+
       currentParams.timeScale = THREE.MathUtils.lerp(
         currentParams.timeScale,
         targets.current.timeScale,
@@ -429,31 +435,20 @@ export default function Visualizer({ status }) {
         0.05,
       );
 
-      // Spike the brightness instantly with the volume
       currentParams.brightness = THREE.MathUtils.lerp(
         currentParams.brightness,
-        targets.current.brightness + volumeBoost * 3.0, // Glows fiercely when speaking
+        targets.current.brightness + currentSpike * 2.0,
         0.15,
       );
 
-      // Apply to shaders
+      shellFrontMat.uniforms.uTime.value = t * currentParams.timeScale;
+      shellFrontMat.uniforms.uSpike.value = currentSpike;
+
       plasmaMat.uniforms.uTime.value = t * currentParams.timeScale;
       plasmaMat.uniforms.uBrightness.value = currentParams.brightness;
       plasmaMat.uniforms.uScale.value = currentParams.scale;
-      pMat.uniforms.uTime.value = t;
+      plasmaMat.uniforms.uSpike.value = currentSpike;
 
-      // PHYSICAL BOUNCE: Scale the actual 3D geometry up with the voice
-      const targetPhysicalScale = 1.0 + volumeBoost * 0.35; // Bounces 35% larger
-      mainGroup.scale.lerp(
-        new THREE.Vector3(
-          targetPhysicalScale,
-          targetPhysicalScale,
-          targetPhysicalScale,
-        ),
-        0.2,
-      );
-
-      // Apply Rotation
       plasmaMesh.rotation.y = t * 0.08;
       mainGroup.rotation.y += currentParams.rotationSpeedY;
       mainGroup.rotation.x += 0.002;
@@ -463,10 +458,16 @@ export default function Visualizer({ status }) {
 
     animate();
 
+    // OPTIMIZATION 4: Strict RAM Cleanup
     return () => {
       cancelAnimationFrame(animationFrameId);
-      // Removed the error-prone node removal. React handles canvas destruction.
       scene.clear();
+      shellGeo.dispose();
+      shellFrontMat.dispose();
+      plasmaGeo.dispose();
+      plasmaMat.dispose();
+      pGeo.dispose();
+      pMat.dispose();
       renderer.dispose();
     };
   }, []);

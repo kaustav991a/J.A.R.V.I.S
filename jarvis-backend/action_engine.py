@@ -3,27 +3,25 @@ import os
 import shutil
 from pathlib import Path
 from pydantic import BaseModel, ValidationError
+import memory # THE LINK: Import your SQLite memory system
 
-# 1. The Pydantic Firewall: Forces strict JSON structure
+# 1. The Pydantic Firewall
 class ActionIntent(BaseModel):
     action_type: str
     target: str
 
 class ActionEngine:
     def __init__(self):
-        # 2. The App Registry
-        # Map simple spoken names to their actual Windows executables or paths.
-        # You will need to update the paths here for specific apps on your PC!
+        # The App Registry
         self.app_registry = {
             "notepad": "notepad.exe",
             "calculator": "calc.exe",
             "spotify": "spotify.exe", 
             "chrome": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-            "code": "code" # VS Code
+            "code": "code" 
         }
 
-        # 3. The Security Fence
-        # JARVIS will hard-deny any attempt to delete files inside these folders.
+        # The Security Fence
         self.restricted_folders = [
             Path("C:/Windows").resolve(),
             Path("C:/Program Files").resolve(),
@@ -34,70 +32,82 @@ class ActionEngine:
         print(f"[ACTION ENGINE] Processing payload: {payload}")
         
         try:
-            # Validate the incoming dictionary matches our ActionIntent rules
             intent = ActionIntent(**payload)
         except ValidationError:
-            return "Validation Error: J.A.R.V.I.S. generated an invalid command structure."
+            return "Validation Error: I generated an invalid command structure, sir."
 
-        # Route to the correct function based on the action_type
         action = intent.action_type.lower()
         target = intent.target
 
+        # --- ROUTING TABLE ---
         if action == "launch_app":
             return self._launch_app(target)
         elif action == "close_app":
             return self._close_app(target)
         elif action == "delete_file":
             return self._delete_file(target)
+        elif action == "remember_fact": # THE NEW ACTION
+            return self._remember_fact(target)
         else:
-            return f"Unknown action requested: {action}"
+            return f"I'm afraid I don't know how to perform the action '{action}', sir."
 
+    # --- NEW: PERSISTENT MEMORY STORAGE ---
+    def _remember_fact(self, target: str) -> str:
+        """Parses the 'Category: Fact' format and saves to SQLite."""
+        try:
+            if ":" in target:
+                category, fact = target.split(":", 1)
+                category = category.strip()
+                fact = fact.strip()
+            else:
+                category = "General"
+                fact = target.strip()
+            
+            # Write to the Tier 2 Database
+            memory.remember_fact(category, fact)
+            return f"Of course, sir. I've committed that to my long-term memory under {category}."
+            
+        except Exception as e:
+            return f"I had a bit of trouble storing that information, sir. Error: {e}"
+
+    # --- EXISTING OS ACTIONS ---
     def _launch_app(self, app_name: str) -> str:
         app_name = app_name.lower()
         exe_path = self.app_registry.get(app_name)
-        
         if not exe_path:
             return f"I do not have {app_name} registered in my database, sir."
         
         try:
-            # Popen runs the app in the background so J.A.R.V.I.S. doesn't freeze
             subprocess.Popen(exe_path)
-            return f"Launching {app_name}."
+            return f"Launching {app_name} now."
         except Exception as e:
-            return f"Failed to launch {app_name}. Error: {e}"
+            return f"Failed to launch {app_name}."
 
     def _close_app(self, app_name: str) -> str:
         app_name = app_name.lower()
         try:
-            # Get the exact exe name from the registry, or guess it if missing
             exe_name = self.app_registry.get(app_name, f"{app_name}.exe")
-            
-            # If the registry holds a full path (like Chrome), extract just the .exe name
             if "\\" in exe_name or "/" in exe_name:
                 exe_name = Path(exe_name).name
-                
-            # Windows command to forcefully kill a task
             os.system(f'taskkill /IM {exe_name} /F')
-            return f"Closed {app_name}."
+            return f"Task terminated. {app_name} is closed."
         except Exception as e:
-            return f"Could not close {app_name}."
+            return f"I couldn't close {app_name}, sir."
 
     def _delete_file(self, target_path: str) -> str:
         try:
             path = Path(target_path).resolve()
-            
-            # Security Check: Compare against restricted folders
             for restricted in self.restricted_folders:
                 if restricted in path.parents or path == restricted:
-                    return "SECURITY OVERRIDE: Access denied. Target is in a restricted system folder."
+                    return "Security override triggered. I cannot modify system directories."
             
             if path.is_file():
                 path.unlink()
-                return "File deleted successfully."
+                return "File successfully deleted, sir."
             elif path.is_dir():
                 shutil.rmtree(path)
                 return "Directory removed."
             else:
-                return "Target not found on the file system."
+                return "I couldn't find that specific target on the file system."
         except Exception as e:
-            return f"Error during deletion: {e}"
+            return f"Deletion protocol failed: {e}"
