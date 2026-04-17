@@ -57,30 +57,69 @@ function App() {
 
     socket.current.onopen = () => {
       setStatus("online");
-      setLog({ speaker: "J.A.R.V.I.S.", text: "UPLINK ESTABLISHED" });
+      setLog({
+        speaker: "SYS",
+        text: "UPLINK ESTABLISHED // WAKE WORD ACTIVE",
+      });
     };
 
     socket.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      if (data.status === "processing_llm")
-        setLog({ speaker: "J.A.R.V.I.S.", text: "ANALYZING INTENT..." });
-      if (data.status === "executing")
-        setLog({
-          speaker: "J.A.R.V.I.S.",
-          text: `EXEC: ${data.intent.action_type}`,
-        });
-      if (data.status === "complete")
-        setLog({ speaker: "J.A.R.V.I.S.", text: "TASK FINALIZED." });
+
+      // 1. Update the overall system status (Turns the blob blue/orange/etc)
+      if (data.status) {
+        setStatus(data.status);
+      }
+
+      // 2. Extract the text payload
+      let textContent = data.message || data.text;
+
+      // Special case: If executing an action, format the JSON intent into text
+      if (data.status === "executing" && data.intent) {
+        textContent = `EXEC_PROTOCOL: ${data.intent.action_type.toUpperCase()}`;
+      }
+
+      // 3. Route the text to the correct "Speaker" tag
+      if (textContent) {
+        let currentSpeaker = "J.A.R.V.I.S";
+
+        switch (data.status) {
+          case "calibrating":
+          case "listening":
+            currentSpeaker = "J.A.R.V.I.S";
+            break;
+          case "processing_llm":
+            currentSpeaker = "J.A.R.V.I.S";
+            break;
+          case "executing":
+          case "speaking":
+          case "complete":
+            currentSpeaker = "J.A.R.V.I.S";
+            break;
+          case "error":
+            currentSpeaker = "J.A.R.V.I.S";
+            break;
+          default:
+            currentSpeaker = "J.A.R.V.I.S";
+        }
+
+        // Push to the UI state
+        setLog({ speaker: currentSpeaker, text: textContent });
+      }
     };
 
-    socket.current.onclose = () => setStatus("offline");
+    socket.current.onclose = () => {
+      setStatus("offline");
+      setLog({ speaker: "J.A.R.V.I.S", text: "CONNECTION LOST" });
+    };
+
     return () => socket.current.close();
   }, []);
 
   const startVoiceCommand = () => {
     if (socket.current.readyState === WebSocket.OPEN) {
       // Clear the log and notify the backend
-      setLog({ speaker: "SYS", text: "INITIALIZING MIC..." });
+      setLog({ speaker: "J.A.R.V.I.S", text: "INITIALIZING MIC..." });
       socket.current.send("START_LISTENING");
     }
   };

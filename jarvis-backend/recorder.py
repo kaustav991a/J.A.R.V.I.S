@@ -1,24 +1,34 @@
 import speech_recognition as sr
 
-def listen_to_mic():
+# ---> THE FIX: Added status_callback to talk to React <---
+def listen_to_mic(status_callback=None):
     # Initialize the recognizer
     recognizer = sr.Recognizer()
     
-    # Add this line to make it much more sensitive to your voice
+    # Sensitivity and silence thresholds
     recognizer.energy_threshold = 300 
+    recognizer.pause_threshold = 2.0
     
     # Force Python to use the ZEB-THUNDER Headset mic
     with sr.Microphone(device_index=0) as source:
+        
+        # 1. Tell React we are calibrating
+        if status_callback: status_callback("calibrating", "Adjusting for background noise...")
         print("\n[EARS] Adjusting for background noise... Please wait 1 second.")
         recognizer.adjust_for_ambient_noise(source, duration=1)
         
+        # 2. Tell React we are listening
+        if status_callback: status_callback("listening", "Listening... (Speak clearly)")
         print("[EARS] Listening... (Speak clearly into your microphone)")
+        
         try:
-            # Listen for audio. It will automatically stop when you stop talking.
+            # Listen for audio
             audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
+            
+            # 3. Tell React we are processing
+            if status_callback: status_callback("processing_llm", "Processing speech...")
             print("[EARS] Processing speech...")
             
-            # For now, we use Google's free cloud STT for instant gratification.
             text = recognizer.recognize_google(audio)
             print(f"\n🗣️ You said: '{text}'")
             return text
@@ -33,6 +43,5 @@ def listen_to_mic():
             print(f"[EARS] Network error with transcription service: {e}")
             return None
 
-# Quick test block: If you run this file directly, it will test your mic.
 if __name__ == "__main__":
     listen_to_mic()

@@ -4,16 +4,60 @@ import * as THREE from "three";
 export default function Visualizer({ status }) {
   const mountRef = useRef(null);
 
-  // This ref holds the current animation targets based on J.A.R.V.I.S. status
+  // 1. THE FIX: We use a ref to track status inside the Three.js animation loop
+  const statusRef = useRef(status);
+
+  // Web Audio API Refs for your microphone
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const dataArrayRef = useRef(null);
+  const micVolumeRef = useRef(0);
+
+  // This ref holds the base animation targets
   const targets = useRef({
     timeScale: 0.8,
     brightness: 1.2,
-    scale: 0.2,
+    scale: 0.2, // Shader noise scale
     rotationSpeedY: 0.005,
   });
 
-  // Update target values whenever the status changes
+  // Update targets and microphone state whenever the status changes
   useEffect(() => {
+    statusRef.current = status;
+
+    let stream = null;
+
+    // Handle Microphone access when listening
+    if (status === "listening") {
+      navigator.mediaDevices
+        .getUserMedia({ audio: true })
+        .then((mediaStream) => {
+          stream = mediaStream;
+          audioContextRef.current = new (
+            window.AudioContext || window.webkitAudioContext
+          )();
+          analyserRef.current = audioContextRef.current.createAnalyser();
+          analyserRef.current.fftSize = 256;
+          const source =
+            audioContextRef.current.createMediaStreamSource(stream);
+          source.connect(analyserRef.current);
+          dataArrayRef.current = new Uint8Array(
+            analyserRef.current.frequencyBinCount,
+          );
+        })
+        .catch((err) => console.error("Mic access denied:", err));
+    } else {
+      // Close mic when not listening to save resources
+      if (
+        audioContextRef.current &&
+        audioContextRef.current.state !== "closed"
+      ) {
+        audioContextRef.current.close();
+      }
+      micVolumeRef.current = 0;
+    }
+
+    // Set Three.js Base Targets
     switch (status) {
       case "processing_llm": // Thinking
         targets.current = {
@@ -23,7 +67,7 @@ export default function Visualizer({ status }) {
           rotationSpeedY: 0.03,
         };
         break;
-      case "executing": // Talking/Acting
+      case "executing": // J.A.R.V.I.S. is Talking
         targets.current = {
           timeScale: 1.8,
           brightness: 2.5,
@@ -47,20 +91,28 @@ export default function Visualizer({ status }) {
           rotationSpeedY: 0.005,
         };
     }
+
+    return () => {
+      if (stream) stream.getTracks().forEach((track) => track.stop());
+      if (
+        audioContextRef.current &&
+        audioContextRef.current.state !== "closed"
+      ) {
+        audioContextRef.current.close();
+      }
+    };
   }, [status]);
 
   useEffect(() => {
     const width = 300;
     const height = 300;
 
-    // 1. SCENE SETUP
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 100);
     camera.position.z = 2.4;
 
-    // Pass the React canvas reference directly to Three.js
     const renderer = new THREE.WebGLRenderer({
-      canvas: mountRef.current, // <--- THE FIX IS HERE
+      canvas: mountRef.current,
       antialias: true,
       alpha: true,
     });
@@ -72,7 +124,7 @@ export default function Visualizer({ status }) {
     const mainGroup = new THREE.Group();
     scene.add(mainGroup);
 
-    // --- GLSL NOISE FUNCTIONS ---
+    // --- GLSL NOISE FUNCTIONS (Unchanged) ---
     const noiseFunctions = `
         vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
         vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -202,9 +254,9 @@ export default function Visualizer({ status }) {
         uScale: { value: 0.2 },
         uBrightness: { value: 1.31 },
         uThreshold: { value: 0.09 },
-        uColorDeep: { value: new THREE.Color(0x020b12) }, // Dark background theme
-        uColorMid: { value: new THREE.Color(0x0084ff) }, // Deep blue
-        uColorBright: { value: new THREE.Color(0x00ffcc) }, // Theme Cyan
+        uColorDeep: { value: new THREE.Color(0x020b12) },
+        uColorMid: { value: new THREE.Color(0x0084ff) },
+        uColorBright: { value: new THREE.Color(0x00ffcc) },
       },
       vertexShader: `
             varying vec3 vPosition;
@@ -319,7 +371,7 @@ export default function Visualizer({ status }) {
     });
     mainGroup.add(new THREE.Points(pGeo, pMat));
 
-    // 6. ANIMATION LOOP WITH LERP (SMOOTH TRANSITIONS)
+    // 6. ANIMATION LOOP WITH AUDIO REACTIVITY
     const clock = new THREE.Clock();
     let currentParams = {
       timeScale: 0.8,
@@ -333,15 +385,37 @@ export default function Visualizer({ status }) {
       animationFrameId = requestAnimationFrame(animate);
       const t = clock.getElapsedTime();
 
-      // Smoothly approach the target values (Lerp factor 0.05 controls transition speed)
+      // --- VOLUME LOGIC ---
+      let volumeBoost = 0;
+
+      // 1. React to YOUR voice when listening
+      if (
+        statusRef.current === "listening" &&
+        analyserRef.current &&
+        dataArrayRef.current
+      ) {
+        analyserRef.current.getByteFrequencyData(dataArrayRef.current);
+        let sum = 0;
+        for (let i = 0; i < dataArrayRef.current.length; i++) {
+          sum += dataArrayRef.current[i];
+        }
+        // Normalize 0 to 1
+        const avg = sum / dataArrayRef.current.length;
+        micVolumeRef.current = avg / 255.0;
+        volumeBoost = micVolumeRef.current;
+      }
+      // 2. React to J.A.R.V.I.S.'s voice when executing
+      else if (statusRef.current === "executing") {
+        // We use a math wave to fake a voice waveform so the blob stutters beautifully
+        const fakeWave =
+          (Math.sin(t * 30) * 0.5 + 0.5) * (Math.sin(t * 12) * 0.5 + 0.5);
+        volumeBoost = fakeWave * 0.8;
+      }
+
+      // Smoothly Lerp base parameters
       currentParams.timeScale = THREE.MathUtils.lerp(
         currentParams.timeScale,
         targets.current.timeScale,
-        0.05,
-      );
-      currentParams.brightness = THREE.MathUtils.lerp(
-        currentParams.brightness,
-        targets.current.brightness,
         0.05,
       );
       currentParams.scale = THREE.MathUtils.lerp(
@@ -355,11 +429,29 @@ export default function Visualizer({ status }) {
         0.05,
       );
 
-      // Apply interpolated values to shaders
+      // Spike the brightness instantly with the volume
+      currentParams.brightness = THREE.MathUtils.lerp(
+        currentParams.brightness,
+        targets.current.brightness + volumeBoost * 3.0, // Glows fiercely when speaking
+        0.15,
+      );
+
+      // Apply to shaders
       plasmaMat.uniforms.uTime.value = t * currentParams.timeScale;
       plasmaMat.uniforms.uBrightness.value = currentParams.brightness;
       plasmaMat.uniforms.uScale.value = currentParams.scale;
       pMat.uniforms.uTime.value = t;
+
+      // PHYSICAL BOUNCE: Scale the actual 3D geometry up with the voice
+      const targetPhysicalScale = 1.0 + volumeBoost * 0.35; // Bounces 35% larger
+      mainGroup.scale.lerp(
+        new THREE.Vector3(
+          targetPhysicalScale,
+          targetPhysicalScale,
+          targetPhysicalScale,
+        ),
+        0.2,
+      );
 
       // Apply Rotation
       plasmaMesh.rotation.y = t * 0.08;
@@ -371,10 +463,9 @@ export default function Visualizer({ status }) {
 
     animate();
 
-    // Cleanup on unmount
     return () => {
       cancelAnimationFrame(animationFrameId);
-      mountRef.current?.removeChild(renderer.domElement);
+      // Removed the error-prone node removal. React handles canvas destruction.
       scene.clear();
       renderer.dispose();
     };
