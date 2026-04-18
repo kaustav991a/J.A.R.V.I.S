@@ -50,38 +50,67 @@ export default function Visualizer({ status }) {
       micVolumeRef.current = 0;
     }
 
+    // --- PHASE 2: Cinematic State Targets ---
     switch (status) {
-      case "processing_llm":
+      case "booting":
         targets.current = {
-          timeScale: 2.0,
+          timeScale: 0.3,
+          brightness: 0.5,
+          scale: 0.12,
+          rotationSpeedY: 0.002,
+        };
+        break;
+      case "uplinking":
+        targets.current = {
+          timeScale: 0.8,
+          brightness: 0.9,
+          scale: 0.16,
+          rotationSpeedY: 0.008,
+        };
+        break;
+      case "uplink_established":
+      case "sync":
+        targets.current = {
+          timeScale: 1.5,
+          brightness: 1.5,
+          scale: 0.22,
+          rotationSpeedY: 0.015,
+        };
+        break;
+      case "processing_llm":
+      case "searching":
+        targets.current = {
+          timeScale: 2.5,
           brightness: 1.8,
-          scale: 0.35,
-          rotationSpeedY: 0.02,
+          scale: 0.25,
+          rotationSpeedY: 0.03,
         };
         break;
       case "executing":
       case "speaking":
         targets.current = {
           timeScale: 1.5,
-          brightness: 2.2,
-          scale: 0.25,
+          brightness: 2.0,
+          scale: 0.2,
           rotationSpeedY: 0.01,
         };
         break;
       case "offline":
         targets.current = {
-          timeScale: 0.1,
-          brightness: 0.2,
-          scale: 0.1,
-          rotationSpeedY: 0.001,
+          timeScale: 0.05,
+          brightness: 0.1,
+          scale: 0.08,
+          rotationSpeedY: 0.0005,
         };
         break;
+      case "listening":
       default:
+        // Idle Standby State
         targets.current = {
-          timeScale: 0.8,
-          brightness: 1.2,
-          scale: 0.2,
-          rotationSpeedY: 0.005,
+          timeScale: 0.6,
+          brightness: 1.1,
+          scale: 0.18,
+          rotationSpeedY: 0.004,
         };
     }
 
@@ -110,7 +139,6 @@ export default function Visualizer({ status }) {
       alpha: true,
     });
     renderer.setSize(width, height);
-    // OPTIMIZATION 1: Cap pixel ratio to save GPU fragment shading costs
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 0.9;
@@ -184,9 +212,8 @@ export default function Visualizer({ status }) {
     const pointLight = new THREE.PointLight(0x00ffcc, 2.0, 10);
     mainGroup.add(pointLight);
 
-    // OPTIMIZATION 2: Slashed vertex count by 75% (from 128 to 64)
     const shellGeo = new THREE.SphereGeometry(1.0, 64, 64);
-    const shellShader = {
+    const shellMat = new THREE.ShaderMaterial({
       vertexShader: `
             uniform float uSpike;
             uniform float uTime;
@@ -196,9 +223,7 @@ export default function Visualizer({ status }) {
             void main() {
                 vNormal = normalize(normalMatrix * normal);
                 float noiseVal = fbm(position * 8.0 + uTime);
-                
-                // Tamed outer displacement multiplier
-                float displacement = noiseVal * uSpike * 0.25; 
+                float displacement = noiseVal * uSpike * 0.2; 
                 vec3 newPosition = position + normal * displacement;
                 
                 vec4 mvPosition = modelViewMatrix * vec4(newPosition, 1.0);
@@ -216,11 +241,6 @@ export default function Visualizer({ status }) {
                 gl_FragColor = vec4(uColor, fresnel * uOpacity);
             }
         `,
-    };
-
-    const shellFrontMat = new THREE.ShaderMaterial({
-      vertexShader: shellShader.vertexShader,
-      fragmentShader: shellShader.fragmentShader,
       uniforms: {
         uColor: { value: new THREE.Color(0x00ffcc) },
         uOpacity: { value: 0.5 },
@@ -233,11 +253,10 @@ export default function Visualizer({ status }) {
       depthWrite: false,
     });
 
-    const shellMesh = new THREE.Mesh(shellGeo, shellFrontMat);
+    const shellMesh = new THREE.Mesh(shellGeo, shellMat);
     mainGroup.add(shellMesh);
 
     // --- PLASMA (Core) ---
-    // OPTIMIZATION 2: Slashed vertex count
     const plasmaGeo = new THREE.SphereGeometry(0.998, 64, 64);
     const plasmaMat = new THREE.ShaderMaterial({
       uniforms: {
@@ -260,9 +279,7 @@ export default function Visualizer({ status }) {
             void main() {
                 vNormal = normalize(normalMatrix * normal);
                 float noiseVal = fbm(position * 6.0 - uTime);
-                
-                // Tamed inner displacement multiplier
-                float displacement = noiseVal * uSpike * 0.15; 
+                float displacement = noiseVal * uSpike * 0.12; 
                 vec3 newPosition = position + normal * displacement;
                 
                 vPosition = newPosition; 
@@ -313,7 +330,6 @@ export default function Visualizer({ status }) {
     mainGroup.add(plasmaMesh);
 
     // --- PARTICLES ---
-    // OPTIMIZATION 3: Reduced particle count for efficiency
     const pCount = 150;
     const pPos = new Float32Array(pCount * 3);
     const pSizes = new Float32Array(pCount);
@@ -369,10 +385,10 @@ export default function Visualizer({ status }) {
     // --- ANIMATION LOOP ---
     const clock = new THREE.Clock();
     let currentParams = {
-      timeScale: 0.8,
-      brightness: 1.2,
-      scale: 0.2,
-      rotationSpeedY: 0.005,
+      timeScale: 0.1,
+      brightness: 0.2,
+      scale: 0.1,
+      rotationSpeedY: 0.001,
     };
     let currentSpike = 0;
     let animationFrameId;
@@ -383,7 +399,6 @@ export default function Visualizer({ status }) {
 
       let volumeBoost = 0;
 
-      // React to User Voice
       if (
         (statusRef.current === "listening" || statusRef.current === "waking") &&
         analyserRef.current &&
@@ -398,51 +413,47 @@ export default function Visualizer({ status }) {
         micVolumeRef.current = avg / 255.0;
 
         if (micVolumeRef.current > 0.02) {
-          // Tamed user spike math
-          volumeBoost = Math.min(micVolumeRef.current * 8.0, 2.0);
+          volumeBoost = Math.min(micVolumeRef.current * 7.0, 1.8);
         }
-      }
-      // React to J.A.R.V.I.S. Voice
-      else if (
+      } else if (
         statusRef.current === "executing" ||
-        statusRef.current === "speaking" ||
-        statusRef.current === "waking"
+        statusRef.current === "speaking"
       ) {
         const fakeWave =
           (Math.sin(t * 35) * 0.5 + 0.5) * (Math.sin(t * 18) * 0.5 + 0.5);
         if (fakeWave > 0.3) {
-          // Tamed J.A.R.V.I.S. spike math
-          volumeBoost = fakeWave * 1.8;
+          volumeBoost = fakeWave * 1.5;
         }
       }
 
-      // Slower lerp for smoother, less violent wave transitions
-      currentSpike = THREE.MathUtils.lerp(currentSpike, volumeBoost, 0.15);
+      // Slower lerp for spike prevents violent snapping
+      currentSpike = THREE.MathUtils.lerp(currentSpike, volumeBoost, 0.1);
 
+      // --- SMOOTH SCALING FIX ---
+      // These lerp values are slightly lower to ensure the transition between offline/listening isn't jarring
       currentParams.timeScale = THREE.MathUtils.lerp(
         currentParams.timeScale,
         targets.current.timeScale,
-        0.05,
+        0.03,
       );
       currentParams.scale = THREE.MathUtils.lerp(
         currentParams.scale,
         targets.current.scale,
-        0.05,
+        0.03,
       );
       currentParams.rotationSpeedY = THREE.MathUtils.lerp(
         currentParams.rotationSpeedY,
         targets.current.rotationSpeedY,
-        0.05,
+        0.03,
       );
-
       currentParams.brightness = THREE.MathUtils.lerp(
         currentParams.brightness,
         targets.current.brightness + currentSpike * 2.0,
-        0.15,
+        0.08,
       );
 
-      shellFrontMat.uniforms.uTime.value = t * currentParams.timeScale;
-      shellFrontMat.uniforms.uSpike.value = currentSpike;
+      shellMat.uniforms.uTime.value = t * currentParams.timeScale;
+      shellMat.uniforms.uSpike.value = currentSpike;
 
       plasmaMat.uniforms.uTime.value = t * currentParams.timeScale;
       plasmaMat.uniforms.uBrightness.value = currentParams.brightness;
@@ -458,12 +469,11 @@ export default function Visualizer({ status }) {
 
     animate();
 
-    // OPTIMIZATION 4: Strict RAM Cleanup
     return () => {
       cancelAnimationFrame(animationFrameId);
       scene.clear();
       shellGeo.dispose();
-      shellFrontMat.dispose();
+      shellMat.dispose();
       plasmaGeo.dispose();
       plasmaMat.dispose();
       pGeo.dispose();

@@ -4,25 +4,35 @@ import { Battery, Wifi, Bluetooth, MapPin, Sun } from "lucide-react";
 import Visualizer from "./components/Visualizer";
 import "./App.scss";
 
-// Reusable Typewriter Effect Component
-const Typewriter = ({ text, delay = 50, start = false }) => {
-  const [currentText, setCurrentText] = useState("");
-  const [currentIndex, setCurrentIndex] = useState(0);
+// 1. The Robust Typewriter Hook (Handles rapid resets)
+const useTypewriter = (text, speed = 30) => {
+  const [displayedText, setDisplayedText] = useState("");
 
   useEffect(() => {
-    if (start && currentIndex < text.length) {
-      const timeout = setTimeout(() => {
-        setCurrentText((prevText) => prevText + text[currentIndex]);
-        setCurrentIndex((prevIndex) => prevIndex + 1);
-      }, delay);
-      return () => clearTimeout(timeout);
+    if (!text) {
+      setDisplayedText("");
+      return;
     }
-  }, [currentIndex, delay, text, start]);
 
-  return <span>{currentText}</span>;
+    let i = 0;
+    setDisplayedText(""); // Clear immediately when new text arrives
+
+    const timer = setInterval(() => {
+      i++; // Increment first
+      setDisplayedText(text.slice(0, i)); // Slice directly from the source text
+
+      if (i >= text.length) {
+        clearInterval(timer);
+      }
+    }, speed);
+
+    return () => clearInterval(timer);
+  }, [text, speed]);
+
+  return displayedText;
 };
 
-// Upgraded Widget Wrapper (Now using Absolute Positioning)
+// 2. Upgraded Widget Wrapper
 const Widget = ({ title, children, defaultPos, delayIndex, hasWokenUp }) => {
   const [isMoveMode, setIsMoveMode] = useState(false);
   const nodeRef = useRef(null);
@@ -37,7 +47,6 @@ const Widget = ({ title, children, defaultPos, delayIndex, hasWokenUp }) => {
       nodeRef={nodeRef}
       disabled={!isMoveMode}
       defaultPosition={defaultPos}
-      // Forces standard left/top absolute positioning
       useCSSTransforms={false}
     >
       <div
@@ -64,18 +73,32 @@ const Widget = ({ title, children, defaultPos, delayIndex, hasWokenUp }) => {
 function App() {
   const [time, setTime] = useState(new Date());
   const [status, setStatus] = useState("offline");
+  const [weather, setWeather] = useState({ temp: "--", condition: "Unknown" });
 
   const [hasWokenUp, setHasWokenUp] = useState(false);
   const [commandCount, setCommandCount] = useState(0);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
 
-  const [log, setLog] = useState({
-    speaker: "J.A.R.V.I.S",
-    text: "SYSTEM ONLINE // STANDING BY",
-  });
+  // 3. New State: Search Panel & Image
+  const [searchResult, setSearchResult] = useState("");
+  const [searchImage, setSearchImage] = useState(null); // Holds the image URL
+  const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
+
+  // Log State for the Typewriter
+  const [logSpeaker, setLogSpeaker] = useState("J.A.R.V.I.S");
+  const [logTextRaw, setLogTextRaw] = useState(
+    "SYSTEM OFFLINE // STANDBY FOR VOICE INPUT",
+  );
+
+  // Apply Typewriter Hook to the raw text (Speed changes based on who is talking)
+  const typedLogText = useTypewriter(
+    logTextRaw,
+    logSpeaker === "SYSTEM" ? 15 : 35,
+  );
+
   const socket = useRef(null);
 
-  // Live Clock
+  // Live Clock & Init Load
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
@@ -92,28 +115,29 @@ function App() {
     return "Good Evening, Sir.";
   };
 
-  // WebSocket Logic
+  // 4. WebSocket Logic (Handling Phase 2/3 Commands)
   useEffect(() => {
     socket.current = new WebSocket("ws://127.0.0.1:8000/ws");
 
     socket.current.onopen = () => {
       setStatus("online");
-      setLog({
-        speaker: "J.A.R.V.I.S",
-        text: "UPLINK ESTABLISHED // WAKE WORD ACTIVE",
-      });
     };
 
     socket.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
 
+      if (data.status === "sync" && data.type === "weather") {
+        setWeather(data.data);
+      }
+
       if (data.status) {
         setStatus(data.status);
 
+        // Triggers the UI "Wake" state
         if (
-          data.status === "waking" ||
-          data.status === "calibrating" ||
-          data.status === "listening"
+          ["waking", "calibrating", "listening", "booting"].includes(
+            data.status,
+          )
         ) {
           setHasWokenUp(true);
         }
@@ -121,28 +145,63 @@ function App() {
         if (data.status === "complete") {
           setCommandCount((prev) => prev + 1);
         }
+
+        // --- PHASE 3: Triggering the Search Panel (Text) ---
+        if (data.status === "search_result") {
+          setSearchResult(data.result);
+          setSearchImage(null); // Clear any previous image
+          setIsSearchPanelOpen(true);
+        }
+
+        // --- PHASE 3: Triggering the Search Panel (Image) ---
+        if (data.status === "search_result_image") {
+          setSearchResult(`Displaying visual data for: ${data.title}`);
+          setSearchImage(data.url); // Set the new image
+          setIsSearchPanelOpen(true);
+        }
+
+        // --- PHASE 3: Closing the Search Panel manually ---
+        if (data.status === "close_search") {
+          setIsSearchPanelOpen(false);
+          setTimeout(() => setSearchImage(null), 600); // Clear image after slide-up animation
+        }
       }
 
+      // --- Setting the Terminal Text ---
       let textContent = data.message || data.text;
-
       if (data.status === "executing" && data.intent) {
         textContent = `EXEC_PROTOCOL: ${data.intent.action_type.toUpperCase()}`;
       }
 
       if (textContent) {
-        // THE FIX: Simplified Speaker Tags
         let currentSpeaker = "J.A.R.V.I.S";
-        if (data.status === "calibrating" || data.status === "listening") {
+
+        // Use "SYSTEM" speaker for boot sequences for a faster typewriter speed
+        if (
+          ["booting", "uplinking", "uplink_established"].includes(data.status)
+        ) {
+          currentSpeaker = "SYSTEM";
+        } else if (
+          data.status === "calibrating" ||
+          data.status === "listening"
+        ) {
           currentSpeaker = "USER";
+        } else if (
+          data.status === "search_result" ||
+          data.status === "search_result_image"
+        ) {
+          currentSpeaker = "SYSTEM";
         }
 
-        setLog({ speaker: currentSpeaker, text: textContent });
+        setLogSpeaker(currentSpeaker);
+        setLogTextRaw(textContent);
       }
     };
 
     socket.current.onclose = () => {
       setStatus("offline");
-      setLog({ speaker: "J.A.R.V.I.S", text: "CONNECTION LOST" });
+      setLogSpeaker("SYSTEM");
+      setLogTextRaw("CRITICAL FAULT: CONNECTION LOST");
       setHasWokenUp(false);
     };
 
@@ -150,15 +209,17 @@ function App() {
   }, []);
 
   const startVoiceCommand = () => {
-    if (socket.current.readyState === WebSocket.OPEN) {
+    if (socket.current?.readyState === WebSocket.OPEN) {
       if (!hasWokenUp) setHasWokenUp(true);
-      setLog({ speaker: "J.A.R.V.I.S", text: "INITIALIZING MIC FORCED..." });
+      setLogSpeaker("SYSTEM");
+      setLogTextRaw("INITIALIZING MIC OVERRIDE...");
       socket.current.send("START_LISTENING");
     }
   };
 
   return (
     <div className="dashboard-container">
+      {/* Existing Widgets... */}
       <Widget
         title="📍 LOCATION"
         defaultPos={{ x: 40, y: 40 }}
@@ -171,6 +232,7 @@ function App() {
           <div className="coords">LAT: 22.81° LNG: 88.37°</div>
         </div>
       </Widget>
+
       <Widget
         title="HARDWARE TELEMETRY"
         defaultPos={{ x: 40, y: 300 }}
@@ -192,6 +254,7 @@ function App() {
           </div>
         </div>
       </Widget>
+
       <Widget
         title="SYSTEM PROTOCOLS"
         defaultPos={{ x: window.innerWidth - 340, y: 40 }}
@@ -227,6 +290,7 @@ function App() {
           </li>
         </ul>
       </Widget>
+
       <Widget
         title="SYSTEM_INFO 🟢"
         defaultPos={{ x: window.innerWidth - 340, y: 415 }}
@@ -248,7 +312,8 @@ function App() {
           </div>
           <div className="weather-display">
             <Sun size={24} color="#ffcc00" />
-            <h2>30°C</h2>
+            {/* Dynamic Weather Binding */}
+            <h2>{weather.temp}°C</h2>
           </div>
           <div className="stats-row">
             <div>
@@ -264,29 +329,55 @@ function App() {
           </div>
         </div>
       </Widget>
+
       <div
         className={`center-visualizer ${isInitialLoad ? "blob-loading" : "blob-ready"}`}
         onClick={startVoiceCommand}
       >
         <Visualizer status={status} />
       </div>
+
       <div
         className={`greeting-box ${hasWokenUp ? "fade-in" : "hidden-start"}`}
       >
-        <h2>
-          <Typewriter text={getGreeting()} delay={80} start={hasWokenUp} />
-        </h2>
+        <h2>{getGreeting()}</h2>
         <p>Standing by for instructions.</p>
         <span className="signature">- J.A.R.V.I.S. -</span>
       </div>
-      {/* ${hasWokenUp ? "slide-up" : "hidden-start"}` */}
-      <div className={`system-log-horizontal `}>
+
+      {/* --- PHASE 3: The Secondary HUD (Text + Image) --- */}
+      <div
+        className={`satellite-panel ${isSearchPanelOpen ? "panel-open" : "panel-closed"}`}
+      >
+        <div className="panel-header">SATELLITE DATA LINK</div>
+        <div className="panel-body">
+          {/* If there is an image, display it */}
+          {searchImage && (
+            <div className="image-container">
+              <img src={searchImage} alt="Search Result" />
+            </div>
+          )}
+          {/* Using a separate typewriter hook so it types out slowly as he reads it */}
+          <p className="search-text">{useTypewriter(searchResult, 40)}</p>
+        </div>
+      </div>
+
+      {/* --- PHASE 2: The Animated Terminal --- */}
+      <div
+        className={`system-log-horizontal ${hasWokenUp ? "slide-up" : "hidden-start"}`}
+      >
         <div className="log-header">
-          <span className="pulse-dot"></span> SYSTEM_LOG // J.A.R.V.I.S.
+          {/* Loader animation when thinking */}
+          <span
+            className={
+              status === "processing_llm" ? "spinner-dot" : "pulse-dot"
+            }
+          ></span>
+          SYSTEM_LOG // STATUS: {status.toUpperCase()}
         </div>
         <div className="log-text">
-          <span className="speaker-tag">&gt; {log.speaker} &gt;</span>{" "}
-          {log.text}
+          <span className="speaker-tag">&gt; {logSpeaker} &gt;</span>{" "}
+          {typedLogText}
           <div className="cursor-block"></div>
         </div>
       </div>
