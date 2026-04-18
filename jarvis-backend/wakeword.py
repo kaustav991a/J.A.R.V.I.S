@@ -44,7 +44,7 @@ def wait_for_jarvis():
     
     with sr.Microphone(device_index=0) as source:
         # We DO NOT calibrate here so the mic is instantly ready
-        print("[SYSTEM] Passive Listening for 'Jarvis'...", flush=True)
+        print("[SYSTEM] Passive Listening for 'Hello Jarvis'...", flush=True)
         
         while not is_shutting_down.is_set():
             try:
@@ -53,7 +53,7 @@ def wait_for_jarvis():
                 text = recognizer.recognize_google(audio).lower()
                 
                 # Catch common Google STT misinterpretations of "Jarvis"
-                if "jarvis" in text or "travis" in text or "jervis" in text or "service" in text:
+                if "hello jarvis" in text or "hello travis" in text or "hello jervis" in text or "hello service" in text:
                     print("\n[JARVIS CALLED]", flush=True)
                     return True
                     
