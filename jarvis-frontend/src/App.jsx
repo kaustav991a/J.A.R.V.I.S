@@ -4,7 +4,7 @@ import { Battery, Wifi, Bluetooth, MapPin, Sun } from "lucide-react";
 import Visualizer from "./components/Visualizer";
 import "./App.scss";
 
-// 1. The Robust Typewriter Hook (Handles rapid resets)
+// 1. The Robust Typewriter Hook
 const useTypewriter = (text, speed = 30) => {
   const [displayedText, setDisplayedText] = useState("");
 
@@ -15,11 +15,11 @@ const useTypewriter = (text, speed = 30) => {
     }
 
     let i = 0;
-    setDisplayedText(""); // Clear immediately when new text arrives
+    setDisplayedText("");
 
     const timer = setInterval(() => {
-      i++; // Increment first
-      setDisplayedText(text.slice(0, i)); // Slice directly from the source text
+      i++;
+      setDisplayedText(text.slice(0, i));
 
       if (i >= text.length) {
         clearInterval(timer);
@@ -79,18 +79,25 @@ function App() {
   const [commandCount, setCommandCount] = useState(0);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
 
-  // 3. New State: Search Panel & Image
+  // --- NEW: Session State Tracker ---
+  const [activeUser, setActiveUser] = useState("KAUSTAV");
+
   const [searchResult, setSearchResult] = useState("");
-  const [searchImage, setSearchImage] = useState(null); // Holds the image URL
+  const [searchImage, setSearchImage] = useState(null);
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
 
-  // Log State for the Typewriter
-  const [logSpeaker, setLogSpeaker] = useState("J.A.R.V.I.S");
+  const [tvData, setTvData] = useState({
+    status: "standby",
+    power: "unknown",
+    app: "none",
+  });
+  const [isPollingTv, setIsPollingTv] = useState(false);
+
+  const [logSpeaker, setLogSpeaker] = useState("SYSTEM");
   const [logTextRaw, setLogTextRaw] = useState(
     "SYSTEM OFFLINE // STANDBY FOR VOICE INPUT",
   );
 
-  // Apply Typewriter Hook to the raw text (Speed changes based on who is talking)
   const typedLogText = useTypewriter(
     logTextRaw,
     logSpeaker === "SYSTEM" ? 15 : 35,
@@ -98,24 +105,104 @@ function App() {
 
   const socket = useRef(null);
 
-  // Live Clock & Init Load
+  // Live Clock
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
+  // --- THE BOOT TRACKER ---
   useEffect(() => {
-    setTimeout(() => setIsInitialLoad(false), 500);
+    const lastBoot = localStorage.getItem("jarvis_last_boot");
+    const now = Date.now();
+    const hoursSinceLastBoot = lastBoot
+      ? (now - parseInt(lastBoot)) / (1000 * 60 * 60)
+      : 99;
+
+    setTimeout(() => {
+      setIsInitialLoad(false);
+
+      if (hoursSinceLastBoot > 4) {
+        setLogSpeaker("SYSTEM");
+        setLogTextRaw("EXECUTING FULL WAKE SEQUENCE AND SYSTEM BRIEFING...");
+      } else {
+        setLogSpeaker("SYSTEM");
+        setLogTextRaw("SYSTEMS WARM. RESUMING SESSION.");
+      }
+
+      localStorage.setItem("jarvis_last_boot", now.toString());
+    }, 1000);
   }, []);
 
-  const getGreeting = () => {
-    const hour = time.getHours();
-    if (hour < 12) return "Good Morning, Sir.";
-    if (hour < 18) return "Good Afternoon, Sir.";
-    return "Good Evening, Sir.";
+  // --- IDLE CHATTER PROTOCOL ---
+  useEffect(() => {
+    if (status !== "online" || logSpeaker !== "SYSTEM") return;
+
+    const idleMessages = [
+      "Running background diagnostics on local subnet...",
+      "Optimizing memory cache...",
+      "Monitoring local atmospheric data in West Bengal...",
+      "Awaiting verbal input...",
+      "Checking local port configurations...",
+    ];
+
+    const chatterTimer = setInterval(() => {
+      if (Math.random() > 0.7) {
+        const randomMsg =
+          idleMessages[Math.floor(Math.random() * idleMessages.length)];
+        setLogTextRaw(`[IDLE] ${randomMsg}`);
+      }
+    }, 15000);
+
+    return () => clearInterval(chatterTimer);
+  }, [status, logSpeaker]);
+
+  // --- MANUAL TV POLL FUNCTION ---
+  const fetchTvStatus = async () => {
+    setIsPollingTv(true);
+    try {
+      const response = await fetch("http://127.0.0.1:8000/api/tv/status");
+      if (response.ok) {
+        const data = await response.json();
+        setTvData(data);
+      }
+    } catch (error) {
+      setTvData({ status: "offline", power: "unknown", app: "error" });
+    }
+    setIsPollingTv(false);
   };
 
-  // 4. WebSocket Logic (Handling Phase 2/3 Commands)
+  // --- THE CONTEXT ENGINE (Dynamically switches based on User) ---
+  const getSmartGreeting = () => {
+    const hour = time.getHours();
+    const day = time.getDay();
+    const isWeekend = day === 0 || day === 6;
+
+    // Dynamically assign the honorific
+    let title = "Sir";
+    if (activeUser === "MOUSUMI") title = "Madam";
+    else if (activeUser === "KINSHUK") title = "Kinshuk";
+
+    if (hour >= 1 && hour < 4) {
+      return `It is quite late, ${title}. Even synthetic systems require downtime. I advise you get some rest.`;
+    } else if (hour >= 4 && hour < 12) {
+      if (!isWeekend)
+        return `Good morning, ${title}. Traffic protocols and office schedules are standing by.`;
+      return `Good morning, ${title}. The weekend is yours. What shall we build today?`;
+    } else if (hour >= 12 && hour < 17) {
+      return `Good afternoon, ${title}.`;
+    } else if (hour >= 17 && hour < 21) {
+      if (!isWeekend)
+        return `Good evening, ${title}. I hope the office was tolerable today.`;
+      return `Good evening, ${title}.`;
+    } else {
+      if (!isWeekend)
+        return `Welcome back from the office, ${title}. Systems are primed for your evening projects.`;
+      return `Good evening, ${title}. Ready for tonight's session.`;
+    }
+  };
+
+  // --- WEBSOCKET LOGIC ---
   useEffect(() => {
     socket.current = new WebSocket("ws://127.0.0.1:8000/ws");
 
@@ -130,12 +217,21 @@ function App() {
         setWeather(data.data);
       }
 
+      // --- NEW: Intercept the active user from the backend ---
+      if (data.user) {
+        setActiveUser(data.user);
+      }
+
       if (data.status) {
         setStatus(data.status);
 
-        // Triggers the UI "Wake" state
+        // --- STICKY SECURITY BARRIER ---
+        if (data.status === "offline" || data.status.startsWith("security_")) {
+          setHasWokenUp(false);
+        }
+
         if (
-          ["waking", "calibrating", "listening", "booting"].includes(
+          ["booting", "waking", "online", "listening", "calibrating"].includes(
             data.status,
           )
         ) {
@@ -146,28 +242,24 @@ function App() {
           setCommandCount((prev) => prev + 1);
         }
 
-        // --- PHASE 3: Triggering the Search Panel (Text) ---
         if (data.status === "search_result") {
           setSearchResult(data.result);
-          setSearchImage(null); // Clear any previous image
+          setSearchImage(null);
           setIsSearchPanelOpen(true);
         }
 
-        // --- PHASE 3: Triggering the Search Panel (Image) ---
         if (data.status === "search_result_image") {
           setSearchResult(`Displaying visual data for: ${data.title}`);
-          setSearchImage(data.url); // Set the new image
+          setSearchImage(data.url);
           setIsSearchPanelOpen(true);
         }
 
-        // --- PHASE 3: Closing the Search Panel manually ---
         if (data.status === "close_search") {
           setIsSearchPanelOpen(false);
-          setTimeout(() => setSearchImage(null), 600); // Clear image after slide-up animation
+          setTimeout(() => setSearchImage(null), 600);
         }
       }
 
-      // --- Setting the Terminal Text ---
       let textContent = data.message || data.text;
       if (data.status === "executing" && data.intent) {
         textContent = `EXEC_PROTOCOL: ${data.intent.action_type.toUpperCase()}`;
@@ -176,14 +268,16 @@ function App() {
       if (textContent) {
         let currentSpeaker = "J.A.R.V.I.S";
 
-        // Use "SYSTEM" speaker for boot sequences for a faster typewriter speed
         if (
-          ["booting", "uplinking", "uplink_established"].includes(data.status)
+          ["booting", "uplinking", "uplink_established", "offline"].includes(
+            data.status,
+          )
         ) {
           currentSpeaker = "SYSTEM";
         } else if (
-          data.status === "calibrating" ||
-          data.status === "listening"
+          ["calibrating", "listening", "security_listening"].includes(
+            data.status,
+          )
         ) {
           currentSpeaker = "USER";
         } else if (
@@ -217,9 +311,21 @@ function App() {
     }
   };
 
+  const isTvOnline = tvData.status === "online";
+  const isTvOn = tvData.power === "on";
+  const tvStatusColor =
+    tvData.status === "standby"
+      ? "#888"
+      : isTvOnline
+        ? isTvOn
+          ? "#10B981"
+          : "#F59E0B"
+        : "#EF4444";
+
+  const showSystemLog = hasWokenUp || status.startsWith("security_");
+
   return (
     <div className="dashboard-container">
-      {/* Existing Widgets... */}
       <Widget
         title="📍 LOCATION"
         defaultPos={{ x: 40, y: 40 }}
@@ -235,7 +341,7 @@ function App() {
 
       <Widget
         title="HARDWARE TELEMETRY"
-        defaultPos={{ x: 40, y: 300 }}
+        defaultPos={{ x: 40, y: 250 }}
         delayIndex={2}
         hasWokenUp={hasWokenUp}
       >
@@ -252,6 +358,78 @@ function App() {
           <div className="status-item">
             <Bluetooth size={16} color="#00ffcc" /> <span>AUDIO_ON</span>
           </div>
+        </div>
+      </Widget>
+
+      <Widget
+        title="TV UPLINK 📺"
+        defaultPos={{ x: 40, y: 430 }}
+        delayIndex={5}
+        hasWokenUp={hasWokenUp}
+      >
+        <div
+          style={{
+            fontFamily: "monospace",
+            lineHeight: "1.8",
+            fontSize: "14px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justify: "space-between",
+              marginBottom: "8px",
+            }}
+          >
+            <span>NETWORK:</span>
+            <span style={{ color: tvStatusColor, fontWeight: "bold" }}>
+              {tvData.status.toUpperCase()}
+            </span>
+          </div>
+          {isTvOnline && (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span>POWER:</span>
+                <span style={{ color: isTvOn ? "#00ffcc" : "#F59E0B" }}>
+                  {tvData.power.toUpperCase()}
+                </span>
+              </div>
+              {isTvOn && (
+                <div
+                  style={{
+                    display: "flex",
+                    justify: "space-between",
+                    marginTop: "4px",
+                  }}
+                >
+                  <span>ACTIVE:</span>
+                  <span style={{ color: "#3B82F6", fontWeight: "bold" }}>
+                    {tvData.app}
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+
+          <button
+            onClick={fetchTvStatus}
+            disabled={isPollingTv}
+            style={{
+              width: "100%",
+              padding: "8px",
+              marginTop: "12px",
+              backgroundColor: isPollingTv ? "#333" : "#1E3A8A",
+              color: "#FFF",
+              border: "1px solid #3B82F6",
+              borderRadius: "4px",
+              cursor: isPollingTv ? "wait" : "pointer",
+              fontFamily: "monospace",
+              fontWeight: "bold",
+              transition: "background-color 0.2s",
+            }}
+          >
+            {isPollingTv ? "SCANNING NETWORK..." : "SCAN TV STATUS"}
+          </button>
         </div>
       </Widget>
 
@@ -312,7 +490,6 @@ function App() {
           </div>
           <div className="weather-display">
             <Sun size={24} color="#ffcc00" />
-            {/* Dynamic Weather Binding */}
             <h2>{weather.temp}°C</h2>
           </div>
           <div className="stats-row">
@@ -340,37 +517,34 @@ function App() {
       <div
         className={`greeting-box ${hasWokenUp ? "fade-in" : "hidden-start"}`}
       >
-        <h2>{getGreeting()}</h2>
+        <h2>{getSmartGreeting()}</h2>
         <p>Standing by for instructions.</p>
         <span className="signature">- J.A.R.V.I.S. -</span>
       </div>
 
-      {/* --- PHASE 3: The Secondary HUD (Text + Image) --- */}
       <div
         className={`satellite-panel ${isSearchPanelOpen ? "panel-open" : "panel-closed"}`}
       >
         <div className="panel-header">SATELLITE DATA LINK</div>
         <div className="panel-body">
-          {/* If there is an image, display it */}
           {searchImage && (
             <div className="image-container">
               <img src={searchImage} alt="Search Result" />
             </div>
           )}
-          {/* Using a separate typewriter hook so it types out slowly as he reads it */}
           <p className="search-text">{useTypewriter(searchResult, 40)}</p>
         </div>
       </div>
 
-      {/* --- PHASE 2: The Animated Terminal --- */}
       <div
-        className={`system-log-horizontal ${hasWokenUp ? "slide-up" : "hidden-start"}`}
+        className={`system-log-horizontal ${showSystemLog ? "slide-up" : "hidden-start"}`}
       >
         <div className="log-header">
-          {/* Loader animation when thinking */}
           <span
             className={
-              status === "processing_llm" ? "spinner-dot" : "pulse-dot"
+              status.includes("processing") || status.includes("locked")
+                ? "spinner-dot"
+                : "pulse-dot"
             }
           ></span>
           SYSTEM_LOG // STATUS: {status.toUpperCase()}
