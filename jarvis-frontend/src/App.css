@@ -1,0 +1,425 @@
+/* ==========================================================================
+   1. VARIABLES & THEME
+   ========================================================================== */
+/* ==========================================================================
+   2. BASE STYLES & BACKGROUND
+   ========================================================================== */
+body {
+  margin: 0;
+  background-color: #020b12;
+  color: #00ffcc;
+  font-family: "Orbitron", sans-serif;
+  overflow: hidden;
+  /* Honeycomb background */
+  background-image: linear-gradient(30deg, rgba(0, 255, 204, 0.03) 12%, transparent 12.5%, transparent 87%, rgba(0, 255, 204, 0.03) 87.5%, rgba(0, 255, 204, 0.03)), linear-gradient(150deg, rgba(0, 255, 204, 0.03) 12%, transparent 12.5%, transparent 87%, rgba(0, 255, 204, 0.03) 87.5%, rgba(0, 255, 204, 0.03)), linear-gradient(30deg, rgba(0, 255, 204, 0.03) 12%, transparent 12.5%, transparent 87%, rgba(0, 255, 204, 0.03) 87.5%, rgba(0, 255, 204, 0.03)), linear-gradient(150deg, rgba(0, 255, 204, 0.03) 12%, transparent 12.5%, transparent 87%, rgba(0, 255, 204, 0.03) 87.5%, rgba(0, 255, 204, 0.03)), linear-gradient(60deg, rgba(0, 255, 204, 0.03) 25%, transparent 25.5%, transparent 75%, rgba(0, 255, 204, 0.03) 75%, rgba(0, 255, 204, 0.03)), linear-gradient(60deg, rgba(0, 255, 204, 0.03) 25%, transparent 25.5%, transparent 75%, rgba(0, 255, 204, 0.03) 75%, rgba(0, 255, 204, 0.03));
+  background-size: 80px 140px;
+  background-position: 0 0, 0 0, 40px 70px, 40px 70px, 0 0, 40px 70px;
+}
+
+.dashboard-container {
+  height: 100vh;
+  width: 100vw;
+  position: relative;
+}
+
+/* ==========================================================================
+   3. DRAGGABLE WIDGETS
+   ========================================================================== */
+.widget {
+  position: absolute;
+  background: rgba(4, 18, 28, 0.85);
+  border: 1px solid rgba(0, 255, 204, 0.3);
+  border-radius: 8px 20px 8px 20px;
+  padding: 15px 20px;
+  width: 260px;
+  box-shadow: 0 0 15px rgba(0, 0, 0, 0.8);
+}
+.widget.move-mode-active {
+  border-color: #00ffcc;
+  box-shadow: 0 0 20px rgba(0, 255, 204, 0.3);
+  cursor: grab;
+  z-index: 100;
+}
+.widget .move-badge {
+  position: absolute;
+  top: -25px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #00ffcc;
+  color: black;
+  font-size: 0.6rem;
+  font-weight: bold;
+  padding: 3px 10px;
+  border-radius: 4px;
+  letter-spacing: 1px;
+}
+.widget .panel-header {
+  font-size: 0.7rem;
+  letter-spacing: 2px;
+  color: rgba(0, 255, 204, 0.8);
+  margin-bottom: 15px;
+  border-bottom: 1px solid rgba(0, 255, 204, 0.2);
+  padding-bottom: 8px;
+}
+
+/* ==========================================================================
+   4. WIDGET CONTENT (Telemetry, Checklists, Info)
+   ========================================================================== */
+.loc-data h3 {
+  margin: 0 0 5px 0;
+  font-size: 1.2rem;
+}
+.loc-data p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.8rem;
+}
+.loc-data .coords {
+  margin-top: 15px;
+  font-size: 0.7rem;
+  color: rgba(0, 255, 204, 0.6);
+  background: rgba(0, 255, 204, 0.05);
+  padding: 5px;
+  text-align: center;
+  border-radius: 4px;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 15px;
+  font-size: 0.7rem;
+}
+.status-grid .status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.checklist {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.checklist li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 12px;
+  letter-spacing: 1px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dot.on {
+  background: #00ffcc;
+  box-shadow: 0 0 8px #00ffcc;
+}
+.dot.off {
+  background: #333;
+}
+
+.info-panel-content {
+  text-align: center;
+}
+.info-panel-content .time-display h1 {
+  font-size: 2.3rem;
+  margin: 0 0 10px 0;
+  text-shadow: 0 0 10px #00ffcc;
+}
+.info-panel-content .time-display p {
+  font-size: 0.7rem;
+  margin: 0 0 20px 0;
+  color: rgba(255, 255, 255, 0.6);
+}
+.info-panel-content .weather-display {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.info-panel-content .weather-display h2 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+.info-panel-content .stats-row {
+  display: flex;
+  justify-content: space-around;
+  font-size: 1.2rem;
+  border-top: 1px solid rgba(0, 255, 204, 0.2);
+  padding-top: 15px;
+}
+.info-panel-content .stats-row span {
+  font-size: 0.6rem;
+  color: rgba(0, 255, 204, 0.6);
+  letter-spacing: 1px;
+}
+
+/* ==========================================================================
+   5. CENTER CORE & LOG
+   ========================================================================== */
+.center-visualizer {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -60%);
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  border: 1px dashed rgba(0, 255, 204, 0.2);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.greeting-box {
+  position: absolute;
+  bottom: 150px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(4, 18, 28, 0.9);
+  border: 1px solid #00ffcc;
+  padding: 15px 40px;
+  border-radius: 8px;
+  text-align: center;
+  box-shadow: inset 0 0 20px rgba(0, 255, 204, 0.1);
+}
+.greeting-box h2 {
+  margin: 0 0 5px 0;
+  letter-spacing: 2px;
+  text-shadow: 0 0 8px #00ffcc;
+}
+.greeting-box p {
+  margin: 0 0 10px 0;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.5);
+  font-style: italic;
+}
+.greeting-box .signature {
+  font-size: 0.6rem;
+  letter-spacing: 4px;
+  color: rgba(0, 255, 204, 0.4);
+}
+
+.system-log-horizontal {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  width: 500px;
+  background: rgba(4, 18, 28, 0.95);
+  border: 1px solid rgba(0, 255, 204, 0.4);
+  border-left: 4px solid #00ffcc;
+  padding: 10px 15px;
+}
+.system-log-horizontal .log-header {
+  font-size: 0.65rem;
+  color: rgba(0, 255, 204, 0.8);
+  letter-spacing: 2px;
+  border-bottom: 1px solid rgba(0, 255, 204, 0.2);
+  padding-bottom: 5px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.system-log-horizontal .log-header .pulse-dot {
+  width: 6px;
+  height: 6px;
+  background: #ff3366;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+.system-log-horizontal .log-header .spinner-dot {
+  width: 8px;
+  height: 8px;
+  border: 2px solid rgba(0, 255, 204, 0.2);
+  border-top-color: #00ffcc;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+.system-log-horizontal .log-text {
+  font-size: 1rem;
+  color: #00ffcc;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.system-log-horizontal .log-text .speaker-tag {
+  color: #ff3366;
+  font-size: 0.8rem;
+}
+.system-log-horizontal .log-text .cursor-block {
+  width: 10px;
+  height: 18px;
+  background: #00ffcc;
+  animation: blink 1s infinite;
+}
+
+/* ==========================================================================
+   6. SECONDARY HUD WINDOW (Top-Center)
+   ========================================================================== */
+.satellite-panel {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 500px;
+  background: rgba(4, 18, 28, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 255, 204, 0.4);
+  border-top: 4px solid #ff3366;
+  border-radius: 4px 4px 15px 15px;
+  padding: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), inset 0 0 20px rgba(0, 255, 204, 0.1);
+  z-index: 50;
+  transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.satellite-panel.panel-closed {
+  opacity: 0;
+  transform: translate(-50%, -150%);
+  pointer-events: none;
+}
+.satellite-panel.panel-open {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.satellite-panel .panel-header {
+  font-size: 0.75rem;
+  color: #ff3366;
+  letter-spacing: 3px;
+  margin-bottom: 15px;
+  border-bottom: 1px dashed rgba(255, 51, 102, 0.4);
+  padding-bottom: 8px;
+  text-align: center;
+}
+.satellite-panel {
+  /* NEW: Image Container Styles */
+}
+.satellite-panel .image-container {
+  width: 100%;
+  max-height: 250px;
+  margin-bottom: 15px;
+  border: 1px solid rgba(0, 255, 204, 0.3);
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+.satellite-panel .image-container img {
+  max-width: 100%;
+  max-height: 250px;
+  -o-object-fit: contain;
+     object-fit: contain;
+  filter: drop-shadow(0 0 8px rgba(0, 255, 204, 0.2));
+}
+.satellite-panel .panel-body .search-text {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 0 5px rgba(0, 255, 204, 0.3);
+  margin: 0;
+  text-align: justify;
+}
+
+/* ==========================================================================
+   7. CINEMATIC ANIMATIONS
+   ========================================================================== */
+.hidden-start {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.blob-loading {
+  opacity: 0;
+  transform: translate(-50%, -60%) scale(0.1);
+  transition: all 0s;
+}
+
+.blob-ready {
+  opacity: 1;
+  transform: translate(-50%, -60%) scale(1);
+  transition: opacity 1.5s ease-in, transform 2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.widget-sleep {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.widget-awake {
+  animation: widgetFadeIn 0.7s ease-out forwards;
+}
+.widget-awake .widget-content {
+  opacity: 0;
+  animation: contentFadeIn 0.5s ease-out forwards;
+}
+
+.fade-in {
+  opacity: 0;
+  animation: contentFadeIn 1s ease-out forwards;
+  animation-delay: 1s;
+}
+
+.slide-up {
+  opacity: 0;
+  animation: terminalSlideUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Keyframes */
+@keyframes terminalSlideUp {
+  0% {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes widgetFadeIn {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes contentFadeIn {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 5px #ff3366;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}/*# sourceMappingURL=App.css.map */
