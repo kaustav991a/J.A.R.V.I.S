@@ -1,0 +1,106 @@
+.face-scan-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: rgba(4, 18, 28, 0.9);
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  backdrop-filter: blur(8px);
+}
+
+.scan-reticle {
+  position: relative;
+  width: 400px;
+  height: 400px;
+  margin-bottom: 40px;
+  
+  .bracket {
+    position: absolute;
+    width: 60px;
+    height: 60px;
+    border: 4px solid #00ffcc;
+    opacity: 0.8;
+    box-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+    
+    &.top-left { top: 0; left: 0; border-right: none; border-bottom: none; }
+    &.top-right { top: 0; right: 0; border-left: none; border-bottom: none; }
+    &.bottom-left { bottom: 0; left: 0; border-right: none; border-top: none; }
+    &.bottom-right { bottom: 0; right: 0; border-left: none; border-top: none; }
+  }
+}
+
+.scan-laser {
+  position: absolute;
+  width: 100%;
+  height: 4px;
+  background: #ff3366;
+  box-shadow: 0 0 20px #ff3366, 0 0 40px #ff3366;
+  top: 0;
+  left: 0;
+  animation: laserSweep 2s ease-in-out infinite alternate;
+}
+
+.scan-grid {
+  position: absolute;
+  top: 10%;
+  left: 10%;
+  width: 80%;
+  height: 80%;
+  background-image: 
+    linear-gradient(rgba(0, 255, 204, 0.2) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 204, 0.2) 1px, transparent 1px);
+  background-size: 20px 20px;
+  border-radius: 50%;
+  opacity: 0.5;
+  animation: pulseGrid 3s infinite;
+}
+
+.scan-points {
+  position: absolute;
+  top: 0; left: 0; width: 100%; height: 100%;
+  .scan-point {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    background: #00ffcc;
+    border-radius: 50%;
+    box-shadow: 0 0 8px #00ffcc;
+    animation: pointBlink 1.5s infinite alternate;
+  }
+}
+
+.scan-status-text {
+  color: #00ffcc;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 24px;
+  font-weight: bold;
+  letter-spacing: 4px;
+  text-shadow: 0 0 10px rgba(0, 255, 204, 0.8);
+  animation: pulseText 1s infinite alternate;
+}
+
+@keyframes laserSweep {
+  0% { top: 5%; }
+  100% { top: 95%; }
+}
+
+@keyframes pulseGrid {
+  0% { transform: scale(0.95); opacity: 0.3; }
+  50% { transform: scale(1.05); opacity: 0.6; }
+  100% { transform: scale(0.95); opacity: 0.3; }
+}
+
+@keyframes pointBlink {
+  0% { opacity: 0.2; transform: scale(0.5); }
+  100% { opacity: 1; transform: scale(1.5); }
+}
+
+@keyframes pulseText {
+  0% { opacity: 0.6; }
+  100% { opacity: 1; text-shadow: 0 0 20px rgba(0, 255, 204, 1); }
+}

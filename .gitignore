@@ -1,6 +1,9 @@
 # Backend
 jarvis-backend/venv/
 jarvis-backend/__pycache__/
+jarvis-backend/logs/
+jarvis-backend/jarvis_chroma_db/
+jarvis-backend/credentials/
 *.pyc
 
 # Frontend
@@ -9,3 +12,4 @@ jarvis-frontend/dist/
 
 # OS Files
 .DS_Store
+.env

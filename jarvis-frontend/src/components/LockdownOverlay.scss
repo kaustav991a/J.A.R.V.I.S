@@ -1,0 +1,92 @@
+.lockdown-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: rgba(255, 0, 0, 0.15);
+  z-index: 9999;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  animation: lockdownPulse 2s infinite alternate;
+  pointer-events: none;
+
+  .lockdown-borders {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    border: 20px solid transparent;
+    border-image: repeating-linear-gradient(
+      45deg,
+      #ff0000,
+      #ff0000 20px,
+      #000000 20px,
+      #000000 40px
+    ) 20;
+    opacity: 0.8;
+  }
+
+  .lockdown-content {
+    background: rgba(0, 0, 0, 0.9);
+    border: 2px solid #ff0000;
+    box-shadow: 0 0 50px rgba(255, 0, 0, 0.5);
+    padding: 40px 80px;
+    text-align: center;
+    border-radius: 8px;
+    animation: contentSlam 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+
+    .hazard-icon {
+      font-size: 4rem;
+      margin-bottom: 10px;
+      animation: blink 1s infinite;
+    }
+
+    .lockdown-title {
+      color: #ff0000;
+      font-family: "Orbitron", sans-serif;
+      font-size: 2.5rem;
+      margin: 0 0 10px 0;
+      letter-spacing: 4px;
+      text-shadow: 0 0 20px #ff0000;
+    }
+
+    .lockdown-subtitle {
+      color: #ffaa00;
+      font-family: "Orbitron", sans-serif;
+      font-size: 1.2rem;
+      margin: 0 0 30px 0;
+      letter-spacing: 6px;
+    }
+
+    .lockdown-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 15px;
+      
+      .grid-cell {
+        background: rgba(255, 0, 0, 0.1);
+        border: 1px solid rgba(255, 0, 0, 0.4);
+        padding: 10px;
+        color: #fff;
+        font-family: monospace;
+        font-size: 0.9rem;
+        letter-spacing: 1px;
+      }
+    }
+  }
+}
+
+@keyframes lockdownPulse {
+  0% { background-color: rgba(255, 0, 0, 0.1); }
+  100% { background-color: rgba(255, 0, 0, 0.3); }
+}
+
+@keyframes contentSlam {
+  0% { transform: scale(1.5); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; filter: drop-shadow(0 0 10px #ff0000); }
+  50% { opacity: 0.3; filter: none; }
+}
