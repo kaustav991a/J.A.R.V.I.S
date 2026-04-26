@@ -11,10 +11,13 @@
   },
   "dependencies": {
     "framer-motion": "^12.38.0",
+    "gsap": "^3.15.0",
     "lucide-react": "^1.8.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "sass": "^1.99.0"
+    "react-draggable": "^4.5.0",
+    "sass": "^1.99.0",
+    "three": "^0.184.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

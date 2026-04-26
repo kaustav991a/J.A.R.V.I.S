@@ -139,7 +139,7 @@ export default function Visualizer({ status }) {
       alpha: true,
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.setPixelRatio(1.0); // 1.0 limits the pixel density to prevent GPU/CPU spikes on high-res displays
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 0.9;
 
@@ -212,7 +212,8 @@ export default function Visualizer({ status }) {
     const pointLight = new THREE.PointLight(0x00ffcc, 2.0, 10);
     mainGroup.add(pointLight);
 
-    const shellGeo = new THREE.SphereGeometry(1.0, 64, 64);
+    // Optimized from 64x64 to 32x32 to drastically reduce vertex calculations
+    const shellGeo = new THREE.SphereGeometry(1.0, 32, 32);
     const shellMat = new THREE.ShaderMaterial({
       vertexShader: `
             uniform float uSpike;
@@ -257,7 +258,8 @@ export default function Visualizer({ status }) {
     mainGroup.add(shellMesh);
 
     // --- PLASMA (Core) ---
-    const plasmaGeo = new THREE.SphereGeometry(0.998, 64, 64);
+    // Optimized from 64x64 to 32x32
+    const plasmaGeo = new THREE.SphereGeometry(0.998, 32, 32);
     const plasmaMat = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
@@ -383,7 +385,6 @@ export default function Visualizer({ status }) {
     mainGroup.add(new THREE.Points(pGeo, pMat));
 
     // --- ANIMATION LOOP ---
-    const clock = new THREE.Clock();
     let currentParams = {
       timeScale: 0.1,
       brightness: 0.2,
@@ -392,9 +393,18 @@ export default function Visualizer({ status }) {
     };
     let currentSpike = 0;
     let animationFrameId;
+    const clock = new THREE.Clock();
+    let lastTime = 0;
+    const targetFPS = 30;
+    const frameDelay = 1000 / targetFPS;
 
-    function animate() {
+    function animate(time) {
       animationFrameId = requestAnimationFrame(animate);
+      
+      // FPS Throttle
+      if (time - lastTime < frameDelay) return;
+      lastTime = time;
+
       const t = clock.getElapsedTime();
 
       let volumeBoost = 0;
@@ -467,7 +477,7 @@ export default function Visualizer({ status }) {
       renderer.render(scene, camera);
     }
 
-    animate();
+    requestAnimationFrame(animate);
 
     return () => {
       cancelAnimationFrame(animationFrameId);
