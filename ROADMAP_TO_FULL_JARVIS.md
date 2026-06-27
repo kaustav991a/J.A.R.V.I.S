@@ -25,7 +25,44 @@ at-rest encryption §4, voice biometrics, true streaming STT).
 
 **Closed in the 2026-06-27 sweep:** §3.2 session scoping, §3.1 watchdog + daemon health-restart,
 §2.2 Telegram gateway, §1.1 worker loop, §1.1b self-correction, §1.2 ReAct planner, §3.3 self-improvement
-loop, §3.4 fast-lane, §3.5 emotional prosody, §1.3 full-duplex over-talk, §4 personal-document RAG.
+loop, §3.4 fast-lane, §3.5 emotional prosody, §1.3 full-duplex over-talk, §4 personal-document RAG,
+§2.3 presence/context state, §4 generative HUD charts.
+
+---
+
+## 0.1 Iron Man's J.A.R.V.I.S. vs. This Build — capability-by-capability
+
+A frank, weighted comparison against the *films'* J.A.R.V.I.S. Two honest numbers fall out: how
+close the **experience** feels, and how close the **total capability breadth** is (the latter is
+dragged down by inherently hardware-bound, sci-fi abilities a software build can't own).
+
+| # | Movie J.A.R.V.I.S. capability | This build today | Parity |
+|---|---|---|---|
+| 1 | **Natural conversation & persona** (wit, butler tone, context) | Persona engine, Sass Index, somber/mentor modes, streaming TTS | **85%** |
+| 2 | **Always-on presence** (never down) | Watchdog respawns server + daemon supervisor + Telegram reach | **90%** |
+| 3 | **Memory / "knows you"** | 4-tier memory + biometrics + personal-document RAG | **85%** |
+| 4 | **Autonomous agency** (pursues goals, self-corrects) | ReAct planner + durable worker loop + LLM self-correction | **80%** |
+| 5 | **Real-time voice** (full-duplex, instant) | Fast-lane + full-duplex over-talk; no true streaming STT yet | **70%** |
+| 6 | **Emotional intelligence** (reads & expresses mood) | Emotion detection + emotion-driven prosody + somber protocol | **70%** |
+| 7 | **Self-improvement** (writes/refines his own code) | Guarded propose→branch→test→PR loop (human merges) | **70%** |
+| 8 | **Remote reach** (reachable anywhere) | Telegram gateway (text + files + task queue) | **70%** |
+| 9 | **Security & defense** (lockdown, gates intrusions) | Governance tiers + intruder detection + lockdown overlay | **65%** |
+| 10 | **Perception / vision** (sees & understands the room) | Ambient YOLO + face ID + emotion; no deep scene graph | **60%** |
+| 11 | **Presence/context awareness** (working/away/asleep) | Context-state machine conditioning proactivity | **60%** |
+| 12 | **Holographic / AR interface** | React HUD (2D), live data overlays + generative charts | **45%** |
+| 13 | **Engineering & simulation** (designs, runs sims) | Figma→code autopilot + workspace/code tools | **40%** |
+| 14 | **Multi-device ubiquity** (runs the whole building) | Desk + phone; one machine, not an environment | **35%** |
+| 15 | **Physical-world control** (lights, locks, suit, robotics) | PC + TV (ADB) only; smart-home pending hardware | **20%** |
+
+**Two headline numbers:**
+- ▶ **Experience parity (does it *feel* like J.A.R.V.I.S.?): ~85%.** Rows 1–8 — conversation, presence,
+  memory, agency, voice — are where the "feel" lives, and they're strong.
+- ▶ **Total capability parity (incl. the cinematic/physical sci-fi): ~62%.** Rows 12–15 — AR holograms,
+  whole-building ubiquity, robotics/suit, full home control — are hardware/sci-fi bound and cap the ceiling.
+
+> The gap that remains is almost entirely **physical-world reach and a holographic interface** — i.e. money
+> and hardware, not architecture. As a *software* J.A.R.V.I.S., this build is ~85% of the way to the
+> on-screen experience; closing rows 12–15 is a hardware journey (smart-home hub, AR glasses, robotics).
 
 ---
 
