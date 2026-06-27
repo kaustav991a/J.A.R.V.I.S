@@ -19,6 +19,7 @@
     "workspace_patch":       "AUTO",
     "telegram_send_file":    "AUTO",
     "search_documents":      "AUTO",
+    "render_chart":          "AUTO",
     "memory_recall":         "AUTO",
     "web_search":            "AUTO",
     "tavily_search":         "AUTO",

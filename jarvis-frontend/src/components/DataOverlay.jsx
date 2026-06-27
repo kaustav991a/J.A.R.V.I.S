@@ -9,24 +9,120 @@ import { X } from "lucide-react";
  * @param {{ ui_action: string, data: unknown[] } | null} data
  * @param {() => void} onClose
  */
+/**
+ * Inline-SVG chart for `render_chart` payloads — no external chart lib (CSP-safe).
+ * points: [{ label, value }, ...]; type: 'bar' | 'line' | 'pie'.
+ */
+function HudChart({ type = "bar", points = [] }) {
+  const data = (Array.isArray(points) ? points : [])
+    .map((p) => ({ label: String(p?.label ?? ""), value: Number(p?.value) || 0 }))
+    .slice(0, 24);
+  if (!data.length) {
+    return <p className="px-2 font-mono text-xs text-cyan-300/50">No data to plot.</p>;
+  }
+  const W = 380;
+  const H = 220;
+  const max = Math.max(...data.map((d) => d.value), 1);
+  const CYAN = "#22d3ee";
+
+  if (type === "pie") {
+    const total = data.reduce((s, d) => s + Math.max(d.value, 0), 0) || 1;
+    let acc = 0;
+    const cx = 110, cy = 110, r = 90;
+    const slices = data.map((d, i) => {
+      const frac = Math.max(d.value, 0) / total;
+      const a0 = acc * 2 * Math.PI - Math.PI / 2;
+      acc += frac;
+      const a1 = acc * 2 * Math.PI - Math.PI / 2;
+      const large = frac > 0.5 ? 1 : 0;
+      const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+      const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+      const hue = (i * 47) % 360;
+      return (
+        <path key={i} d={`M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${large} 1 ${x1},${y1} Z`}
+          fill={`hsl(${180 + hue / 3}, 80%, ${45 + (i % 4) * 8}%)`} stroke="#0b1220" strokeWidth="1.5" />
+      );
+    });
+    return (
+      <div className="px-1">
+        <svg viewBox="0 0 220 220" className="mx-auto block w-[70%]">{slices}</svg>
+        <ul className="mt-3 space-y-1">
+          {data.map((d, i) => (
+            <li key={i} className="flex justify-between font-mono text-xs text-cyan-100/85">
+              <span className="truncate">{d.label}</span>
+              <span className="tabular-nums text-cyan-300/75">{d.value}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  if (type === "line") {
+    const stepX = W / Math.max(data.length - 1, 1);
+    const pts = data.map((d, i) => `${i * stepX},${H - (d.value / max) * (H - 30) - 10}`);
+    return (
+      <div className="px-1">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
+          <polyline fill="none" stroke={CYAN} strokeWidth="2" points={pts.join(" ")} />
+          {data.map((d, i) => (
+            <circle key={i} cx={i * stepX} cy={H - (d.value / max) * (H - 30) - 10} r="3" fill={CYAN} />
+          ))}
+        </svg>
+        <div className="mt-1 flex justify-between font-mono text-[9px] text-cyan-300/50">
+          <span>{data[0].label}</span><span>{data[data.length - 1].label}</span>
+        </div>
+      </div>
+    );
+  }
+
+  // bar (default)
+  const bw = W / data.length;
+  return (
+    <div className="px-1">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
+        {data.map((d, i) => {
+          const h = (d.value / max) * (H - 34);
+          return (
+            <g key={i}>
+              <rect x={i * bw + bw * 0.15} y={H - h - 18} width={bw * 0.7} height={h}
+                fill={CYAN} opacity="0.8" rx="2" />
+              <text x={i * bw + bw / 2} y={H - 4} textAnchor="middle"
+                fill="#7dd3fc" fontSize="8" fontFamily="monospace">
+                {d.label.length > 6 ? d.label.slice(0, 6) : d.label}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 function DataOverlay({ data, onClose }) {
   if (!data || !data.ui_action) return null;
 
   const rows = Array.isArray(data.data) ? data.data : [];
+
+  const isChart = data.ui_action === "render_chart";
 
   const title =
     data.ui_action === "render_file_list"
       ? "FILE MANIFEST"
       : data.ui_action === "render_process_list"
         ? "PROCESS MATRIX"
-        : "DATA FEED";
+        : isChart
+          ? String(data.title || "DATA VISUAL").toUpperCase()
+          : "DATA FEED";
 
   const subtitle =
     data.ui_action === "render_file_list"
       ? "ARCHIVE INDEX // LOCAL VOLUME"
       : data.ui_action === "render_process_list"
         ? "RUNTIME SIGNATURE // MEMORY FOOTPRINT"
-        : `${data.ui_action.toUpperCase().replace(/_/g, " ")}`;
+        : isChart
+          ? `VISUAL ANALYSIS // ${String(data.chart_type || "bar").toUpperCase()}`
+          : `${data.ui_action.toUpperCase().replace(/_/g, " ")}`;
 
   return (
     <motion.div
@@ -75,6 +171,8 @@ function DataOverlay({ data, onClose }) {
         </header>
 
         <div className="scrollbar-data-overlay min-h-0 flex-1 overflow-y-auto px-3 py-3">
+          {isChart && <HudChart type={data.chart_type} points={rows} />}
+          {!isChart && (
           <ul className="space-y-2 pr-1">
             {data.ui_action === "render_file_list" &&
               rows.map((item, index) => (
@@ -130,6 +228,7 @@ function DataOverlay({ data, onClose }) {
                 </li>
               ))}
           </ul>
+          )}
         </div>
 
         <footer className="shrink-0 border-t border-cyan-500/20 px-5 py-3">

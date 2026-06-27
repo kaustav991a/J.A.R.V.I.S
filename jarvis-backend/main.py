@@ -913,6 +913,17 @@ class UIStateRequest(BaseModel):
     message: str = ""
     user: str = "KAUSTAV"
 
+@app.get("/api/context")
+async def get_context():
+    """Current presence/context state (WORKING/RELAXING/AWAY/ASLEEP/IDLE) — §2.3."""
+    from modules.context_state import context_state
+    secs = None
+    if _last_command_time is not None:
+        secs = (_dt.datetime.now() - _last_command_time).total_seconds()
+    state = context_state.current(seconds_since_command=secs)
+    return {"state": state, "since": context_state.changed_at}
+
+
 @app.post("/api/ui_state")
 async def update_ui_state(req: UIStateRequest):
     """Allows external daemons (like the Phase 8 streaming daemon) to update the React UI."""
@@ -1718,7 +1729,7 @@ async def backdoor_command(req: BackdoorRequest):
                                 try:
                                     _parsed_result = json.loads(result_str)
                                     _ua = _parsed_result.get("ui_action", "")
-                                    if _ua in ("render_file_list", "render_process_list"):
+                                    if _ua in ("render_file_list", "render_process_list", "render_chart"):
                                         _ui_action_payload = _parsed_result
                                 except (json.JSONDecodeError, AttributeError):
                                     pass

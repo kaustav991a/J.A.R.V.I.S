@@ -133,6 +133,7 @@ Available Actions for JSON Output:
 - "remember_fact": target="Category: fact details".
 - "telegram_send_file": send a file/document to the operator's phone via Telegram. target=filepath, OR {"path": filepath, "caption": "short note"}. Use when the user (especially over a remote channel) asks you to "send me", "text me", or "deliver" a file/report/document.
 - "search_documents": semantic search over the user's OWN indexed notes/documents. target=query. Use for "what did I write/decide about X", "find my notes on Y", "search my documents for Z".
+- "render_chart": visualise structured data on the HUD as a chart. target={"title":"...","type":"bar"|"line"|"pie","data":[{"label":"Mon","value":12},...]}. Use when the user says "chart/graph/plot/visualise this" or "show it on screen" for numeric data.
 - "self_improve": propose a code change to your OWN codebase, apply it on a branch, run tests, and open a PR for review (never merges). target="what to improve". Use when the user asks you to improve/fix/refactor your own code or add a feature to yourself. (CONFIRM-tier.)
 - "web_search": target=search query. (Deeper/multi-result research; also auto-uses Tavily when configured.)
 - "tavily_search": FAST AI lookup — PREFER this for quick factual questions, definitions, current events, prices, and "what is / who is / when is / latest" queries where you just need the answer (not a page to interact with). target=search query. AUTO tier.
@@ -736,6 +737,12 @@ Output ONLY raw JSON. No markdown, no explanation."""
         try:
             import speaker as _spk
             _spk.set_emotion(_emotion, sass_index)
+        except Exception:
+            pass
+        # §2.3: feed the intent to the context-state machine (conditions proactivity).
+        try:
+            from modules.context_state import context_state as _ctx
+            _ctx.note_intent(parsed.get("intent"))
         except Exception:
             pass
 

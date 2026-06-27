@@ -257,8 +257,18 @@ class ProactiveAgent:
         # 6. TIME-AWARE AMBIENT MESSAGES (Low Priority)
         # ==========================================
         if not self.is_focus_mode_active and now - self.last_ambient_time > self.ambient_cooldown:
+            # §2.3: context gate — stay quiet when WORKING/AWAY/ASLEEP. Ambient
+            # chatter is low-priority, so only RELAXING/IDLE lets it through.
+            _ctx_ok = True
+            try:
+                from modules.context_state import context_state
+                _ctx_ok = context_state.should_offer_proactive(
+                    "low", focus_mode=self.is_focus_mode_active
+                )
+            except Exception:
+                pass
             # Guarantee a message on first boot, or 25% chance per cycle afterwards
-            if self.last_ambient_time == 0 or random.random() < 0.25:
+            if _ctx_ok and (self.last_ambient_time == 0 or random.random() < 0.25):
                 message = self._get_contextual_ambient(hour)
                 if message:
                     await self._trigger_event(message)

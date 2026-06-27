@@ -651,6 +651,9 @@ class ActionEngine:
         # ── Phase 8.2: OS Macro Engine ────────────────────────────────────────
         elif action == "os_macro":
             return self._os_macro(target)
+        # ── Generative HUD: render structured data as a chart on the HUD ─────
+        elif action == "render_chart":
+            return self._render_chart(target)
         # ── Self-Improvement: propose a code change → branch → test → PR ─────
         elif action == "self_improve":
             return await self._self_improve(target)
@@ -1284,6 +1287,52 @@ class ActionEngine:
         except Exception as e:
             print(f"[ACTION ENGINE] Workspace read failed: {e}")
             return f"Workspace read offline: {e}"
+
+    def _render_chart(self, target) -> str:
+        """
+        Generative HUD (Roadmap §4): turn structured data into a chart on the HUD.
+        Returns a `ui_action: render_chart` JSON payload that main.py broadcasts to
+        the React HUD (DataOverlay), and the synthesis path narrates "shown on screen".
+
+        Target: a dict or JSON string —
+            {"title": "...", "type": "bar"|"line"|"pie",
+             "data": [{"label": "...", "value": 12}, ...]}
+          or {"title", "type", "labels": [...], "values": [...]}
+        """
+        def _num(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
+        spec = target
+        if isinstance(target, str):
+            try:
+                spec = json.loads(target)
+            except json.JSONDecodeError:
+                spec = {"title": target, "type": "bar", "data": []}
+        if not isinstance(spec, dict):
+            spec = {"title": str(target), "type": "bar", "data": []}
+
+        title = str(spec.get("title") or "Data")
+        ctype = str(spec.get("type") or spec.get("chart_type") or "bar").lower()
+        if ctype not in ("bar", "line", "pie"):
+            ctype = "bar"
+
+        data = spec.get("data")
+        if not data and spec.get("labels") and spec.get("values"):
+            data = [{"label": str(l), "value": _num(v)}
+                    for l, v in zip(spec["labels"], spec["values"])]
+        norm = []
+        for d in (data or [])[:24]:
+            if isinstance(d, dict):
+                norm.append({"label": str(d.get("label", "")), "value": _num(d.get("value", 0))})
+        if not norm:
+            return "I don't have structured data to chart, sir."
+
+        payload = {"ui_action": "render_chart", "title": title,
+                   "chart_type": ctype, "data": norm}
+        return json.dumps(payload)
 
     async def _self_improve(self, target) -> str:
         """
