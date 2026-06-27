@@ -14,14 +14,15 @@ The real J.A.R.V.I.S. was defined by four qualities, not a feature list. Where t
 |---|---|---|---|---|
 | **Always present** (never down, reachable anywhere) | Partial | ✅ **Strong** | ~90% | Watchdog ✅ + Telegram Gateway ✅ + session scoping ✅. Remaining: in-process daemon health-restart. |
 | **Truly agentic** (pursues goals, self-corrects) | Missing | ✅ **Strong** | ~80% | Worker loop ✅ + **ReAct planner** ✅ (§1.2) + **LLM self-correction** ✅ (§1.1b). Remaining: hierarchical planning, learned strategies. |
-| **Naturally conversational** (full-duplex, instant) | Partial | ✅ **Strong** | ~80% | Fast cloud ✅ + VAD barge-in ✅ + fast-lane ✅ (§3.4) + **full-duplex over-talk** ✅ (§1.3). Remaining: true *streaming* STT + speaker-mode echo-cancel. |
+| **Naturally conversational** (full-duplex, instant) | Partial | ✅ **Strong** | ~88% | Fast cloud ✅ + barge-in ✅ + fast-lane ✅ + full-duplex over-talk ✅ + **streaming STT** ✅ + **AEC** ✅ + continuous pipeline ✅ (§1.3). Remaining: on-device AEC reference sync + tuning. |
 | **Genuinely yours** (knows you, controls your world) | Strong | ✅ **Strong** | ~75% | *Knows you* ✅✅ (biometrics + 4-tier memory + **personal-doc RAG** ✅ §4). *Controls your world* — PC + TV only; **smart-home ❌** (§2.1). |
 
-### ▶ Overall: **~85% of "the feeling of the real J.A.R.V.I.S."** (up from ~65% at the start of today)
+### ▶ Overall: **~90% of "the feeling of the real J.A.R.V.I.S."** (up from ~65% at the start of today)
 
-Presence, agency, and conversation are now strong. The biggest remaining gap is **reach into your physical
-world** (smart-home §2.1 — needs hardware) plus the polish tier (presence/context §2.3, generative HUD §4,
-at-rest encryption §4, voice biometrics, true streaming STT).
+Presence, agency, and conversation are all strong — streaming STT + AEC pushed the conversational
+experience to near-parity. The biggest remaining gap is **reach into your physical world**
+(smart-home §2.1 — needs hardware), plus thin polish (at-rest encryption §4, voice biometrics, and the
+on-device finishing of speaker-mode AEC reference sync).
 
 **Closed in the 2026-06-27 sweep:** §3.2 session scoping, §3.1 watchdog + daemon health-restart,
 §2.2 Telegram gateway, §1.1 worker loop, §1.1b self-correction, §1.2 ReAct planner, §3.3 self-improvement
@@ -42,7 +43,7 @@ dragged down by inherently hardware-bound, sci-fi abilities a software build can
 | 2 | **Always-on presence** (never down) | Watchdog respawns server + daemon supervisor + Telegram reach | **90%** |
 | 3 | **Memory / "knows you"** | 4-tier memory + biometrics + personal-document RAG | **85%** |
 | 4 | **Autonomous agency** (pursues goals, self-corrects) | ReAct planner + durable worker loop + LLM self-correction | **80%** |
-| 5 | **Real-time voice** (full-duplex, instant) | Fast-lane + full-duplex over-talk; no true streaming STT yet | **70%** |
+| 5 | **Real-time voice** (full-duplex, instant) | Fast-lane + full-duplex over-talk + streaming STT (vosk) + AEC + continuous pipeline | **85%** |
 | 6 | **Emotional intelligence** (reads & expresses mood) | Emotion detection + emotion-driven prosody + somber protocol | **70%** |
 | 7 | **Self-improvement** (writes/refines his own code) | Guarded propose→branch→test→PR loop (human merges) | **70%** |
 | 8 | **Remote reach** (reachable anywhere) | Telegram gateway (text + files + task queue) | **70%** |
@@ -55,9 +56,9 @@ dragged down by inherently hardware-bound, sci-fi abilities a software build can
 | 15 | **Physical-world control** (lights, locks, suit, robotics) | PC + TV (ADB) only; smart-home pending hardware | **20%** |
 
 **Two headline numbers:**
-- ▶ **Experience parity (does it *feel* like J.A.R.V.I.S.?): ~85%.** Rows 1–8 — conversation, presence,
-  memory, agency, voice — are where the "feel" lives, and they're strong.
-- ▶ **Total capability parity (incl. the cinematic/physical sci-fi): ~62%.** Rows 12–15 — AR holograms,
+- ▶ **Experience parity (does it *feel* like J.A.R.V.I.S.?): ~90%.** Rows 1–8 — conversation, presence,
+  memory, agency, voice — are where the "feel" lives, and after streaming STT + AEC they're strong.
+- ▶ **Total capability parity (incl. the cinematic/physical sci-fi): ~64%.** Rows 12–15 — AR holograms,
   whole-building ubiquity, robotics/suit, full home control — are hardware/sci-fi bound and cap the ceiling.
 
 > The gap that remains is almost entirely **physical-world reach and a holographic interface** — i.e. money
@@ -112,13 +113,19 @@ dragged down by inherently hardware-bound, sci-fi abilities a software build can
   code/files, GitHub, OS, search_documents). **Remaining:** step-level cost/risk budgeting and sub-plans
   (hierarchical planning) for very large goals.
 
-#### 1.3 Full-Duplex, Always-Listening Conversation — 🔶 **mostly done**
+#### 1.3 Full-Duplex, Always-Listening Conversation — ✅ **mostly done**
 - ✅ VAD-during-playback barge-in + keyword interrupts + fast cloud round-trip.
-- ✅ **Full-duplex over-talk capture (2026-06-27)**: with `JARVIS_FULL_DUPLEX=1` (headphones for echo
-  isolation), talking over J.A.R.V.I.S. stops him AND transcribes your words, handing them back as the
-  command so he adapts mid-sentence (`wakeword.py` + `main.py` voice loop).
-- ❌ **Remaining:** true *streaming* STT (interim results as you speak) and software acoustic echo
-  cancellation (so speakers work without headphones). Voice biometrics also still absent (face ID only).
+- ✅ **Full-duplex over-talk capture (2026-06-27)**: `JARVIS_FULL_DUPLEX=1` — talk over him, he stops
+  AND transcribes your words and adapts (`wakeword.py` + voice loop).
+- ✅ **True streaming STT (2026-06-27)**: `modules/streaming_stt.py` (vosk) emits partial hypotheses
+  while you speak + a final on utterance end. Falls back to batch STT if no model.
+- ✅ **Acoustic echo cancellation (2026-06-27)**: `modules/aec.py` — constrained FDAF (FFT block-NLMS)
+  with Geigel double-talk detection. Validated ~27 dB ERLE on synthetic echo, near-end preserved.
+- ✅ **Continuous pipeline (2026-06-27)**: `modules/audio_pipeline.py` — mic → AEC → VAD → streaming
+  STT → finals through `run_remote_command`; opt-in (`JARVIS_FULL_DUPLEX_PIPELINE=1`).
+- ❌ **Remaining (on-device finishing):** sample-synchronous AEC reference needs a callback-based audio
+  output path (current pygame streaming API can't expose played PCM) + real-mic delay/filter tuning.
+  Voice biometrics still absent (face ID only).
 
 ---
 
