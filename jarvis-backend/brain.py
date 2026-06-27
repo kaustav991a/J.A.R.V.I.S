@@ -257,6 +257,7 @@ focus mode toggle → enable_focus_mode/disable_focus_mode | mute/volume/lock �
 play/watch/listen **on the TV / television / big screen** → tv_play_media (THE TV EXECUTION MANDATE — JSON only; bare target if app unspecified)
 play on YouTube / Spotify / browser on **this PC** with **no TV in the sentence** → play_music (HUD / PC embed — NOT tv_play_media)
 any filename with extension (.py, .js, .exe, .txt, etc.) → workspace_read / workspace_write / workspace_patch ONLY
+ANY request to write/create/generate code, a script, a program, a function, or a class — EVEN with no file extension named, EVEN "save to my desktop/documents" → workspace_write (headless, instant). NEVER the Notepad chain (native_app_launcher/ghost_type/ghost_save_file) for code.
 
 --- KEY EXAMPLES ---
 {"actions": [{"action_type": "hud_open_widget", "target": "vitals"}]}
@@ -563,6 +564,33 @@ _ACTION_FORCE_KEYWORDS = frozenset([
 _FILE_EXT_RE = re.compile(
     r'\b\w[\w\-]*\.(py|js|jsx|ts|tsx|json|html|css|scss|md|yml|yaml|sh|bat|'
     r'cpp|c|h|java|rb|go|rs|txt|env|toml|cfg|ini|xml|sql)\b',
+    re.IGNORECASE,
+)
+
+# Heuristic: does a blob of text look like SOURCE CODE (vs dictated prose)?
+# Used by the code-file GUI-chain override guard below to keep code out of the
+# slow Notepad route and into headless workspace_write.
+_CODE_SIGNATURE_RE = re.compile(
+    r'(\bdef\s+\w+\s*\(|\bclass\s+\w+|\bimport\s+\w+|\bfrom\s+\w+\s+import\b|'
+    r'\bfunction\s+\w+\s*\(|=>|\bconsole\.log\(|\bprint\s*\(|\breturn\b|'
+    r'\bpublic\s+(static\s+)?\w+|#include\b|</?\w+>|\{\s*$|;\s*$)',
+    re.MULTILINE,
+)
+# Code-intent words in the user's request (covers the no-extension case like
+# "write a python script ... save to my desktop").
+_CODE_INTENT_WORDS = (
+    "script", "code", "program", "function", "class ", "module",
+    "snippet", "algorithm", ".py", "python file", "javascript",
+)
+# Friendly directory tokens the brain emits for ghost_save_file → absolute paths.
+_FRIENDLY_DIRS = {
+    "desktop":   os.path.join(os.path.expanduser("~"), "Desktop"),
+    "documents": os.path.join(os.path.expanduser("~"), "Documents"),
+    "downloads": os.path.join(os.path.expanduser("~"), "Downloads"),
+}
+_CODE_EXT_RE = re.compile(
+    r'\.(py|js|jsx|ts|tsx|json|html?|css|scss|md|java|c|cpp|cs|go|rs|rb|php|'
+    r'sh|bat|ps1|sql|ya?ml|toml)$',
     re.IGNORECASE,
 )
 
@@ -1137,6 +1165,43 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
                 if _verb:
                     response = json.dumps({"actions": [{"action_type": "workspace_read", "target": _fname}]})
                     print(f"[BRAIN] File-ext guard: redirected native_app_launcher -> workspace_read({_fname})")
+
+        # ── Code-file GUI-chain override guard ───────────────────────────────
+        # The Notepad chain (native_app_launcher → ghost_type → ghost_save_file)
+        # is for user-dictated PROSE only (poems, notes). If the LLM used it to
+        # save CODE, rewrite the whole batch to a single fast, headless
+        # workspace_write — no GUI, no focus races, instant and correct.
+        if '"ghost_save_file"' in response and '"ghost_type"' in response:
+            try:
+                _p = json.loads(response)
+                _acts = _p.get("actions", [])
+                _gt = next((a for a in _acts if a.get("action_type") == "ghost_type"), None)
+                _gs = next((a for a in _acts if a.get("action_type") == "ghost_save_file"), None)
+                if _gt and _gs:
+                    # Content: strip a trailing save shortcut token ("...|^s").
+                    _content = str(_gt.get("target", ""))
+                    if "|" in _content:
+                        _body, _tail = _content.rsplit("|", 1)
+                        _tail = _tail.strip()
+                        if _tail.startswith("^") or (len(_tail) <= 4 and " " not in _tail):
+                            _content = _body
+                    # Save target: "Dir|filename".
+                    _sdir, _, _sfname = str(_gs.get("target", "")).partition("|")
+                    _sfname = _sfname.strip()
+                    _is_code = (
+                        bool(_CODE_SIGNATURE_RE.search(_content))
+                        or any(w in user_lower_chk for w in _CODE_INTENT_WORDS)
+                        or bool(_CODE_EXT_RE.search(_sfname))
+                    )
+                    if _is_code and _sfname:
+                        _base = _FRIENDLY_DIRS.get(_sdir.strip().lower())
+                        _abs = os.path.join(_base, _sfname) if _base else _sfname
+                        response = json.dumps({"actions": [
+                            {"action_type": "workspace_write", "target": f"{_abs}|{_content}"}
+                        ]})
+                        print(f"[BRAIN] Code-file guard: GUI chain → workspace_write({_abs})")
+            except Exception as _ge:
+                print(f"[BRAIN] Code-file guard skipped: {_ge}")
 
         try:
             # JSON action response — do NOT store raw JSON in history (it would

@@ -507,8 +507,9 @@ class ActionEngine:
                 is_generic = all(kw in generic_keywords for kw in keywords) or not keywords
                 
                 quick_hits = []
-                import re
-                
+                # NOTE: `re` is imported at module level (line 4). A nested `import re`
+                # here would make `re` a LOCAL for the whole execute() method, breaking
+                # every other branch that uses `re` (e.g. ghost_type) with UnboundLocalError.
                 if not is_generic:
                     for m in all_memories:
                         content = m['content']
