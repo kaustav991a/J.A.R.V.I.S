@@ -666,9 +666,16 @@ async def lifespan(app: FastAPI):
     async def global_speak(text):
         asyncio.create_task(speaker.speak_text(text))
 
+    # §3.1: in-process supervisor that restarts any daemon that crashes/wedges
+    # (the standalone watchdog.py covers the whole server; this covers the daemons).
+    from modules.daemon_supervisor import DaemonSupervisor
+    # Don't restart daemons that exit cleanly during shutdown.
+    daemon_supervisor = DaemonSupervisor(should_continue=lambda: not is_shutting_down.is_set())
+
     proactive_agent = ProactiveAgent(safe_send_all, global_speak, lambda: SYSTEM_ONLINE)
-    asyncio.create_task(proactive_agent.start())
-    
+    daemon_supervisor.adopt("proactive", lambda: proactive_agent.start(),
+                            asyncio.create_task(proactive_agent.start()))
+
     # --- Phase 8.7: Start Overwatch Daemon ---
     overwatch_daemon = OverwatchDaemon(
         broadcast_callback=safe_send_all,
@@ -676,7 +683,8 @@ async def lifespan(app: FastAPI):
         is_system_online_fn=lambda: SYSTEM_ONLINE,
         active_user_fn=lambda: active_user,
     )
-    asyncio.create_task(overwatch_daemon.start())
+    daemon_supervisor.adopt("overwatch", lambda: overwatch_daemon.start(),
+                            asyncio.create_task(overwatch_daemon.start()))
     
     # --- Phase 5: Start Ambient Vision Daemon ---
     ambient_vision_daemon.start()
@@ -690,7 +698,8 @@ async def lifespan(app: FastAPI):
     from modules.routines import RoutineEngine
     engine = ActionEngine()
     routine_engine = RoutineEngine(engine.execute, global_speak)
-    asyncio.create_task(routine_engine.run_scheduler())
+    daemon_supervisor.adopt("routines", lambda: routine_engine.run_scheduler(),
+                            asyncio.create_task(routine_engine.run_scheduler()))
 
     # --- Roadmap §1.1: Start the Overnight Worker Loop (Continuous Autonomous Agency) ---
     # Drains the durable task queue, executes queued goals with self-correction, and
@@ -705,7 +714,11 @@ async def lifespan(app: FastAPI):
         # §1.1b: feed failures back to the brain for a new plan (bounded retries).
         replan_fn=planner.replan_after_failure,
     )
-    asyncio.create_task(overnight_worker.start())
+    daemon_supervisor.adopt("overnight_worker", lambda: overnight_worker.start(),
+                            asyncio.create_task(overnight_worker.start()))
+
+    # Start the health-monitor last, after all daemons are adopted.
+    asyncio.create_task(daemon_supervisor.start())
 
     # --- Telegram Remote Gateway: untether J.A.R.V.I.S. from the desk ---
     # Routes phone commands through the same run_remote_command pipeline (brain +
@@ -722,6 +735,10 @@ async def lifespan(app: FastAPI):
 
     yield
     print("\n[SYSTEM] Gracefully shutting down...")
+    # Signal shutdown FIRST so the daemon supervisor won't restart daemons that
+    # are about to exit cleanly.
+    is_shutting_down.set()
+    daemon_supervisor.is_running = False
     try:
         await telegram_bot.stop_bot()
     except Exception:

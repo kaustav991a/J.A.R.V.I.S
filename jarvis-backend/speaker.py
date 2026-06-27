@@ -20,6 +20,43 @@ USE_LOCAL_TTS = False
 
 VOICE = "en-GB-RyanNeural"
 
+# ==========================================
+# §3.5 EMOTIONAL PROSODY
+# The detected emotion (set per turn by brain.classify_intent via set_emotion)
+# shifts the BASELINE pitch/rate of synthesis, so J.A.R.V.I.S. sounds somber when
+# you're somber, brisk when things are urgent, etc. Inline [pitch:]/[rate:] tags
+# still override per-segment. A higher Sass Index nudges a touch livelier.
+# ==========================================
+_EMOTION_PROSODY = {
+    # emotion      : (pitch,    rate)
+    "CASUAL":        ("+0Hz",   "+2%"),
+    "INQUISITIVE":   ("+3Hz",   "+3%"),
+    "URGENT":        ("+6Hz",   "+12%"),
+    "FRUSTRATED":    ("-3Hz",   "+6%"),
+    "SOMBER":        ("-12Hz",  "-12%"),
+}
+_current_emotion = "CASUAL"
+_current_sass = 50
+
+
+def set_emotion(emotion: str, sass_index: int = 50) -> None:
+    """Set the prosody baseline for upcoming speech (called once per turn)."""
+    global _current_emotion, _current_sass
+    _current_emotion = (emotion or "CASUAL").upper()
+    try:
+        _current_sass = int(sass_index)
+    except (TypeError, ValueError):
+        _current_sass = 50
+
+
+def _emotion_baseline() -> tuple[str, str]:
+    """Return (pitch, rate) for the current emotion, nudged slightly by Sass Index."""
+    pitch, rate = _EMOTION_PROSODY.get(_current_emotion, _EMOTION_PROSODY["CASUAL"])
+    # High sass on a casual mood → a touch brighter/quicker.
+    if _current_emotion == "CASUAL" and _current_sass >= 70:
+        pitch, rate = "+4Hz", "+6%"
+    return pitch, rate
+
 # Global Kill Switch for Barge-In
 stop_speaking_flag = threading.Event()
 
@@ -179,10 +216,10 @@ async def _speak_cloud(text):
     text = ", " + text
     
     segments = re.split(r'(\[.*?\])', text)
-    
-    current_pitch = "+0Hz"
-    current_rate = "+2%"
-    
+
+    # §3.5: start from the emotion-driven baseline (inline tags still override).
+    current_pitch, current_rate = _emotion_baseline()
+
     for i, segment in enumerate(segments):
         if stop_speaking_flag.is_set():
             break 

@@ -732,6 +732,12 @@ Output ONLY raw JSON. No markdown, no explanation."""
 
         _last_sass_index = sass_index  # Expose to main.py via get_last_sass_index()
         print(f"[BRAIN] SASS_INDEX: {sass_index} | EMOTION: {_emotion}", flush=True)
+        # §3.5: drive TTS prosody baseline from the detected emotion + sass for this turn.
+        try:
+            import speaker as _spk
+            _spk.set_emotion(_emotion, sass_index)
+        except Exception:
+            pass
 
         return {
             "intent":          parsed.get("intent", "GENERAL"),

@@ -14,19 +14,18 @@ The real J.A.R.V.I.S. was defined by four qualities, not a feature list. Where t
 |---|---|---|---|---|
 | **Always present** (never down, reachable anywhere) | Partial | ✅ **Strong** | ~90% | Watchdog ✅ + Telegram Gateway ✅ + session scoping ✅. Remaining: in-process daemon health-restart. |
 | **Truly agentic** (pursues goals, self-corrects) | Missing | ✅ **Strong** | ~80% | Worker loop ✅ + **ReAct planner** ✅ (§1.2) + **LLM self-correction** ✅ (§1.1b). Remaining: hierarchical planning, learned strategies. |
-| **Naturally conversational** (full-duplex, instant) | Partial | 🔶 **Partial** | ~65% | Fast cloud ✅ + VAD barge-in ✅ + **deterministic fast-lane** ✅ (§3.4). Remaining: **streaming STT** + **full-duplex** + echo-cancel (§1.3). |
+| **Naturally conversational** (full-duplex, instant) | Partial | ✅ **Strong** | ~80% | Fast cloud ✅ + VAD barge-in ✅ + fast-lane ✅ (§3.4) + **full-duplex over-talk** ✅ (§1.3). Remaining: true *streaming* STT + speaker-mode echo-cancel. |
 | **Genuinely yours** (knows you, controls your world) | Strong | ✅ **Strong** | ~75% | *Knows you* ✅✅ (biometrics + 4-tier memory + **personal-doc RAG** ✅ §4). *Controls your world* — PC + TV only; **smart-home ❌** (§2.1). |
 
-### ▶ Overall: **~80% of "the feeling of the real J.A.R.V.I.S."** (up from ~65% at the last audit)
+### ▶ Overall: **~85% of "the feeling of the real J.A.R.V.I.S."** (up from ~65% at the start of today)
 
-Presence and agency are essentially solved. The remaining ~20% is concentrated in **two physical-world
-gaps that need hardware/accounts** — **full-duplex voice** (§1.3) and **smart-home control** (§2.1) —
-plus software polish (self-improvement loop §3.3, presence/context §2.3, daemon health-restart §3.1,
-emotional prosody §3.5, generative HUD §4, encryption §4).
+Presence, agency, and conversation are now strong. The biggest remaining gap is **reach into your physical
+world** (smart-home §2.1 — needs hardware) plus the polish tier (presence/context §2.3, generative HUD §4,
+at-rest encryption §4, voice biometrics, true streaming STT).
 
-**Closed in the 2026-06-27 sweep:** §3.2 session scoping, §3.1 watchdog, §2.2 Telegram gateway,
-§1.1 worker loop, §1.1b self-correction, §1.2 ReAct planner, §3.4 deterministic fast-lane,
-§4 personal-document RAG.
+**Closed in the 2026-06-27 sweep:** §3.2 session scoping, §3.1 watchdog + daemon health-restart,
+§2.2 Telegram gateway, §1.1 worker loop, §1.1b self-correction, §1.2 ReAct planner, §3.3 self-improvement
+loop, §3.4 fast-lane, §3.5 emotional prosody, §1.3 full-duplex over-talk, §4 personal-document RAG.
 
 ---
 
@@ -76,10 +75,13 @@ emotional prosody §3.5, generative HUD §4, encryption §4).
   code/files, GitHub, OS, search_documents). **Remaining:** step-level cost/risk budgeting and sub-plans
   (hierarchical planning) for very large goals.
 
-#### 1.3 Full-Duplex, Always-Listening Conversation — 🔶 **partial**
-- ✅ **Done:** VAD-during-playback barge-in (any speech interrupts), keyword interrupts, fast cloud round-trip.
-- ❌ **Missing:** STT is **batch** (record-then-transcribe, `recorder.py`), not streaming; the loop **deafens while speaking** (`speaker.is_system_speaking`), so it's listen *or* speak, not both; **no echo cancellation** (only a 0.5 s silence buffer); **no voice biometrics** (face ID only).
-- **Build:** continuous streaming STT that stays live during TTS + acoustic echo cancellation (WebRTC AEC). The interrupt plumbing already exists.
+#### 1.3 Full-Duplex, Always-Listening Conversation — 🔶 **mostly done**
+- ✅ VAD-during-playback barge-in + keyword interrupts + fast cloud round-trip.
+- ✅ **Full-duplex over-talk capture (2026-06-27)**: with `JARVIS_FULL_DUPLEX=1` (headphones for echo
+  isolation), talking over J.A.R.V.I.S. stops him AND transcribes your words, handing them back as the
+  command so he adapts mid-sentence (`wakeword.py` + `main.py` voice loop).
+- ❌ **Remaining:** true *streaming* STT (interim results as you speak) and software acoustic echo
+  cancellation (so speakers work without headphones). Voice biometrics also still absent (face ID only).
 
 ---
 
@@ -100,8 +102,10 @@ emotional prosody §3.5, generative HUD §4, encryption §4).
 
 ### 🥉 TIER 3 — Reliability, self-improvement & polish
 
-#### 3.1 Unkillable Watchdog — ✅ **DONE** (process level)
-- `watchdog.py` restarts the server on any death. **Remaining:** in-process **daemon** health-checks that restart a wedged proactive/overwatch/vision/scheduler thread without a full server bounce.
+#### 3.1 Unkillable Watchdog — ✅ **DONE** (process + daemon level)
+- `watchdog.py` restarts the server on any death. ✅ **Daemon health-restart shipped (2026-06-27)**:
+  `modules/daemon_supervisor.py` adopts the proactive/overwatch/routine/worker asyncio tasks and re-spawns
+  any that crash (with a restart cap; respects shutdown). No full server bounce needed.
 
 #### 3.2 Concurrency / Multi-Session Safety — ✅ **DONE**
 - Session scoping + `COMMAND_LOCK` shipped. **Remaining polish:** move the engine's `_pending_save_decision` / `_pending_notepad_decision` slots into per-session state (currently shared on the singleton).
@@ -115,8 +119,11 @@ emotional prosody §3.5, generative HUD §4, encryption §4).
   into both the remote and HUD/voice dispatch). ❌ Remaining: streaming STT (transcribe as you speak) +
   speculative TTS warm-up.
 
-#### 3.5 Voice Realism & Emotional Prosody — 🔶 **partial**
-- ✅ `[pause]/[pitch]/[rate]/[sigh]` tag engine exists. ❌ Emotion isn't yet **driven** by Sass Index + detected mood. Wire the emotion read into the tags, or move to a higher-fidelity neural voice.
+#### 3.5 Voice Realism & Emotional Prosody — ✅ **DONE**
+- ✅ `[pause]/[pitch]/[rate]/[sigh]` tag engine + ✅ **emotion-driven prosody (2026-06-27)**:
+  `classify_intent` sets `speaker.set_emotion(emotion, sass)` each turn, shifting the TTS pitch/rate
+  baseline (somber → lower/slower, urgent → higher/faster, high-sass casual → brighter); inline tags still
+  override. **Remaining (optional):** a higher-fidelity neural voice for even richer timbre.
 
 ---
 
