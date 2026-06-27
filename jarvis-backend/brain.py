@@ -132,6 +132,7 @@ Available Actions for JSON Output:
 - "workspace_patch": surgical line edit. target="filepath|exact_search_string|replacement_string". CRITICAL: exact_search_string MUST be the LITERAL text currently in the file — character for character. NEVER use placeholder names like "def old():" or "old_text". Example: if file contains print('Hello, World!') then to change it use: "test_hello.py|print('Hello, World!')|print('Hello, Universe!')".
 - "remember_fact": target="Category: fact details".
 - "telegram_send_file": send a file/document to the operator's phone via Telegram. target=filepath, OR {"path": filepath, "caption": "short note"}. Use when the user (especially over a remote channel) asks you to "send me", "text me", or "deliver" a file/report/document.
+- "search_documents": semantic search over the user's OWN indexed notes/documents. target=query. Use for "what did I write/decide about X", "find my notes on Y", "search my documents for Z".
 - "web_search": target=search query. (Deeper/multi-result research; also auto-uses Tavily when configured.)
 - "tavily_search": FAST AI lookup — PREFER this for quick factual questions, definitions, current events, prices, and "what is / who is / when is / latest" queries where you just need the answer (not a page to interact with). target=search query. AUTO tier.
 - "web_browse": navigate to a URL. target=url. Returns interactive DOM map.
@@ -1037,13 +1038,31 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
             "the JSON structure."
         )
 
+    # ── Personal-document RAG injection (Roadmap §4) ─────────────────────────
+    # Only when the user is clearly asking about THEIR OWN notes/files, so normal
+    # turns pay zero retrieval latency. The dedicated `search_documents` action
+    # remains available for the planner / explicit searches.
+    try:
+        from modules import personal_rag
+        if personal_rag.looks_like_personal_query(user_text):
+            _docs = personal_rag.query_documents(user_text, n_results=4)
+            if _docs:
+                dynamic_system_prompt += (
+                    "\n\n[PERSONAL DOCUMENTS — retrieved from the user's indexed files; "
+                    "ground your answer in these, do not invent]\n"
+                    + "\n---\n".join(_docs[:4])
+                )
+                print(f"[BRAIN] Personal-doc RAG: injected {len(_docs)} chunk(s).", flush=True)
+    except Exception as _prag_e:
+        print(f"[BRAIN] Personal-doc RAG skipped: {_prag_e}", flush=True)
+
     messages = [{"role": "system", "content": dynamic_system_prompt}]
     for msg in memory.get_working_memory():
         messages.append(msg)
     messages.append({"role": "user", "content": user_text})
-    
+
     memory.add_to_working_memory("user", user_text)
-    
+
     try:
         # For commands that MUST produce a JSON action, enable JSON mode so the
         # model is structurally forced to output valid JSON (not just instructed to).

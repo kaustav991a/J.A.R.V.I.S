@@ -102,22 +102,40 @@ def should_plan(user_text: str) -> bool:
 # Tool catalogue the planner may compose (curated, multi-step-relevant subset)
 # ════════════════════════════════════════════════════════════════════════════
 _TOOL_CATALOG = """Available actions (emit EXACTLY one per step, keys "action_type" and "target"):
+INFORMATION
 - tavily_search: fast factual lookup. target="query"
 - web_search: deeper multi-result research. target="query"
+- web_search_image: target="query"
 - web_browse: open and read a page. target="url or what to find"
+- search_documents: search the USER's own indexed notes/files. target="query"
+- memory_recall: recall stored facts about the user. target="topic"
+WEB INTERACTION (a live browser session persists across steps)
+- web_click: target="element_id"   - web_type: target="element_id|text"
+- web_scroll: target="down|up"      - web_back: target=""   - web_close: target=""
+COMMS & LIFE
 - read_email / gmail_read_unread: read mail. target=""
 - send_email / gmail_send: target="recipient | subject | body"
-- check_calendar: target="today" | "week"
-- create_event: target="title | when"
-- check_vitals: target=""
-- workspace_read: read a project/file. target="filepath"
-- workspace_write: create/overwrite a file (headless). target="filepath|file_content"
-- workspace_patch: edit a file. target="filepath|search|replace"
+- gmail_reply: target="message_id | body"   - search_email: target="query"
+- check_calendar: target="today"|"week"   - create_event: target="title | when"
+- check_vitals: target=""   - morning_briefing: target=""
+- telegram_send_file: send a file to the operator. target="filepath" or {"path":..,"caption":..}
+CODE / FILES (headless — never GUI)
+- workspace_read: target="filepath"
+- workspace_write: target="filepath|file_content"
+- workspace_patch: target="filepath|search|replace"
+- find_file: target="name"   - create_note: target="text"   - organize_downloads: target=""
+- run_autopilot: build a Figma design into code. target="figma_file_key"
+GITHUB
+- github_status / github_log / github_diff: target=""
+- github_commit: target="message"   - github_push: target=""
+OS / SYSTEM
 - run_terminal_command: OS shell op. target="verb: argument"
 - get_telemetry / system_status: machine state. target=""
+- native_app_launcher: open an app. target="app name"   - close_app: target="app name"
+- os_control: target="mute|unmute|play_pause|next_track|prev_track|lock_screen"
+- play_music: target="query"
+MEMORY
 - remember_fact: target="Category: fact"
-- telegram_send_file: send a file to the operator. target="filepath" or {"path":..,"caption":..}
-- web_search_image: target="query"
 """
 
 _REACT_SYSTEM = (

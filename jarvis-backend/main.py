@@ -44,6 +44,7 @@ from modules.worker_loop import OvernightWorker  # --- Roadmap §1.1: Overnight 
 from modules.session_manager import COMMAND_LOCK, CallbackChannel, SESSIONS  # --- Concurrent session scoping ---
 from modules import telegram_bot  # --- Telegram Remote Gateway ---
 from modules import planner  # --- ReAct Orchestrator (Roadmap §1.2) ---
+from modules import fast_path  # --- Deterministic low-latency lane (Roadmap §3.4) ---
 # Phase 6 – Governance Engine
 from governance_manager import governance_manager
 from socket_manager import register_client, unregister_client, send_ui_update, set_app_loop
@@ -923,7 +924,7 @@ async def update_ui_state(req: UIStateRequest):
 _REMOTE_DATA_ACTIONS = frozenset({
     "web_search", "tavily_search", "web_browse", "read_email", "check_email",
     "check_calendar", "check_vitals", "read_screen", "gmail_read_unread",
-    "gmail_read", "system_status", "get_telemetry",
+    "gmail_read", "system_status", "get_telemetry", "search_documents",
 })
 
 
@@ -938,6 +939,15 @@ async def run_remote_command(command_text: str, channel) -> None:
         asyncio.create_task(asyncio.to_thread(extract_and_store_memory, command_text, user))
     except Exception:
         pass
+
+    # ── Deterministic fast-lane (Roadmap §3.4) — skip the LLM entirely ───────
+    _fp = fast_path.match(command_text)
+    if _fp is not None:
+        if _fp.get("action"):
+            async with COMMAND_LOCK:
+                await engine.execute_with_retry(_fp["action"], True, None)
+        await channel.reply(_fp.get("say") or "Done, Sir.")
+        return
 
     # ── ReAct planner fast-path bypass (Roadmap §1.2) ────────────────────────
     # Only CLEARLY multi-step goals enter the heavy Think→Act→Observe loop;
@@ -1441,6 +1451,17 @@ async def backdoor_command(req: BackdoorRequest):
     try:
         asyncio.create_task(asyncio.to_thread(extract_and_store_memory, command_text, active_user))
 
+        # ── Deterministic fast-lane (Roadmap §3.4) — skip the LLM entirely ───
+        _fp = fast_path.match(command_text)
+        if _fp is not None:
+            if _fp.get("action"):
+                async with COMMAND_LOCK:
+                    await engine.execute_with_retry(_fp["action"], True, None)
+            _fp_say = _fp.get("say") or "Done, Sir."
+            await safe_send_all({"status": "complete", "result": _fp_say})
+            asyncio.create_task(speaker.speak_text(_fp_say))
+            return {"status": "success"}
+
         # ── ReAct planner fast-path bypass (Roadmap §1.2) ────────────────────
         # Multi-step goals run the Think→Act→Observe loop; simple commands fall
         # through to the existing single-shot pipeline (no added latency).
@@ -1519,6 +1540,8 @@ async def backdoor_command(req: BackdoorRequest):
                     # single spoken metric or a brief health summary.
                     "system_status",
                     "get_telemetry",
+                    # Personal-document RAG results synthesised like other data tools.
+                    "search_documents",
                     # NOTE: memory_recall is NOT in DATA_ACTIONS — it has its own
                     # dedicated intercept branch below to route [DEEP_MEMORY_DATA]
                     # payloads to _stream_deep_memory_speak, bypassing the standard

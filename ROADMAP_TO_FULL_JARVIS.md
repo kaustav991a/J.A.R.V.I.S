@@ -10,16 +10,23 @@
 
 The real J.A.R.V.I.S. was defined by four qualities, not a feature list. Where this build stands today:
 
-| Quality | Was | **Now** | What still closes it |
-|---|---|---|---|
-| **Always present** (never down, reachable anywhere) | Partial | ✅ **Strong** | Watchdog ✅ + Telegram Gateway ✅ shipped. Add in-process daemon health-restart. |
-| **Truly agentic** (pursues goals, self-corrects) | Missing | ✅ **Strong** | Durable worker loop ✅ + **ReAct planner** ✅ (§1.2) + **LLM self-correction** ✅ (§1.1b). Remaining: deeper planning, tool-use breadth. |
-| **Naturally conversational** (full-duplex, instant) | Partial | 🔶 **Partial** | Fast cloud ✅ + VAD barge-in ✅, but **streaming STT** + **full-duplex** + echo-cancel still ❌ (§1.3). |
-| **Genuinely yours** (knows you, controls your world) | Strong | 🔶 **Strong/half** | *Knows you* ✅ (biometrics + 4-tier memory). *Controls your world* ❌ — only PC + TV, no smart-home, no personal-doc RAG. |
+| Quality | Start | **Now** | Score | What still closes it |
+|---|---|---|---|---|
+| **Always present** (never down, reachable anywhere) | Partial | ✅ **Strong** | ~90% | Watchdog ✅ + Telegram Gateway ✅ + session scoping ✅. Remaining: in-process daemon health-restart. |
+| **Truly agentic** (pursues goals, self-corrects) | Missing | ✅ **Strong** | ~80% | Worker loop ✅ + **ReAct planner** ✅ (§1.2) + **LLM self-correction** ✅ (§1.1b). Remaining: hierarchical planning, learned strategies. |
+| **Naturally conversational** (full-duplex, instant) | Partial | 🔶 **Partial** | ~65% | Fast cloud ✅ + VAD barge-in ✅ + **deterministic fast-lane** ✅ (§3.4). Remaining: **streaming STT** + **full-duplex** + echo-cancel (§1.3). |
+| **Genuinely yours** (knows you, controls your world) | Strong | ✅ **Strong** | ~75% | *Knows you* ✅✅ (biometrics + 4-tier memory + **personal-doc RAG** ✅ §4). *Controls your world* — PC + TV only; **smart-home ❌** (§2.1). |
 
-**Rough overall: ~65–70% of "the feeling of the real J.A.R.V.I.S."** Presence is essentially solved.
-The remaining 30–35% is concentrated in **three** places: a real **planner**, **full-duplex voice**, and
-**reach into your physical world** (smart-home + personal-document RAG).
+### ▶ Overall: **~80% of "the feeling of the real J.A.R.V.I.S."** (up from ~65% at the last audit)
+
+Presence and agency are essentially solved. The remaining ~20% is concentrated in **two physical-world
+gaps that need hardware/accounts** — **full-duplex voice** (§1.3) and **smart-home control** (§2.1) —
+plus software polish (self-improvement loop §3.3, presence/context §2.3, daemon health-restart §3.1,
+emotional prosody §3.5, generative HUD §4, encryption §4).
+
+**Closed in the 2026-06-27 sweep:** §3.2 session scoping, §3.1 watchdog, §2.2 Telegram gateway,
+§1.1 worker loop, §1.1b self-correction, §1.2 ReAct planner, §3.4 deterministic fast-lane,
+§4 personal-document RAG.
 
 ---
 
@@ -65,8 +72,9 @@ The remaining 30–35% is concentrated in **three** places: a real **planner**, 
   at a time and re-plan around failures; a conservative `should_plan()` gate keeps simple commands on
   the low-latency single-shot path. Governance enforced per step (CONFIRM refused unattended); each
   Act under `COMMAND_LOCK`. Wired into both the remote (Telegram) and HUD/voice dispatch paths.
-- **Remaining:** broaden the planner's tool catalogue, add step-level cost/risk budgeting, and let it
-  call sub-plans (hierarchical planning) for very large goals.
+- ✅ Tool catalogue broadened (2026-06-27) to the full useful action surface (web interaction, comms,
+  code/files, GitHub, OS, search_documents). **Remaining:** step-level cost/risk budgeting and sub-plans
+  (hierarchical planning) for very large goals.
 
 #### 1.3 Full-Duplex, Always-Listening Conversation — 🔶 **partial**
 - ✅ **Done:** VAD-during-playback barge-in (any speech interrupts), keyword interrupts, fast cloud round-trip.
@@ -101,8 +109,11 @@ The remaining 30–35% is concentrated in **three** places: a real **planner**, 
 #### 3.3 Guarded Self-Improvement Loop — ❌ **MISSING** (primitives exist)
 - You have `workspace_write/patch` + `github_*`. **Build** a strictly human-in-the-loop loop: propose change → write to a branch → run tests → open PR → **you approve**. Never auto-merge. (Pairs with §1.1b + §1.2.)
 
-#### 3.4 Latency → "instant" — 🔶 **partial**
-- ✅ cloud_first routing is fast now. ❌ No **local fast-path** that skips the LLM entirely for trivial commands (mute/open/lock), and STT isn't streaming. Add a regex/keyword fast-lane for deterministic commands + speculative TTS warm-up.
+#### 3.4 Latency → "instant" — 🔶 **mostly done**
+- ✅ cloud_first routing is fast. ✅ **Deterministic fast-lane shipped** (`modules/fast_path.py`): mute/unmute/
+  play-pause/next/previous/lock and time/date answers skip the LLM entirely and respond instantly (wired
+  into both the remote and HUD/voice dispatch). ❌ Remaining: streaming STT (transcribe as you speak) +
+  speculative TTS warm-up.
 
 #### 3.5 Voice Realism & Emotional Prosody — 🔶 **partial**
 - ✅ `[pause]/[pitch]/[rate]/[sigh]` tag engine exists. ❌ Emotion isn't yet **driven** by Sass Index + detected mood. Wire the emotion read into the tags, or move to a higher-fidelity neural voice.
@@ -113,7 +124,11 @@ The remaining 30–35% is concentrated in **three** places: a real **planner**, 
 
 - ✅ **Figma→HTML Autopilot** — shipped (`agent_worker.py`); extend beyond the narrow pipeline.
 - 🔶 **Generative HUD / data viz** — HUD has data overlays/widgets; ❌ no "render this answer as a chart/timeline on screen" path driven by the brain.
-- ❌ **Personal-document RAG** — `rag_cortex.py` indexes **code standards only** (`frontend_standards.md`), not your files/notes. Build a user-document ingester (Documents/notes → Chroma) wired into `process_command` so "what did I decide about X last month?" works across your life.
+- ✅ **Personal-document RAG (shipped 2026-06-27)** — `modules/personal_rag.py` indexes the user's own
+  notes/files (`JARVIS_DOCS_ROOTS`, default Documents + `jarvis_docs/`) into a local Chroma store with
+  on-device embeddings. Exposed as the `search_documents` action (governance AUTO, planner-callable) and
+  auto-injected into `process_command` when the user asks about their own notes ("what did I decide about
+  X?"). Remaining polish: PDF/docx parsing, incremental re-index on file change.
 - ❌ **More life integrations** — Spotify control, Notion/Obsidian, banking summaries, maps/traffic in the briefing.
 - ❌ **Memory at rest, encrypted** — encrypt `jarvis_*.db` / Chroma; secrets via a vault, not `.env`.
 

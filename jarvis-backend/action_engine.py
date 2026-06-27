@@ -651,6 +651,9 @@ class ActionEngine:
         # ── Phase 8.2: OS Macro Engine ────────────────────────────────────────
         elif action == "os_macro":
             return self._os_macro(target)
+        # ── Personal-Document RAG: search the user's own notes/files ─────────
+        elif action == "search_documents":
+            return await asyncio.to_thread(self._search_documents, target)
         # ── Remote Gateway: push a file/document to the operator's Telegram ──
         elif action == "telegram_send_file":
             return await self._telegram_send_file(target)
@@ -1278,6 +1281,24 @@ class ActionEngine:
         except Exception as e:
             print(f"[ACTION ENGINE] Workspace read failed: {e}")
             return f"Workspace read offline: {e}"
+
+    def _search_documents(self, target) -> str:
+        """
+        Search the user's indexed personal documents/notes (Roadmap §4).
+        Target: a natural-language query. Returns the most relevant chunks; the
+        synthesis pipeline narrates them. Routed through DATA_ACTIONS in main.py.
+        """
+        query = target if isinstance(target, str) else str(target or "")
+        if not query.strip():
+            return "What would you like me to search your documents for, sir?"
+        try:
+            from modules import personal_rag
+        except Exception as e:
+            return f"My document index is unavailable, sir: {e}"
+        hits = personal_rag.query_documents(query.strip(), n_results=4)
+        if not hits:
+            return "I found nothing relevant in your indexed documents, sir."
+        return "PERSONAL DOCUMENT MATCHES:\n" + "\n---\n".join(hits)
 
     async def _telegram_send_file(self, target) -> str:
         """
