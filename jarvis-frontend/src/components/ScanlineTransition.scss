@@ -1,0 +1,45 @@
+.scanline-transition {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.scanline-transition__content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  z-index: 1;
+}
+
+/* Full-screen layer (portaled to body, below bottom HUD cluster z-index 1000). */
+.scanline-transition__curtain {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  pointer-events: none;
+  background: rgba(2, 8, 14, 0.92);
+  transform-origin: top center;
+}
+
+.scanline-transition__beam--viewport {
+  position: fixed;
+  left: 0;
+  right: 0;
+  width: 100%;
+  max-width: 100vw;
+  height: 2px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  pointer-events: none;
+  z-index: 901;
+  background-color: #00e5ff;
+  box-shadow: 0 0 15px 3px rgba(0, 229, 255, 0.8);
+  transform-origin: center center;
+}

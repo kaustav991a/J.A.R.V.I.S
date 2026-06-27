@@ -3,8 +3,9 @@
    ========================================================================== */
 $cyan: #00ffcc;
 $cyan-dim: rgba(0, 255, 204, 0.1);
-$bg-dark: #020b12;
-$panel-bg: rgba(4, 18, 28, 0.85);
+/* Phase 8.3: pitch-black cinema canvas */
+$bg-dark: #050505;
+$panel-bg: rgba(6, 10, 14, 0.82);
 $accent-red: #ff3366;
 
 /* ==========================================================================
@@ -16,71 +17,48 @@ body {
   color: $cyan;
   font-family: "Orbitron", sans-serif;
   overflow: hidden;
+}
 
-  /* Honeycomb background */
-  background-image:
-    linear-gradient(
-      30deg,
-      rgba($cyan, 0.03) 12%,
-      transparent 12.5%,
-      transparent 87%,
-      rgba($cyan, 0.03) 87.5%,
-      rgba($cyan, 0.03)
-    ),
-    linear-gradient(
-      150deg,
-      rgba($cyan, 0.03) 12%,
-      transparent 12.5%,
-      transparent 87%,
-      rgba($cyan, 0.03) 87.5%,
-      rgba($cyan, 0.03)
-    ),
-    linear-gradient(
-      30deg,
-      rgba($cyan, 0.03) 12%,
-      transparent 12.5%,
-      transparent 87%,
-      rgba($cyan, 0.03) 87.5%,
-      rgba($cyan, 0.03)
-    ),
-    linear-gradient(
-      150deg,
-      rgba($cyan, 0.03) 12%,
-      transparent 12.5%,
-      transparent 87%,
-      rgba($cyan, 0.03) 87.5%,
-      rgba($cyan, 0.03)
-    ),
-    linear-gradient(
-      60deg,
-      rgba($cyan, 0.03) 25%,
-      transparent 25.5%,
-      transparent 75%,
-      rgba($cyan, 0.03) 75%,
-      rgba($cyan, 0.03)
-    ),
-    linear-gradient(
-      60deg,
-      rgba($cyan, 0.03) 25%,
-      transparent 25.5%,
-      transparent 75%,
-      rgba($cyan, 0.03) 75%,
-      rgba($cyan, 0.03)
-    );
-  background-size: 80px 140px;
-  background-position:
-    0 0,
-    0 0,
-    40px 70px,
-    40px 70px,
-    0 0,
-    40px 70px;
+#root {
+  min-height: 100vh;
+  background: $bg-dark;
 }
 
 .dashboard-container {
   height: 100vh;
   width: 100vw;
   position: relative;
+
+  /* Phase 8.3: HUD state surface */
+  &.hud-phase-standby .dashboard-container__grid {
+    opacity: 1;
+  }
+
+  &.hud-phase-modular .dashboard-container__grid,
+  &.hud-phase-immersive .dashboard-container__grid {
+    opacity: 0.85;
+  }
+}
+
+/* Engineering grid: faint lines, blank cinema screen */
+.dashboard-container__grid {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  opacity: 1;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+  background-size: 56px 56px;
+  transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dashboard-container__main {
+  position: relative;
+  z-index: 2;
+  height: 100%;
+  width: 100%;
 }
 
 /* ==========================================================================
@@ -88,6 +66,7 @@ body {
    ========================================================================== */
 .widget {
   position: absolute;
+  z-index: 28;
   background-color: rgba(4, 18, 28, 0.95);
   border: 1px solid rgba(0, 150, 255, 0.3);
   padding: 15px 20px;
@@ -112,6 +91,37 @@ body {
   background-repeat: no-repeat;
   background-size: 8px 8px;
 
+  &.widget-glass-modular {
+    background-image: none !important;
+    background: rgba(8, 12, 18, 0.42) !important;
+    backdrop-filter: blur(22px) saturate(145%);
+    -webkit-backdrop-filter: blur(22px) saturate(145%);
+    border: 1px solid rgba(64, 200, 255, 0.35) !important;
+    box-shadow:
+      0 0 0 1px rgba(0, 255, 204, 0.08),
+      0 0 28px rgba(0, 180, 255, 0.12),
+      0 20px 50px rgba(0, 0, 0, 0.65),
+      inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    padding: 20px 22px 22px !important;
+  }
+
+  &.widget-modular-spawn {
+    .widget-content {
+      animation: contentFadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) 0.06s both;
+    }
+  }
+
+  &.widget--hologram-wide {
+    width: min(720px, 92vw);
+    max-width: 92vw;
+  }
+
+  &.widget--hologram-wide .browser-frame-container {
+    min-height: 360px;
+    height: 42vh;
+  }
+
   &.flush-widget {
     padding: 0;
     overflow: hidden;
@@ -119,17 +129,20 @@ body {
     border: none;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
 
-    .panel-header {
-      background: rgba(0, 119, 182, 0.85);
-      color: #fff;
-      font-weight: bold;
-      padding: 10px 15px;
-      margin: 0;
-      border-bottom: 2px solid rgba(0, 255, 204, 0.5);
-      text-align: left;
-      font-size: 0.85rem;
-      letter-spacing: 2px;
-      text-transform: uppercase;
+    &.widget-glass-modular {
+      border-radius: 14px;
+      border: 1px solid rgba($cyan, 0.35);
+      padding: 16px 18px 18px !important;
+      box-shadow:
+        0 12px 40px rgba(0, 0, 0, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    }
+
+    &.widget-glass-modular .panel-header {
+      background: rgba(12, 40, 56, 0.55);
+      border-bottom: 1px solid rgba(64, 200, 255, 0.25);
+      color: rgba(200, 255, 250, 0.95);
+      letter-spacing: 0.22em;
     }
   }
 
@@ -308,6 +321,21 @@ body {
 }
 
 .browser-ui {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+
+  &.browser-ui--immersive {
+    height: 100%;
+    min-height: min(72vh, 640px);
+
+    .browser-frame-container {
+      flex: 1;
+      min-height: 320px;
+      height: auto;
+    }
+  }
+
   .browser-header {
     display: flex;
     align-items: center;
@@ -843,20 +871,88 @@ body {
 }
 
 /* ==========================================================================
-   5. CENTER CORE & LOG
+   5. CENTER CORE & LOG (Phase 8.3: Framer Motion drives position)
    ========================================================================== */
-.center-visualizer {
+
+.hud-core-stack {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
   width: 380px;
-  height: 380px;
-  border-radius: 50%;
-  border: 1px dashed rgba($cyan, 0.15);
+  height: auto;
+  min-height: 380px;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
   align-items: center;
+  justify-content: flex-start;
+  z-index: 15;
+
+  .dashboard-container.hud-phase-immersive & {
+    z-index: 25;
+  }
+  transform-origin: center center;
+
+  .hud-core-visual {
+    position: relative;
+    width: 380px;
+    height: 380px;
+    border-radius: 50%;
+    border: 1px dashed rgba($cyan, 0.15);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  &.hud-core-pulse-standby .hud-core-visual {
+    animation: hudStandbyCorePulse 3.2s ease-in-out infinite;
+  }
+}
+
+@keyframes hudStandbyCorePulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba($cyan, 0), inset 0 0 24px rgba($cyan, 0.06);
+    border-color: rgba($cyan, 0.12);
+  }
+  50% {
+    box-shadow: 0 0 36px rgba($cyan, 0.12), inset 0 0 28px rgba($cyan, 0.1);
+    border-color: rgba($cyan, 0.28);
+  }
+}
+
+.hud-minimal-clock {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: "Orbitron", "Segoe UI", system-ui, sans-serif;
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.38em;
+  color: rgba($cyan, 0.78);
+  text-shadow: 0 0 20px rgba($cyan, 0.25);
+
+  .hud-minimal-clock__sep {
+    opacity: 0.28;
+    letter-spacing: 0;
+    font-weight: 300;
+  }
+
+  .hud-minimal-clock__date {
+    font-size: 0.52rem;
+    letter-spacing: 0.22em;
+    color: rgba(255, 255, 255, 0.38);
+  }
+
+  &.hud-minimal-clock--immersive {
+    margin-top: 8px;
+    font-size: 0.55rem;
+    letter-spacing: 0.2em;
+    opacity: 0.9;
+
+    .hud-minimal-clock__date {
+      font-size: 0.48rem;
+    }
+  }
 }
 
 .hud-reticle {
@@ -894,11 +990,11 @@ body {
   }
 }
 
+/* System log + command terminal share .hud-bottom-cluster (fixed bottom-left stack). */
 .system-log-horizontal {
-  position: absolute;
-  bottom: 20px;
-  right: 20px;
-  width: 500px;
+  position: relative;
+  width: min(500px, calc(100vw - 48px));
+  margin: 0;
   background: rgba(4, 18, 28, 0.95);
   border: 1px solid rgba($cyan, 0.4);
   border-left: 4px solid $cyan;
@@ -949,6 +1045,38 @@ body {
       background: $cyan;
       animation: blink 1s infinite;
     }
+  }
+
+  &.hud-immersive-log {
+    width: min(520px, calc(100vw - 48px));
+  }
+}
+
+.hud-bottom-cluster {
+  position: fixed;
+  bottom: 24px;
+  left: 24px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: min(640px, calc(100vw - 48px));
+  pointer-events: none;
+
+  > * {
+    pointer-events: auto;
+  }
+
+  .system-log-horizontal {
+    flex-shrink: 0;
+  }
+
+  .hud-command-terminal.backdoor-panel {
+    position: relative;
+    bottom: auto;
+    left: auto;
+    flex-shrink: 0;
   }
 }
 
@@ -1026,6 +1154,110 @@ body {
   }
 }
 
+/* Phase 8.3: Center-canvas immersive (browser, satellite search, future camera/maps)
+   Centering is done via Framer Motion x/y — a CSS transform here is overwritten by Motion. */
+.immersive-main-canvas {
+  position: absolute;
+  z-index: 18;
+  left: 50%;
+  top: 48%;
+  width: min(78vw, 720px);
+  height: min(56vh, 520px);
+  max-height: calc(100vh - 180px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 18, 28, 0.55);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid rgba($cyan, 0.35);
+  border-radius: 16px;
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+  pointer-events: auto;
+
+  > .browser-ui--immersive {
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+  }
+}
+
+.immersive-main-canvas__header {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: $accent-red;
+  letter-spacing: 3px;
+  padding: 16px 22px 12px;
+  border-bottom: 1px dashed rgba($accent-red, 0.35);
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.immersive-main-canvas__body {
+  flex: 1;
+  overflow: auto;
+  padding: 20px 22px 24px;
+  min-height: 0;
+
+  .image-container {
+    width: 100%;
+    max-height: min(36vh, 280px);
+    margin-bottom: 16px;
+    border: 1px solid rgba($cyan, 0.3);
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: rgba(0, 0, 0, 0.5);
+
+    img {
+      max-width: 100%;
+      max-height: min(36vh, 280px);
+      object-fit: contain;
+      filter: drop-shadow(0 0 8px rgba($cyan, 0.2));
+    }
+  }
+
+  .search-text {
+    font-size: 0.88rem;
+    line-height: 1.65;
+    color: rgba(255, 255, 255, 0.92);
+    text-shadow: 0 0 5px rgba($cyan, 0.25);
+    margin: 0;
+    text-align: justify;
+  }
+}
+
+.immersive-main-canvas__body--flush {
+  flex: 1;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+
+  .browser-ui {
+    flex: 1;
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+  }
+
+  .browser-frame-container {
+    flex: 1;
+    min-height: 0;
+  }
+}
+
+.immersive-main-canvas__header--cyan {
+  color: $cyan;
+  border-bottom-color: rgba($cyan, 0.35);
+  letter-spacing: 0.2em;
+}
+
 /* ==========================================================================
    7. CINEMATIC ANIMATIONS
    ========================================================================== */
@@ -1061,6 +1293,14 @@ body {
   }
 }
 
+.widget-awake.widget-modular-spawn {
+  animation: widgetModularSpawn 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  .widget-content {
+    opacity: 1;
+    animation: contentFadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) 0.06s both;
+  }
+}
+
 .fade-in {
   opacity: 0;
   animation: contentFadeIn 1s ease-out forwards;
@@ -1090,6 +1330,17 @@ body {
   }
   100% {
     opacity: 1;
+  }
+}
+
+@keyframes widgetModularSpawn {
+  0% {
+    opacity: 0;
+    filter: blur(12px);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
   }
 }
 
@@ -1173,55 +1424,158 @@ body {
   animation: vignettePulse 8s ease-in-out infinite;
 }
 
-/* Backdoor Dev UI */
-.backdoor-panel {
-  position: absolute;
-  bottom: 20px;
+/* Backend not running — explains ERR_CONNECTION_REFUSED */
+.backend-offline-banner {
+  position: fixed;
+  bottom: 88px;
   left: 20px;
-  z-index: 1000;
-  display: flex;
-  gap: 10px;
-  background: rgba(4, 18, 28, 0.85);
-  padding: 10px 15px;
-  border: 1px solid rgba(0, 255, 204, 0.5);
-  border-radius: 4px;
-  box-shadow: 0 0 15px rgba(0, 255, 204, 0.1);
-  backdrop-filter: blur(5px);
+  right: 20px;
+  max-width: min(920px, 95vw);
+  z-index: 1001;
+  padding: 12px 16px;
+  font-family: "Orbitron", system-ui, sans-serif;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: #fca5a5;
+  background: rgba(30, 10, 10, 0.92);
+  border: 1px solid rgba(252, 165, 165, 0.5);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 
-  input {
+  strong {
+    color: #fecaca;
+  }
+
+  .backend-offline-banner__code {
+    display: inline;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 0.65rem;
+    color: #fde68a;
+    word-break: break-all;
+  }
+
+  .backend-offline-banner__note {
+    display: block;
+    margin-top: 6px;
+    color: rgba(252, 211, 211, 0.85);
+    font-size: 0.68rem;
+  }
+}
+
+/* Phase 8.3 command terminal (bottom-left). Legacy .backdoor-panel merged. */
+.hud-command-terminal.backdoor-panel {
+  position: absolute;
+  bottom: 24px;
+  left: 24px;
+  z-index: 1000;
+  contain: layout paint;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  max-width: min(640px, calc(100vw - 40px));
+  padding: 12px 16px;
+  background: rgba(6, 8, 12, 0.72);
+  border: 1px solid rgba(80, 200, 255, 0.28);
+  border-radius: 6px;
+  box-shadow:
+    0 0 0 1px rgba(0, 255, 204, 0.06),
+    0 12px 40px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+
+  .hud-command-terminal__prompt {
+    font-family: ui-monospace, "Cascadia Mono", monospace;
+    color: rgba($cyan, 0.55);
+    font-size: 0.9rem;
+    user-select: none;
+  }
+
+  .hud-command-terminal__input {
+    flex: 1;
+    min-width: 160px;
     background: transparent;
     border: none;
-    border-bottom: 1px solid rgba(0, 255, 204, 0.3);
-    color: #00ffcc;
-    font-family: "Orbitron", sans-serif;
+    border-bottom: 1px solid rgba($cyan, 0.22);
+    color: rgba(220, 255, 250, 0.95);
+    font-family: ui-monospace, "Cascadia Mono", monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.06em;
     outline: none;
-    width: 250px;
-    padding: 5px;
-    font-size: 0.8rem;
-    transition: border-bottom 0.3s;
+    padding: 6px 4px;
+    transition: border-color 0.25s;
+
     &:focus {
-      border-bottom: 1px solid #00ffcc;
+      border-bottom-color: rgba($cyan, 0.65);
     }
     &::placeholder {
-      color: rgba(0, 255, 204, 0.3);
-      font-style: italic;
+      color: rgba($cyan, 0.28);
+      font-style: normal;
+      text-transform: uppercase;
+      font-size: 0.65rem;
+      letter-spacing: 0.14em;
     }
   }
 
-  button {
-    background: rgba(0, 255, 204, 0.1);
-    border: 1px solid #00ffcc;
-    color: #00ffcc;
+  .hud-command-terminal__exec {
+    background: rgba($cyan, 0.12);
+    border: 1px solid rgba($cyan, 0.45);
+    color: $cyan;
     cursor: pointer;
     font-family: "Orbitron", sans-serif;
-    padding: 5px 15px;
-    font-size: 0.75rem;
-    letter-spacing: 1px;
-    transition: all 0.2s;
+    padding: 7px 16px;
+    font-size: 0.65rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    border-radius: 4px;
+    transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+
     &:hover {
-      background: #00ffcc;
-      color: #000;
-      box-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+      background: rgba($cyan, 0.9);
+      color: #050505;
+      box-shadow: 0 0 20px rgba($cyan, 0.35);
+    }
+  }
+
+  .hud-command-terminal__tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+    margin-top: 2px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  &.hud-command-terminal--phase-standby .hud-command-terminal__tools {
+    display: none;
+  }
+
+  &.hud-command-terminal--phase-standby:hover .hud-command-terminal__tools,
+  &.hud-command-terminal--phase-standby:focus-within .hud-command-terminal__tools {
+    display: flex;
+  }
+
+  .hud-command-terminal__tools button {
+    background: transparent;
+    border: 1px solid rgba(100, 200, 255, 0.25);
+    color: rgba(180, 240, 255, 0.7);
+    cursor: pointer;
+    font-family: "Orbitron", sans-serif;
+    font-size: 0.58rem;
+    letter-spacing: 0.18em;
+    padding: 5px 12px;
+    border-radius: 4px;
+    transition: all 0.2s;
+
+    &:hover {
+      border-color: rgba($cyan, 0.5);
+      color: $cyan;
+    }
+    &.is-active {
+      background: rgba($cyan, 0.18);
+      border-color: rgba($cyan, 0.55);
+      color: $cyan;
     }
   }
 }

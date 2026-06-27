@@ -34,14 +34,14 @@ def scan_for_faces(timeout=10):
 
     print("[VISION] Connecting to Camera...")
 
-    camera_url = "http://10.14.124.8:8080/video"
+    camera_url = "http://192.168.0.105:8080/video"
     
     # --- NEW: Fast Camera Ping ---
     # Quickly check if the camera is reachable to avoid OpenCV's long timeout freeze
     try:
         import urllib.request
         # Check the base URL instead of the video stream so it doesn't download the stream
-        urllib.request.urlopen("http://10.14.124.8:8080", timeout=1.0)
+        urllib.request.urlopen("http://192.168.0.105:8080", timeout=1.0)
     except Exception as e:
         print(f"[VISION] Camera unreachable, skipping facial scan. ({e})")
         return None

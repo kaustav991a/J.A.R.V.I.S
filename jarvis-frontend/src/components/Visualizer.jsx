@@ -1,7 +1,7 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, memo } from "react";
 import * as THREE from "three";
 
-export default function Visualizer({ status }) {
+function Visualizer({ status }) {
   const mountRef = useRef(null);
   const statusRef = useRef(status);
 
@@ -494,3 +494,5 @@ export default function Visualizer({ status }) {
 
   return <canvas ref={mountRef} style={{ width: "300px", height: "300px" }} />;
 }
+
+export default memo(Visualizer, (a, b) => a.status === b.status);

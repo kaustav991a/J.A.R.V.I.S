@@ -1,0 +1,199 @@
+import re
+import asyncio
+from bs4 import BeautifulSoup
+import markdownify
+from playwright.async_api import async_playwright
+
+class WebAgent:
+    def __init__(self):
+        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
+
+    async def _init_browser(self):
+        if not self._playwright:
+            try:
+                self._playwright = await async_playwright().start()
+                self._browser = await self._playwright.chromium.launch(headless=True)
+                self._context = await self._browser.new_context(user_agent=self.user_agent)
+                self._page = await self._context.new_page()
+
+                # Route interceptor to block images, media, and fonts
+                async def intercept_route(route):
+                    if route.request.resource_type in ["image", "media", "font"]:
+                        await route.abort()
+                    else:
+                        await route.continue_()
+                await self._page.route("**/*", intercept_route)
+            except Exception as e:
+                # Partial init (e.g. launch succeeded but new_context failed) would
+                # otherwise leave a live Chromium with self._playwright set, so the
+                # next _init_browser() short-circuits and we operate on a None page.
+                # Tear down whatever came up and re-raise so the caller reports cleanly.
+                print(f"[WEB AGENT] Init failed ({e}); tearing down partial browser.", flush=True)
+                await self.close()
+                raise
+
+    async def close(self):
+        """
+        Fully tears down the Playwright stack. Each step is independently guarded
+        so that a failure closing the context can never prevent the browser and
+        the Playwright node subprocess from being stopped — which is exactly how
+        zombie Chromium processes were being leaked on a mid-session error.
+        """
+        for label, closer in (
+            ("page", getattr(self._page, "close", None)),
+            ("context", getattr(self._context, "close", None)),
+            ("browser", getattr(self._browser, "close", None)),
+            ("playwright", getattr(self._playwright, "stop", None)),
+        ):
+            if closer is None:
+                continue
+            try:
+                await closer()
+            except Exception as e:
+                print(f"[WEB AGENT] Error closing {label} (continuing teardown): {e}", flush=True)
+        # Always null out references, even if a step above failed, so the next
+        # browse() call re-initialises a clean stack instead of reusing dead handles.
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._playwright = None
+        return "Web browser closed, memory freed."
+
+    async def _mark_and_extract_dom(self):
+        js_code = """
+        () => {
+            let id_counter = 1;
+            const elements = document.querySelectorAll('button, a, input, select, textarea, [role="button"], [role="link"], [tabindex]');
+            
+            // Clear old marks
+            document.querySelectorAll('[data-jarvis-id]').forEach(el => el.removeAttribute('data-jarvis-id'));
+
+            let interactive_map = [];
+            elements.forEach(el => {
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) return;
+                
+                const myId = id_counter++;
+                el.setAttribute('data-jarvis-id', myId.toString());
+                
+                let tag = el.tagName.toLowerCase();
+                let text = el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.title || "";
+                text = text.trim().substring(0, 60).replace(/\\n/g, ' ');
+                
+                if (text || tag === 'input' || tag === 'textarea' || tag === 'select') {
+                    let info = `[ID: ${myId}] <${tag}> ${text}`;
+                    if (tag === 'input') {
+                        info += ` (type: ${el.type || 'text'})`;
+                    }
+                    interactive_map.push(info);
+                }
+            });
+            return interactive_map.join('\\n');
+        }
+        """
+        return await self._page.evaluate(js_code)
+
+    async def _get_page_state(self) -> str:
+        # Wait briefly for dynamic JS rendering
+        await self._page.wait_for_timeout(1000)
+        
+        interactive_map_str = await self._mark_and_extract_dom()
+        
+        html_content = await self._page.content()
+        soup = BeautifulSoup(html_content, "html.parser")
+        
+        # Remove unwanted tags
+        for tag in soup(["script", "style", "noscript", "svg", "nav", "footer", "aside", "header"]):
+            tag.decompose()
+            
+        main_content = soup.find("main") or soup.find("article") or soup.find("div", {"id": "content"}) or soup.body
+        if not main_content:
+            return "Error: Could not parse page content."
+            
+        text = markdownify.markdownify(str(main_content), heading_style="ATX").strip()
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        
+        if len(text) > 8000:
+            text = text[:8000] + "\n\n... [Content Truncated]"
+            
+        url = self._page.url
+        
+        result = f"--- CURRENT URL ---\n{url}\n\n"
+        result += f"--- INTERACTIVE ELEMENTS ---\nUse web_click or web_type with the ID to interact.\n"
+        result += (interactive_map_str[:2000] + "\n...[Truncated]" if len(interactive_map_str) > 2000 else interactive_map_str)
+        result += f"\n\n--- PAGE CONTENT ---\n{text}"
+        
+        return result
+
+    async def browse(self, url: str) -> str:
+        if not url.startswith("http"):
+            url = f"https://{url}"
+            
+        print(f"[WEB AGENT] Navigating to: {url}")
+        
+        try:
+            await self._init_browser()
+            await self._page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            return await self._get_page_state()
+        except Exception as e:
+            print(f"[WEB AGENT] Playwright error (browse): {e}")
+            return f"Error navigating to {url}: {e}"
+
+    async def click(self, element_id: str) -> str:
+        print(f"[WEB AGENT] Clicking element {element_id}")
+        try:
+            await self._init_browser()
+            selector = f"[data-jarvis-id='{element_id}']"
+            # Wait a tiny bit just in case
+            await self._page.wait_for_selector(selector, state="attached", timeout=5000)
+            await self._page.click(selector, timeout=5000)
+            return await self._get_page_state()
+        except Exception as e:
+            return f"Error clicking element ID {element_id}: {e}"
+
+    async def type_text(self, element_id: str, text: str) -> str:
+        print(f"[WEB AGENT] Typing into {element_id}: '{text}'")
+        try:
+            await self._init_browser()
+            selector = f"[data-jarvis-id='{element_id}']"
+            await self._page.wait_for_selector(selector, state="attached", timeout=5000)
+            await self._page.fill(selector, text, timeout=5000)
+            # Send Enter just in case it's a search box
+            await self._page.keyboard.press("Enter")
+            return await self._get_page_state()
+        except Exception as e:
+            return f"Error typing into element ID {element_id}: {e}"
+
+    async def scroll(self, direction: str) -> str:
+        try:
+            await self._init_browser()
+            if "up" in direction.lower():
+                await self._page.evaluate("window.scrollBy(0, -window.innerHeight * 0.8)")
+            else:
+                await self._page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
+            return await self._get_page_state()
+        except Exception as e:
+            return f"Error scrolling: {e}"
+
+    async def go_back(self) -> str:
+        try:
+            await self._init_browser()
+            await self._page.go_back(timeout=10000, wait_until="domcontentloaded")
+            return await self._get_page_state()
+        except Exception as e:
+            return f"Error navigating back: {e}"
+
+if __name__ == "__main__":
+    async def main():
+        agent = WebAgent()
+        print("Testing Playwright WebAgent...")
+        res = await agent.browse("https://news.ycombinator.com")
+        print(res[:1000])
+        await agent.close()
+    asyncio.run(main())

@@ -1,7 +1,9 @@
 {
-    "editor.fontSize": 12,
-    "debug.console.fontSize": 12,
-    "scm.inputFontSize": 12,
-    "terminal.integrated.fontSize": 12,
-    "markdown.preview.fontSize": 12
+  "editor.fontSize": 12,
+  "debug.console.fontSize": 12,
+  "scm.inputFontSize": 12,
+  "terminal.integrated.fontSize": 12,
+  "markdown.preview.fontSize": 12,
+  "python.defaultInterpreterPath": "F:\\work\\JARVIS-Project\\jarvis-backend\\venv\\Scripts\\python.exe",
+  "python.analysis.extraPaths": "F:\\work\\JARVIS-Project\\jarvis-backend\\venv\\Lib\\site-packages"
 }

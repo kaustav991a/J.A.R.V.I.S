@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import gsap from "gsap";
 
-const HudReticle = () => {
+const HudReticle = React.memo(function HudReticle() {
   const ring1Ref = useRef(null);
   const ring2Ref = useRef(null);
   const ring3Ref = useRef(null);
@@ -37,6 +37,6 @@ const HudReticle = () => {
       <div className="ring ring-3" ref={ring3Ref}></div>
     </div>
   );
-};
+});
 
 export default HudReticle;

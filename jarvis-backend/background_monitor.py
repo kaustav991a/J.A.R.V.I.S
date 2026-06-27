@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 import datetime
 import random
@@ -11,10 +12,12 @@ class ProactiveAgent:
     Instead of random chatter, monitors real environmental factors
     and speaks up only when there's something genuinely useful to say.
     """
-    def __init__(self, broadcast_callback, speak_callback):
+    def __init__(self, broadcast_callback, speak_callback, is_system_online_callback=None):
         self.broadcast_callback = broadcast_callback
         self.speak_callback = speak_callback
+        self.is_system_online_callback = is_system_online_callback
         self.is_running = False
+        self.is_focus_mode_active = False
         self.session_start_time = time.time()
         
         # State tracking for delta detection
@@ -22,9 +25,9 @@ class ProactiveAgent:
         self.last_ambient_time = 0
         self.last_health_alert_time = 0
         self.last_late_night_nudge = 0
-        self.health_alert_cooldown = 600     # 10 min between health alerts
-        self.ambient_cooldown = 900          # 15 min between ambient messages
-        self.late_night_cooldown = 1800      # 30 min between late-night nudges
+        self.health_alert_cooldown = 300     # 5 min between health alerts
+        self.ambient_cooldown = 300          # 5 min between ambient messages
+        self.late_night_cooldown = 900       # 15 min between late-night nudges
         self.last_calendar_check = 0
         self.calendar_check_interval = 300   # 5 min between calendar checks
         self.last_email_digest = 0
@@ -35,8 +38,8 @@ class ProactiveAgent:
         self.is_running = True
         print("[PROACTIVE AGENT] Background intelligence activated. Waiting for system baseline...", flush=True)
         
-        # Give the system 90 seconds to boot and settle
-        await asyncio.sleep(90) 
+        # Give the system 15 seconds to boot and settle
+        await asyncio.sleep(15) 
         
         while self.is_running:
             try:
@@ -49,6 +52,17 @@ class ProactiveAgent:
 
     async def _check_cycle(self):
         """Runs all environmental checks in priority order."""
+        if self.is_system_online_callback and not self.is_system_online_callback():
+            return
+        
+        # Don't interrupt while JARVIS is actively speaking or user is in conversation
+        try:
+            import speaker
+            if speaker.is_system_speaking:
+                return
+        except Exception:
+            pass
+            
         now = time.time()
         hour = datetime.datetime.now().hour
         
@@ -83,7 +97,7 @@ class ProactiveAgent:
         # 2. WORK SESSION TIMER (Existing, improved)
         # ==========================================
         hours_active = (now - self.session_start_time) / 3600
-        if hours_active > 2.0:
+        if not self.is_focus_mode_active and hours_active > 2.0:
             messages = [
                 "Pardon the interruption, sir, but you've been at this for over two hours. Even I run garbage collection periodically. Might I suggest a brief recess?",
                 "Sir, you've been working continuously for over two hours now. Your cognitive performance may benefit from a short break. Just a thought.",
@@ -96,7 +110,7 @@ class ProactiveAgent:
         # ==========================================
         # 3. LATE NIGHT WELLNESS CHECK
         # ==========================================
-        if (hour >= 1 and hour < 5) and (now - self.last_late_night_nudge > self.late_night_cooldown):
+        if not self.is_focus_mode_active and (hour >= 1 and hour < 5) and (now - self.last_late_night_nudge > self.late_night_cooldown):
             late_messages = [
                 f"Sir, it is currently {datetime.datetime.now().strftime('%I:%M %p')}. I appreciate the dedication, but your body may have a dissenting opinion about this schedule.",
                 f"The time is {datetime.datetime.now().strftime('%I:%M %p')}, sir. I'm rather certain your circadian rhythm would prefer you horizontal at this hour.",
@@ -106,43 +120,22 @@ class ProactiveAgent:
             self.last_late_night_nudge = now
             return
         
-        # ==========================================
-        # 4. CALENDAR REMINDER (Phase 6)
-        # ==========================================
-        if now - self.last_calendar_check > self.calendar_check_interval:
-            self.last_calendar_check = now
-            try:
-                from modules.calendar_agent import CalendarAgent, is_calendar_available
-                if is_calendar_available():
-                    cal = CalendarAgent()
-                    upcoming = cal.get_upcoming(minutes=15)
-                    for event in upcoming:
-                        event_key = f"{event['summary']}_{event['start']}"
-                        if event_key not in self.reminded_events:
-                            mins = event['minutes_until']
-                            message = f"Sir, just a heads up — '{event['summary']}' begins in {mins} minute{'s' if mins != 1 else ''}."
-                            await self._trigger_event(message)
-                            self.reminded_events.add(event_key)
-                            return
-            except Exception as e:
-                print(f"[PROACTIVE AGENT] Calendar check failed: {e}", flush=True)
+
         
         # ==========================================
-        # 5. MORNING EMAIL DIGEST (Phase 6)
+        # 5. MORNING BRIEFING (Phase 9)
         # ==========================================
-        if (8 <= hour <= 9) and (now - self.last_email_digest > self.email_digest_cooldown):
-            try:
-                from modules.gmail_agent import GmailAgent, is_gmail_available
-                if is_gmail_available():
-                    gmail = GmailAgent()
-                    count = gmail.get_unread_count()
-                    if count > 0:
-                        message = f"Good morning, sir. You have {count} unread email{'s' if count != 1 else ''} waiting for your attention."
-                        await self._trigger_event(message)
-                        self.last_email_digest = now
-                        return
-            except Exception as e:
-                print(f"[PROACTIVE AGENT] Email digest failed: {e}", flush=True)
+        if not self.is_focus_mode_active and (8 <= hour <= 9) and (now - self.last_email_digest > self.email_digest_cooldown):
+            # Only trigger if someone is actually in the room to hear it
+            if shared_optical_cache.get("camera_active") and shared_optical_cache.get("people_in_view"):
+                try:
+                    from modules.routines import RoutineEngine
+                    engine = RoutineEngine(self.broadcast_callback, self.speak_callback)
+                    await engine.run_morning_briefing()
+                    self.last_email_digest = now
+                    return
+                except Exception as e:
+                    print(f"[PROACTIVE AGENT] Morning briefing failed: {e}", flush=True)
         
         # ==========================================
         # 4. INTRUDER DETECTION (Phase 8)
@@ -190,7 +183,8 @@ class ProactiveAgent:
                     elif person == "KINSHUK":
                         message = "Welcome back, Mr. Kinshuk. Unlocking the interface."
                     else:
-                        message = "I detect a presence. Please identify yourself."
+                        # If DeepFace hasn't verified them yet, just wait. Intruder protocol will handle it if they remain unknown.
+                        return
                     
                     await self.broadcast_callback({"status": "online", "message": "USER DETECTED. UNLOCKING UI.", "is_proactive": True})
                     await self.speak_callback(message)
@@ -262,9 +256,9 @@ class ProactiveAgent:
         # ==========================================
         # 6. TIME-AWARE AMBIENT MESSAGES (Low Priority)
         # ==========================================
-        if now - self.last_ambient_time > self.ambient_cooldown:
-            # 8% chance per cycle (roughly once every ~12 minutes on average)
-            if random.random() < 0.08:
+        if not self.is_focus_mode_active and now - self.last_ambient_time > self.ambient_cooldown:
+            # Guarantee a message on first boot, or 25% chance per cycle afterwards
+            if self.last_ambient_time == 0 or random.random() < 0.25:
                 message = self._get_contextual_ambient(hour)
                 if message:
                     await self._trigger_event(message)
@@ -307,3 +301,77 @@ class ProactiveAgent:
         # Give the UI time to revert to standby
         await asyncio.sleep(5)
         await self.broadcast_callback({"status": "online", "message": "SYSTEM ONLINE // STANDBY", "is_proactive": True})
+
+class ScheduleDaemon(threading.Thread):
+    """
+    Zero-CPU Proactive Scheduler.
+    Runs on a dedicated background thread, polling the calendar every 60 seconds
+    and triggering direct TTS alerts for events starting in 5 to 10 minutes.
+    """
+    def __init__(self, main_loop, active_user="KAUSTAV"):
+        super().__init__(daemon=True)
+        self.main_loop = main_loop
+        self.active_user = active_user
+        self.notified_events = set()
+        self.last_clear_date = datetime.datetime.now().date()
+        
+    def run(self):
+        print("[SCHEDULE DAEMON] Zero-CPU Proactive Scheduler activated.", flush=True)
+        
+        # Give system time to boot
+        time.sleep(15)
+        
+        while True:
+            try:
+                self._check_schedule()
+            except Exception as e:
+                print(f"[SCHEDULE DAEMON] Error: {e}", flush=True)
+            
+            # Zero-CPU block
+            time.sleep(60)
+            
+    def _check_schedule(self):
+        import speaker
+        import asyncio
+        
+        # 1. State Management: Clear notified events at midnight
+        now_date = datetime.datetime.now().date()
+        if now_date > self.last_clear_date:
+            self.notified_events.clear()
+            self.last_clear_date = now_date
+            
+        # Do not interrupt if JARVIS is already speaking
+        if speaker.is_system_speaking:
+            return
+            
+        # 2. Fetch upcoming schedule
+        from modules.calendar_agent import CalendarAgent, is_calendar_available
+        if not is_calendar_available():
+            return
+            
+        cal = CalendarAgent()
+        upcoming = cal.get_upcoming(minutes=15)
+        
+        for event in upcoming:
+            evt_id = event.get('id')
+            if not evt_id:
+                continue
+                
+            mins = event['minutes_until']
+            if 5 <= mins <= 10 and evt_id not in self.notified_events:
+                # Prepare direct TTS
+                title = "Madam" if self.active_user == "MOUSUMI" else "Sir"
+                message = f"Pardon the interruption, {title}. Your '{event['summary']}' starts in {mins} minute{'s' if mins != 1 else ''}."
+                
+                print(f"[SCHEDULE DAEMON] Triggering proactive alert: {message}", flush=True)
+                
+                # Safely execute TTS on the main event loop
+                asyncio.run_coroutine_threadsafe(
+                    speaker.speak_text(message),
+                    self.main_loop
+                )
+                
+                # Mark as notified
+                self.notified_events.add(evt_id)
+                # Only announce one event at a time to prevent overlapping audio
+                return

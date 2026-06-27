@@ -1,0 +1,201 @@
+# Changelog
+
+All notable architectural changes to **Project J.A.R.V.I.S.** are documented here.
+This file follows the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+---
+
+## [Autonomy Monitoring & Manual Override] — 2026-06-27
+
+Stark-style visibility and control over the Overnight Worker: hear what J.A.R.V.I.S. is
+doing, watch it happen, and kill any background agent instantly.
+
+### Added
+- **Voice Hook — background-queue status report.** "What are you working on?", "Status
+  report", "What's in the queue?", "What's running?" (and similar) now read the live
+  `jarvis_tasks.db` and speak a natural, **deterministic** (no-LLM, zero-hallucination)
+  summary — e.g. *"I'm currently working on the Figma layout build, and I have 2 more queued,
+  starting with the arc reactor search, Sir."* Backed by new `task_queue.spoken_status_report()`
+  and `task_queue.status_counts()`; wired into both the backdoor and voice command paths via
+  `_QUEUE_STATUS_PHRASES`. The reply also lands in the chat transcript.
+- **Task HUD — the AUTONOMY QUEUE widget** (`src/components/TaskHud.{jsx,scss}`). A sleek
+  top-left glass panel subscribing to `GET /api/tasks`: polls every 4 s while open
+  (AbortController-guarded), refetches instantly on any worker WebSocket event, and
+  **auto-opens** when a task or autopilot run starts. Rows are grouped Running → Queued →
+  Needs-OK → Failed → Done → Cancelled, each with a colored status pip (running = pulsing cyan,
+  queued = amber, needs-OK = gold, done = green, failed = red, cancelled = struck-through grey)
+  and a live "N ACTIVE" count. Toggled by the new **TASKS** button in the command cluster.
+- **HUD Kill Switch — per-row cancel (✕).** Each in-flight task (running / pending /
+  needs-confirmation) shows a cancel control on hover that hits `POST /api/tasks/{id}/cancel`
+  with an **optimistic update** — the row flips to struck-through grey instantly, then the next
+  poll reconciles with server truth. Immediate manual override over any background agent.
+
+### Changed
+- **`App.jsx`** — worker lifecycle events (`task_started`, `task_done`, `autopilot_*`, etc.)
+  are intercepted early in the WebSocket handler so they refresh the Task HUD **without**
+  polluting the chat transcript, system log, or status display.
+
+### Verified
+- Spoken status report tested against the live DB (empty + active states); React production
+  build compiles cleanly with both new widgets (ChatPanel + TaskHud) and the cancel control.
+
+---
+
+## [Local-First Autopilot & Cognitive Upgrades — Phase 3] — 2026-06-27
+
+A shift to a **local-first, privacy-centric stack**, plus a LangGraph-powered overnight
+coding autopilot. Everything is async, lazy-loaded, and degrades gracefully — no new
+dependency can break startup or the voice loop if a package/key/Ollama is missing.
+
+### Added
+- **Local RAG cortex** (`modules/rag_cortex.py`) — persistent ChromaDB + **local HuggingFace
+  `all-MiniLM-L6-v2`** embeddings (no OpenAI). Heading-aware chunking, idempotent ingest, async
+  `aquery_standards()` / `aingest_standards()`. Embedding model loads lazily (one-time ~90 MB
+  local download). Corpus: new **`frontend_standards.md`** (BEM/SCSS rules).
+- **Figma extractor** (`modules/figma_parser.py`) — async `httpx` client; extracts layout modes,
+  spacing, dimensions, typography, and colors (rgba→hex) from the Figma REST API.
+- **Overnight Autopilot** (`modules/agent_worker.py`) — a cyclic LangGraph `StateGraph`:
+  `parse_figma → retrieve_standards → generate_code → validate_syntax → save_files`, with a
+  **self-healing edge** (re-generate with the error traceback on invalid HTML/SCSS, max 3 retries).
+  `generate_code` uses the **Claude API** (default `claude-sonnet-4-6`, env-overridable) with a
+  router heavy-path → local fallback. Runs as a background `asyncio.create_task`.
+- **Tavily search** — `_tavily_search` + `tavily_search` action (governance AUTO); `web_search`
+  now prefers Tavily when `TAVILY_API_KEY` is set, with automatic DDGS fallback.
+- **Endpoint** `POST /api/autopilot` (lazy-imports langgraph; launches the pipeline in background).
+- Installed into the venv: `langgraph`, `langchain-core`, `sentence-transformers`, `tavily-python`, `anthropic`.
+
+### Changed
+- **Router overhaul** (`modules/llm_router.py`) — `universal_llm_call` is now a local-first provider
+  chain. Standard work runs on local Ollama `llama3:8b`; escalates to Groq on local
+  failure/timeout, or **cloud-first** when `complexity="heavy"`. Vision (`llava`) is pinned
+  local-only. New env knobs: `JARVIS_LLM_MODE`, `OLLAMA_MODEL`, `OLLAMA_VISION_MODEL`,
+  `JARVIS_LOCAL_TIMEOUT`.
+- **`brain.process_command`** flags `CODER` intent as `complexity="heavy"` so complex
+  coding/architecture escalates to the cloud.
+
+### Verified
+- All modules import with heavy deps staying lazy; router decisions
+  (standard→local, heavy→cloud, vision→local); LangGraph graph compiles; Figma token
+  extraction; self-healing validator fires on malformed output.
+
+---
+
+## [Continuous Autonomous Agency — Roadmap §1.1] — 2026-06-27
+
+The leap from *responder* to *agent*: the **Overnight Worker Loop**. J.A.R.V.I.S. can now
+hold a durable queue of goals, pursue them on his own in the background, and report results
+when you next engage.
+
+### Added
+- **`modules/task_queue.py`** — durable SQLite goal queue (`jarvis_tasks.db`). Tasks survive
+  restarts; each carries a list of action payloads. Atomic `claim_next_pending()` (BEGIN
+  IMMEDIATE), status lifecycle (pending → running → done/failed/needs_confirmation/cancelled),
+  and `requeue_stuck_running()` to recover tasks interrupted by a crash. All access is
+  synchronous and called via `asyncio.to_thread` (non-blocking).
+- **`modules/worker_loop.py`** — the `OvernightWorker` daemon. Drains the queue, executes each
+  task through `execute_with_retry` (inheriting self-correction + governance), and surfaces
+  results to HUD/voice.
+  - **The loop never dies:** every task runs inside nested try/except; a crash is logged and
+    recorded against the task, and the loop continues.
+  - **Safe autonomy:** each action's governance tier is pre-screened read-only
+    (`governance_manager.get_tier`). Only **AUTO**-tier actions run unattended; **CONFIRM** and
+    **BLOCK** actions are recorded and surfaced for interactive approval — never executed in the
+    background, never touching the interactive confirmation slot.
+  - **Result surfacing:** announces on completion if you're engaged; otherwise defers and
+    reports on next wake via `report_pending()`.
+- **Task API:** `POST /api/tasks` (enqueue), `GET /api/tasks` (list/filter), `POST /api/tasks/{id}/cancel`.
+- **Backdoor test hook:** `test:enqueue_task[: <query>]` — queues a real web-search task to
+  exercise the full agentic loop on demand.
+
+### Changed
+- **`main.py`** — the Overnight Worker is started as a daemon in `lifespan()` (stopped cleanly
+  on shutdown), and finished-while-away results are reported on every wake (backdoor + voice paths).
+
+### Verified
+- End-to-end: `web_search` (AUTO) → **done**; `gmail_send` (CONFIRM) → **deferred/needs_confirmation**;
+  `delete_file` (BLOCK) → **failed-by-policy**. Worker logs are ASCII-only (no Windows cp1252 crash).
+
+---
+
+## [Refinement & Polish Phase] — 2026-06-27
+
+A two-session overhaul focused on async correctness, resource safety, conversational
+memory, interruptibility, and the daily wake-up experience. All changes are additive
+and defensive — no routing, persona, or governance logic was altered. Every modified
+file byte-compiles on Python 3.13.
+
+### Added
+
+- **First-Boot Daily Briefing.** The first wake of each calendar day now delivers a
+  full **Comprehensive Morning Briefing** — explicit date + time, a walk-through of
+  today's calendar, unread-mail/vitals highlights, and an explicit system-readiness
+  confirmation. Same-day re-wakes fall back to the standard short greeting.
+  - New on-disk marker `last_boot_date.txt` + `_consume_new_day_briefing()` in
+    `main.py` (fires once per day, survives restarts).
+  - `generate_briefing()` in `brain.py` gained a `comprehensive=True` mode (reuses the
+    existing calendar/email/health/weather fetch; richer prompt, larger token budget).
+  - `_smart_briefing()` now branches: new day → comprehensive; recent activity →
+    standby line; same-day idle → standard greeting.
+- **`test:morning_briefing` backdoor hook.** Replays the comprehensive briefing on
+  demand (full booting → waking → online UI sequence) without a date rollover or
+  deleting the marker file. Mirrors the existing `test:deep_work_ui` hook.
+- **Session-digest memory store.** New `session_digest` SQLite table (one rolling
+  digest per user) plus helpers in `memory.py`: `consolidate_working_memory()`,
+  `seed_from_last_digest()`, `save_session_digest()`, `get_last_session_digest()`.
+- **Barge-in cancellation token.** Module-level `interrupt_flag = asyncio.Event()` in
+  `main.py`, checked by all streaming-synthesis loops.
+- **Anti-fabrication grounding rule** in the synthesis prompt (`brain.py`) — the voice
+  may only state facts present in the retrieved data; missing/error data is reported as
+  missing, never invented.
+
+### Changed
+
+- **Async Playwright Overhaul (`web_agent.py`).** `close()` rewritten so each teardown
+  step (page → context → browser → playwright) is independently guarded and all handles
+  are nulled even on partial failure — eliminates leaked **zombie Chromium / Playwright
+  node processes** on a mid-session error. `_init_browser()` now tears down and re-raises
+  on a partial init instead of leaving a half-built stack that crashes the next call.
+- **Threading / non-blocking I/O (`action_engine.py`).** `ActionEngine.execute()` is
+  async, but its data handlers were synchronous network/disk calls running **directly on
+  the event loop**, freezing TTS streaming, the WebSocket, and all daemons. Offloaded 12
+  blocking handlers to worker threads via `asyncio.to_thread`: `web_search`,
+  `web_search_image`, `play_music`, `system_status`, `get_telemetry`, `check_email`,
+  `read_email`, `gmail_read_unread`, `gmail_read`, `check_calendar`, `check_vitals`,
+  `find_file`.
+- **Short-Term Memory Consolidation (sleep/wake continuity).** Working memory is no
+  longer wiped into oblivion on sleep. Before every `clear_working_memory()` (WebSocket
+  STAGE 0 + backdoor sleep) the session is LLM-condensed into a persistent digest; on
+  every wake (WebSocket STAGE 2 + backdoor wake) fresh working memory is re-seeded with
+  that `[PREVIOUS SESSION RECAP]` so J.A.R.V.I.S. resumes with immediate context.
+  Consolidation/seeding are offloaded via `asyncio.to_thread` (non-blocking SQLite).
+- **True Interruptibility (`main.py`).** `_stream_synthesize_speak`,
+  `_stream_briefing_speak`, and `_stream_deep_memory_speak` now check `interrupt_flag`
+  at the top of every sentence iteration and break — J.A.R.V.I.S. can be cut off
+  mid-monologue. `stop / quiet / shut up / cancel / enough / silence` in both the
+  backdoor and voice paths set the flag **and** call `speaker.stop_audio()`; the flag is
+  cleared at the start of each new valid command. Voice barge-in only fires while he is
+  actually speaking, preserving "stop"/"cancel" as a governance denial otherwise.
+- **Router resilience (`llm_router.py`).** The Groq→Ollama fallback no longer mutates
+  the caller's shared `messages` list (it built a copy with a fresh final turn),
+  preventing working-memory corruption and double-appended JSON instructions on retry.
+- **Latency tuning (`brain.py`).** `classify_intent` timeout reduced 30s → 15s (tiny
+  call; tighter ceiling = faster Ollama fallback on a hang, no risk of premature
+  fallback on valid responses).
+
+### Fixed
+
+- **Chain-breaking tool exceptions.** `execute_with_retry()` wraps `execute()` in a
+  universal trap: any unhandled handler exception is logged with a full traceback,
+  recorded as `FAILED` in the trace ring, and returned as a clean localized string
+  (`"Action failed: the '<tool>' tool encountered an unexpected error …"`) instead of
+  bubbling an opaque fault that kills the whole action batch.
+- **Raw-data leak to TTS.** The synthesis-stream exception path no longer yields up to
+  120 chars of raw data/JSON to the voice; it now speaks a clean fallback line.
+
+### Notes
+
+- The comprehensive briefing fires on the **first wake after midnight** — use
+  `test:morning_briefing` to replay it during the day.
+- Recommended next steps (not yet implemented): a durable task/goal queue for the
+  Overnight Worker Loop, and per-session scoping of the global `engine` / `active_user`
+  singletons before the Telegram Gateway introduces concurrent clients.

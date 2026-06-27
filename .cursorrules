@@ -1,0 +1,19 @@
+# MISSION
+We are building a local, multimodal AI OS named J.A.R.V.I.S. 
+The system must act seamlessly as a PC specialist, a senior coder, and a witty mentor.
+
+# TECH STACK
+- Backend: Python (FastAPI, WebSockets)
+- Brain/LLM: Groq API
+- Vision/GUI Agent: Llama/Gemini API via pyautogui
+- Frontend: React.js
+
+# CORE ARCHITECTURE
+- `brain.py`: The intelligence layer, LLM routing, and persona management.
+- `action_engine.py`: Parses JSON commands and triggers backend tools.
+- `human_gui_agent.py`: The autonomous vision loop for physical PC control.
+
+# DIRECTIVES
+1. Always write clean, production-ready code. Do not leave placeholder comments like "add code here".
+2. Never break existing WebSocket connections or the React-to-FastAPI pipeline.
+3. Ensure the J.A.R.V.I.S. persona (witty, precise, slightly sarcastic British butler) is maintained in all system prompts.

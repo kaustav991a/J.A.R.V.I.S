@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Search } from "lucide-react";
 
-const BrowserWidget = ({ externalUrl }) => {
+const BrowserWidget = ({ externalUrl, immersive = false }) => {
   const defaultUrl = "https://www.youtube.com/embed/S2O6oV_2H8k?autoplay=1&mute=1";
   const [urlInput, setUrlInput] = useState(externalUrl || defaultUrl);
   const [currentUrl, setCurrentUrl] = useState(externalUrl || defaultUrl);
@@ -19,6 +19,9 @@ const BrowserWidget = ({ externalUrl }) => {
   useEffect(() => {
     if (externalUrl) {
       let finalUrl = externalUrl.trim();
+      if (finalUrl.includes("m.youtube.com")) {
+        finalUrl = finalUrl.replace("m.youtube.com", "www.youtube.com");
+      }
       if (finalUrl.includes("youtube.com/watch?v=")) {
         finalUrl = finalUrl.replace("watch?v=", "embed/") + "?autoplay=1";
       } else if (finalUrl.includes("youtu.be/")) {
@@ -52,7 +55,7 @@ const BrowserWidget = ({ externalUrl }) => {
   };
 
   return (
-    <div className="browser-ui holographic-ui">
+    <div className={`browser-ui holographic-ui${immersive ? " browser-ui--immersive" : ""}`}>
       <form onSubmit={handleSubmit} className="browser-header">
         <Search size={14} color="#00ffcc" />
         <input

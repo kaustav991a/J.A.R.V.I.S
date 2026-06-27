@@ -79,8 +79,9 @@ def save_session(groq_client=None):
         print(f"[EPISODIC] Failed to save session file: {e}")
     
     # --- 2. GENERATE SUMMARY & EMBED INTO CHROMADB ---
-    if episodes_collection and groq_client:
+    if episodes_collection:
         try:
+            from modules.groq_key_manager import run_with_key_rotation
             # Build a condensed transcript for the LLM
             transcript_lines = []
             for turn in _current_session[-20:]:  # Last 20 turns max
@@ -95,11 +96,13 @@ Do NOT mention that this is a conversation or a transcript. Just state the facts
 Transcript:
 {transcript}"""
             
-            completion = groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "system", "content": summary_prompt}],
-                temperature=0.3,
-                max_tokens=100
+            completion = run_with_key_rotation(
+                lambda c: c.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[{"role": "system", "content": summary_prompt}],
+                    temperature=0.3,
+                    max_tokens=100,
+                )
             )
             summary = completion.choices[0].message.content.strip()
             

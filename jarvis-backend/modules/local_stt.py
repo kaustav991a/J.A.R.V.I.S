@@ -28,6 +28,13 @@ class LocalSTT:
         # Convert bytes to numpy array (faster-whisper expects a float32 array [-1.0, 1.0])
         audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
         
+        if sample_rate != 16000:
+            import torch
+            import torchaudio.transforms as T
+            resampler = T.Resample(sample_rate, 16000)
+            audio_tensor = torch.from_numpy(audio_np)
+            audio_np = resampler(audio_tensor).numpy()
+        
         segments, info = self.model.transcribe(audio_np, beam_size=1)
         text = "".join([segment.text for segment in segments])
         return text.strip()

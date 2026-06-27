@@ -4,16 +4,13 @@
 /* ==========================================================================
    2. BASE STYLES & BACKGROUND
    ========================================================================== */
+/* Legacy duplicate of App.scss — kept in sync; App.jsx imports App.scss only. */
 body {
   margin: 0;
-  background-color: #020b12;
+  background-color: #050505;
   color: #00ffcc;
   font-family: "Orbitron", sans-serif;
   overflow: hidden;
-  /* Honeycomb background */
-  background-image: linear-gradient(30deg, rgba(0, 255, 204, 0.03) 12%, transparent 12.5%, transparent 87%, rgba(0, 255, 204, 0.03) 87.5%, rgba(0, 255, 204, 0.03)), linear-gradient(150deg, rgba(0, 255, 204, 0.03) 12%, transparent 12.5%, transparent 87%, rgba(0, 255, 204, 0.03) 87.5%, rgba(0, 255, 204, 0.03)), linear-gradient(30deg, rgba(0, 255, 204, 0.03) 12%, transparent 12.5%, transparent 87%, rgba(0, 255, 204, 0.03) 87.5%, rgba(0, 255, 204, 0.03)), linear-gradient(150deg, rgba(0, 255, 204, 0.03) 12%, transparent 12.5%, transparent 87%, rgba(0, 255, 204, 0.03) 87.5%, rgba(0, 255, 204, 0.03)), linear-gradient(60deg, rgba(0, 255, 204, 0.03) 25%, transparent 25.5%, transparent 75%, rgba(0, 255, 204, 0.03) 75%, rgba(0, 255, 204, 0.03)), linear-gradient(60deg, rgba(0, 255, 204, 0.03) 25%, transparent 25.5%, transparent 75%, rgba(0, 255, 204, 0.03) 75%, rgba(0, 255, 204, 0.03));
-  background-size: 80px 140px;
-  background-position: 0 0, 0 0, 40px 70px, 40px 70px, 0 0, 40px 70px;
 }
 
 .dashboard-container {

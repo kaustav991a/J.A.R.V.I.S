@@ -38,67 +38,126 @@ class FileAgent:
     
     def find_file(self, query: str) -> str:
         """
-        Fuzzy searches for files across common directories.
-        Returns top 5 matches with full paths.
+        Phase 8.8: Fuzzy searches for files across common directories.
+
+        Safety limits:
+          - MAX_DEPTH = 4 (was 3 off-by-one; now explicit constant)
+          - TIMEOUT   = 10 seconds (wall-clock, enforced via threading.Event)
+
+        The os.walk loop checks timeout_event.is_set() at every directory
+        yield so it exits promptly when the timer fires. If nothing is found
+        within the time limit a graceful failure is returned to the LLM.
+        Returns top 5 matches sorted by most-recently-modified.
         """
-        print(f"[FILE AGENT] Searching for: {query}")
+        import threading
+
+        MAX_DEPTH = 4
+        TIMEOUT   = 10  # seconds
+
+        print(f"[FILE AGENT] Searching for: {query!r}  (max_depth={MAX_DEPTH}, timeout={TIMEOUT}s)")
         query_lower = query.lower().strip()
         matches = []
-        
-        for search_dir in self.search_dirs:
-            if not search_dir.exists():
-                continue
-            
-            try:
-                # Walk max 3 levels deep to avoid extremely slow searches
-                for root, dirs, files in os.walk(search_dir):
-                    # Limit depth
-                    depth = str(root).count(os.sep) - str(search_dir).count(os.sep)
-                    if depth > 3:
-                        dirs.clear()
-                        continue
-                    
-                    # Skip hidden/system directories
-                    dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', 'venv', '__pycache__', '.git')]
-                    
-                    for filename in files:
-                        if query_lower in filename.lower():
-                            full_path = os.path.join(root, filename)
-                            try:
-                                size = os.path.getsize(full_path)
-                                modified = datetime.datetime.fromtimestamp(os.path.getmtime(full_path))
-                                matches.append({
-                                    "name": filename,
-                                    "path": full_path,
-                                    "size": self._format_size(size),
-                                    "modified": modified.strftime("%Y-%m-%d %H:%M")
-                                })
-                            except Exception:
-                                matches.append({"name": filename, "path": full_path, "size": "?", "modified": "?"})
-                            
-                            if len(matches) >= 10:
+
+        # Threading.Event: the Timer thread sets this flag; the walk loop checks it.
+        timeout_event = threading.Event()
+        timer = threading.Timer(TIMEOUT, timeout_event.set)
+        timer.daemon = True
+        timer.start()
+
+        try:
+            for search_dir in self.search_dirs:
+                if timeout_event.is_set():
+                    break
+                if not search_dir.exists():
+                    continue
+
+                try:
+                    for root, dirs, files in os.walk(search_dir):
+                        # ── Timeout check — exit the walk immediately when timer fires ──
+                        if timeout_event.is_set():
+                            dirs.clear()   # prevent os.walk from descending further
+                            break
+
+                        # Depth limit
+                        depth = (
+                            str(root).count(os.sep)
+                            - str(search_dir).count(os.sep)
+                        )
+                        if depth >= MAX_DEPTH:
+                            dirs.clear()
+                            continue
+
+                        # Skip hidden/system directories
+                        dirs[:] = [
+                            d for d in dirs
+                            if not d.startswith(".")
+                            and d not in ("node_modules", "venv", "__pycache__", ".git")
+                        ]
+
+                        for filename in files:
+                            # ── Inner timeout check ───────────────────────────────
+                            if timeout_event.is_set():
                                 break
-                    
-                    if len(matches) >= 10:
-                        break
-            except PermissionError:
-                continue
-        
+
+                            if query_lower in filename.lower():
+                                full_path = os.path.join(root, filename)
+                                try:
+                                    size = os.path.getsize(full_path)
+                                    modified = datetime.datetime.fromtimestamp(
+                                        os.path.getmtime(full_path)
+                                    )
+                                    matches.append({
+                                        "name":     filename,
+                                        "path":     full_path,
+                                        "size":     self._format_size(size),
+                                        "modified": modified.strftime("%Y-%m-%d %H:%M"),
+                                    })
+                                except Exception:
+                                    matches.append({
+                                        "name": filename, "path": full_path,
+                                        "size": "?", "modified": "?",
+                                    })
+
+                                if len(matches) >= 10:
+                                    break
+
+                        if len(matches) >= 10:
+                            dirs.clear()
+                            break
+
+                except PermissionError:
+                    continue
+
+        finally:
+            timer.cancel()  # cancel the timer if the walk finished early
+
+        if timeout_event.is_set():
+            print(f"[FILE AGENT] find_file timed out after {TIMEOUT}s; {len(matches)} partial matches found.")
+
         if not matches:
-            return f"I couldn't find any files matching '{query}' in your common directories, sir."
-        
+            if timeout_event.is_set():
+                return (
+                    f"I couldn't locate '{query}' within the time limit, Sir. "
+                    f"The search exceeded {TIMEOUT} seconds across your common directories."
+                )
+            return f"No files matching '{query}' were located in your common directories, sir."
+
         # Sort by most recently modified
         matches.sort(key=lambda x: x.get("modified", ""), reverse=True)
         top = matches[:5]
-        
-        result_lines = [f"I found {len(matches)} file{'s' if len(matches) != 1 else ''} matching '{query}':"]
+
+        timed_out_note = " (search timed out — results may be partial)" if timeout_event.is_set() else ""
+        result_lines = [
+            f"I found {len(matches)} file{'s' if len(matches) != 1 else ''} "
+            f"matching '{query}'{timed_out_note}:"
+        ]
         for i, m in enumerate(top, 1):
             result_lines.append(f"  {i}. {m['name']} ({m['size']}) — Modified: {m['modified']}")
             result_lines.append(f"     Path: {m['path']}")
-        
+
         if len(matches) > 5:
             result_lines.append(f"  ... and {len(matches) - 5} more.")
-        
+
         return "\n".join(result_lines)
     
     def create_note(self, target: str) -> str:
@@ -114,8 +173,10 @@ class FileAgent:
             title = target.strip()
             content = ""
         
-        # Sanitize filename
+        # Sanitize filename — collapse spaces so "Sprint Plan" and "SprintPlan"
+        # both produce the same file on disk.
         safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()
+        safe_title = safe_title.replace(" ", "")  # remove spaces: "Sprint Plan" → "SprintPlan"
         if not safe_title:
             safe_title = "untitled_note"
         

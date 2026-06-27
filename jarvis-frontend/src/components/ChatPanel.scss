@@ -1,0 +1,175 @@
+/* ==========================================================================
+   COMM TRANSCRIPT — chat panel
+   Reuses the HUD glass-modular treatment (see App.scss .widget-glass-modular)
+   so it sits natively alongside the existing widgets.
+   ========================================================================== */
+$cyan: #00ffcc;
+$accent-red: #ff3366;
+$gold: #ffd700;
+
+.chat-panel {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  bottom: 120px; /* clears the bottom command cluster */
+  width: min(340px, calc(100vw - 48px));
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  font-family: "Poppins", "Lato", sans-serif;
+
+  /* Glass-modular surface — matched to App.scss */
+  background: rgba(8, 12, 18, 0.42);
+  backdrop-filter: blur(22px) saturate(145%);
+  -webkit-backdrop-filter: blur(22px) saturate(145%);
+  border: 1px solid rgba(64, 200, 255, 0.32);
+  border-radius: 12px;
+  box-shadow:
+    0 0 0 1px rgba(0, 255, 204, 0.06),
+    0 0 28px rgba(0, 180, 255, 0.12),
+    0 20px 50px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+
+  &__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: rgba(12, 40, 56, 0.55);
+    border-bottom: 1px solid rgba(64, 200, 255, 0.25);
+  }
+
+  &__title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: "Orbitron", sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: rgba(200, 255, 250, 0.95);
+  }
+
+  &__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: $cyan;
+    box-shadow: 0 0 8px $cyan;
+    animation: chatPulse 2s infinite;
+  }
+
+  &__close {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: rgba(0, 255, 204, 0.6);
+    font-size: 13px;
+    line-height: 1;
+    padding: 2px 4px;
+    transition: color 0.2s ease, transform 0.2s ease;
+
+    &:hover {
+      color: $accent-red;
+      transform: scale(1.15);
+    }
+  }
+
+  &__body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 255, 204, 0.4) transparent;
+    &::-webkit-scrollbar { width: 5px; }
+    &::-webkit-scrollbar-thumb {
+      background: rgba(0, 255, 204, 0.35);
+      border-radius: 3px;
+    }
+  }
+
+  &__empty {
+    margin: auto;
+    color: rgba(0, 255, 204, 0.45);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+  }
+}
+
+/* --- Message bubbles --------------------------------------------------- */
+.chat-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 88%;
+  animation: chatMsgIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+
+  &__tag {
+    font-family: "Orbitron", sans-serif;
+    font-size: 9.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    opacity: 0.75;
+  }
+
+  &__text {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 8px 11px;
+    border-radius: 10px;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  /* J.A.R.V.I.S — cyan, left aligned */
+  &--jarvis {
+    align-self: flex-start;
+    align-items: flex-start;
+    .chat-msg__tag { color: $cyan; }
+    .chat-msg__text {
+      color: rgba(214, 255, 250, 0.95);
+      background: rgba(0, 255, 204, 0.08);
+      border: 1px solid rgba(0, 255, 204, 0.22);
+      border-top-left-radius: 3px;
+    }
+  }
+
+  /* USER — gold, right aligned */
+  &--user {
+    align-self: flex-end;
+    align-items: flex-end;
+    .chat-msg__tag { color: $gold; }
+    .chat-msg__text {
+      color: rgba(255, 246, 214, 0.96);
+      background: rgba(255, 215, 0, 0.07);
+      border: 1px solid rgba(255, 215, 0, 0.25);
+      border-top-right-radius: 3px;
+    }
+  }
+}
+
+@keyframes chatPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes chatMsgIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 720px) {
+  .chat-panel {
+    width: calc(100vw - 32px);
+    right: 16px;
+    top: 16px;
+    bottom: 150px;
+  }
+}

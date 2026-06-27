@@ -3,6 +3,7 @@ import pygame
 import asyncio
 import os
 import threading
+from collections import deque
 import re
 import uuid 
 import time # --- NEW: Needed for file lock release ---
@@ -15,7 +16,7 @@ import wave
 # Set to True to use Piper (100% offline, ~250ms latency)
 # Set to False to use Edge TTS (cloud, higher quality)
 # ==========================================
-USE_LOCAL_TTS = True
+USE_LOCAL_TTS = False
 
 VOICE = "en-GB-RyanNeural"
 
@@ -48,6 +49,25 @@ except pygame.error as e:
 # Ensure speech happens in order without interrupting
 speech_lock = asyncio.Lock()
 
+# Phase 4 regression: ring buffer of utterances passed to speak_text (when enabled via env).
+_REGRESSION_UTTERANCES: deque[str] = deque(maxlen=120)
+
+
+def regression_append_utterance(text: str) -> None:
+    if os.getenv("JARVIS_REGRESSION_ROUTES") != "1":
+        return
+    t = (text or "").strip()
+    if t:
+        _REGRESSION_UTTERANCES.append(t)
+
+
+def regression_get_spoken(*, clear: bool = False) -> list[str]:
+    """Snapshot of recent TTS lines for persona / leak regression tests."""
+    out = list(_REGRESSION_UTTERANCES)
+    if clear:
+        _REGRESSION_UTTERANCES.clear()
+    return out
+
 # --- Phase 8: Lazy-load local TTS model only when needed ---
 _local_tts_instance = None
 def _get_local_tts():
@@ -59,9 +79,15 @@ def _get_local_tts():
 
 def stop_audio():
     """Instantly kills any currently playing audio."""
-    if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
-        print("[SPEAKER] System interrupted previous audio.")
-        stop_speaking_flag.set()
+    global is_system_speaking
+    stop_speaking_flag.set()
+    try:
+        if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
+            pygame.mixer.music.stop()
+            print("[SPEAKER] Audio interrupted immediately.")
+    except Exception:
+        pass
+    is_system_speaking = False
 
 async def speak_text(text):
     global is_system_speaking
@@ -71,7 +97,8 @@ async def speak_text(text):
         is_system_speaking = True 
         
         print(f"[JARVIS] {text}")
-        
+        regression_append_utterance(text)
+
         stop_speaking_flag.clear()
         
         try:
@@ -123,7 +150,8 @@ async def _speak_local(text):
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
                 wav_file.setframerate(tts.sample_rate)
-                tts.voice.synthesize(segment, wav_file)
+                for chunk in tts.voice.synthesize(segment):
+                    wav_file.writeframes(chunk.audio_int16_bytes)
             
             # Write buffer to temp file for pygame (pygame can't play BytesIO directly)
             buf.seek(0)
@@ -192,14 +220,22 @@ async def _speak_cloud(text):
                 current_rate = val
         
         else:
+            # Skip segments that are too short for TTS (e.g. lone punctuation from the clipping fix)
+            if len(segment.strip(' ,.-!?')) < 2:
+                continue
+                
             audio_file = f"temp_speech_{unique_id}_{i}.mp3"
             try:
                 communicate = edge_tts.Communicate(segment, VOICE, rate=current_rate, pitch=current_pitch)
                 await communicate.save(audio_file)
             except Exception as e:
-                print(f"[SPEAKER WARNING] Invalid tag format. Reverting to default voice. Error: {e}")
-                communicate = edge_tts.Communicate(segment, VOICE)
-                await communicate.save(audio_file)
+                print(f"[SPEAKER WARNING] TTS synthesis failed for segment, retrying with defaults: {e}")
+                try:
+                    communicate = edge_tts.Communicate(segment, VOICE)
+                    await communicate.save(audio_file)
+                except Exception as e2:
+                    print(f"[SPEAKER WARNING] Segment skipped (unsynthesizable): '{segment[:40]}'")
+                    continue
                 
             await asyncio.to_thread(_play_audio, audio_file)
 

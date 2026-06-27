@@ -1,10 +1,12 @@
 import librosa
 import numpy as np
-from deepface import DeepFace
+
 
 def analyze_facial_emotion(frame) -> str:
     """Analyzes a cropped face or full frame for dominant emotion using DeepFace."""
     try:
+        from deepface import DeepFace
+
         # We set enforce_detection=False so it doesn't crash if it can't find a face
         result = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False, silent=True)
         

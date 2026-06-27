@@ -7,7 +7,7 @@ import time # --- NEW: Required for the holding pattern ---
 # Set to True to use faster-whisper (100% offline, ~200ms latency)
 # Set to False to use Google Cloud STT (requires internet)
 # ==========================================
-USE_LOCAL_STT = True
+USE_LOCAL_STT = False
 
 # --- Phase 8: Lazy-load local STT model only when needed ---
 _local_stt_instance = None
@@ -51,6 +51,11 @@ def listen_to_mic(status_callback=None):
             # 2. Tell React we are listening
             if status_callback: status_callback("listening", "Listening... (Speak clearly)")
             print("[EARS] Listening... (Speak clearly into your microphone)")
+            try:
+                from modules.sfx_manager import play_sfx
+                play_sfx("listening")
+            except Exception:
+                pass
             
             try:
                 # Listen for audio
@@ -59,6 +64,11 @@ def listen_to_mic(status_callback=None):
                 # 3. Tell React we are processing
                 if status_callback: status_callback("processing_llm", "Processing speech...")
                 print("[EARS] Processing speech...")
+                try:
+                    from modules.sfx_manager import play_sfx
+                    play_sfx("processing")
+                except Exception:
+                    pass
                 
                 # --- Phase 8: Route to local or cloud STT ---
                 if USE_LOCAL_STT:
@@ -69,7 +79,14 @@ def listen_to_mic(status_callback=None):
                         return "UNKNOWN"
                     print(f"\n🗣️ You said: '{text}' [LOCAL STT]")
                 else:
-                    text = recognizer.recognize_google(audio)
+                    try:
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            future = pool.submit(recognizer.recognize_google, audio)
+                            text = future.result(timeout=7)  # 7-second hard cap
+                    except concurrent.futures.TimeoutError:
+                        print("[EARS] Google Cloud STT timed out (7s).")
+                        return "UNKNOWN"
                     print(f"\n🗣️ You said: '{text}' [CLOUD STT]")
                     
                 return text

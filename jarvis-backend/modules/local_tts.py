@@ -42,7 +42,8 @@ class LocalTTS:
                             wav_file.setnchannels(1)
                             wav_file.setsampwidth(2)
                             wav_file.setframerate(self.sample_rate)
-                            self.voice.synthesize(sentence, wav_file)
+                            for chunk in self.voice.synthesize(sentence):
+                                wav_file.writeframes(chunk.audio_int16_bytes)
                         buf.seek(0)
                         with wave.open(buf, 'rb') as wav_file:
                             audio_bytes = wav_file.readframes(wav_file.getnframes())
@@ -59,7 +60,8 @@ class LocalTTS:
                     wav_file.setnchannels(1)
                     wav_file.setsampwidth(2)
                     wav_file.setframerate(self.sample_rate)
-                    self.voice.synthesize(sentence.strip(), wav_file)
+                    for chunk in self.voice.synthesize(sentence.strip()):
+                        wav_file.writeframes(chunk.audio_int16_bytes)
                 buf.seek(0)
                 with wave.open(buf, 'rb') as wav_file:
                     audio_bytes = wav_file.readframes(wav_file.getnframes())
