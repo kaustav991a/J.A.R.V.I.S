@@ -57,6 +57,39 @@ def _emotion_baseline() -> tuple[str, str]:
         pitch, rate = "+4Hz", "+6%"
     return pitch, rate
 
+# ==========================================
+# §1.3 AEC REFERENCE BUFFER
+# The full-duplex pipeline's echo canceller needs the "far-end" signal — i.e. the
+# PCM J.A.R.V.I.S. is currently playing — to subtract it from the mic. Playback code
+# pushes decoded PCM here; the AEC pulls the most-recent samples. If nothing is
+# pushed (e.g. cloud MP3 path not tapped), the reference is silence and the AEC is a
+# safe no-op (degrades to headphone mode).
+# ==========================================
+from collections import deque as _deque
+_REF_SR = 16000
+_ref_buffer = _deque(maxlen=_REF_SR * 5)   # ~5 s of int16 reference samples
+_ref_lock = threading.Lock()
+
+
+def push_reference_pcm(samples) -> None:
+    """Playback feeds the int16 mono @16k PCM it is sending to the speakers."""
+    try:
+        with _ref_lock:
+            _ref_buffer.extend(int(s) for s in samples)
+    except Exception:
+        pass
+
+
+def pull_reference_pcm(n: int):
+    """AEC pulls the n most-recent reference samples (int16 list), newest last."""
+    with _ref_lock:
+        if not _ref_buffer:
+            return [0] * n
+        buf = list(_ref_buffer)
+    if len(buf) >= n:
+        return buf[-n:]
+    return [0] * (n - len(buf)) + buf
+
 # Global Kill Switch for Barge-In
 stop_speaking_flag = threading.Event()
 

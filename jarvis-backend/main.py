@@ -733,6 +733,46 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[TELEGRAM] Gateway failed to start: {e}", flush=True)
 
+    # --- §1.3 Continuous full-duplex pipeline (opt-in) ---
+    # Streaming STT (vosk) + AEC running continuously; finals route through the SAME
+    # run_remote_command pipeline (brain + engine) and are spoken back. Speech onset
+    # triggers barge-in. Off unless JARVIS_FULL_DUPLEX_PIPELINE=1 — the classic
+    # wakeword/recorder loop remains the default so nothing existing changes.
+    try:
+        from modules import audio_pipeline
+        if audio_pipeline.is_enabled():
+            _fd_loop = asyncio.get_running_loop()
+            from modules.session_manager import CallbackChannel as _CbCh
+
+            async def _voice_reply(text):
+                await speaker.speak_text(text)
+
+            _voice_channel = _CbCh("voice:fullduplex", _voice_reply,
+                                   user=active_user, kind="voice")
+
+            def _fd_on_final(text):
+                if not text or not text.strip():
+                    return
+                asyncio.run_coroutine_threadsafe(
+                    run_remote_command(text.strip(), _voice_channel), _fd_loop)
+
+            def _fd_on_speech_start():
+                # Barge-in: stop current TTS and signal streaming loops to break.
+                try:
+                    if speaker.is_system_speaking:
+                        speaker.stop_audio()
+                        _fd_loop.call_soon_threadsafe(interrupt_flag.set)
+                except Exception:
+                    pass
+
+            _fd_engine = audio_pipeline.build_default_engine(
+                on_final=_fd_on_final, on_speech_start=_fd_on_speech_start)
+            if _fd_engine is not None:
+                threading.Thread(target=_fd_engine.run, daemon=True).start()
+                print("[FD-PIPELINE] Continuous full-duplex pipeline started.", flush=True)
+    except Exception as e:
+        print(f"[FD-PIPELINE] startup skipped: {e}", flush=True)
+
     yield
     print("\n[SYSTEM] Gracefully shutting down...")
     # Signal shutdown FIRST so the daemon supervisor won't restart daemons that
