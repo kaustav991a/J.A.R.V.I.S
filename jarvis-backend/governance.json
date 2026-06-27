@@ -11,6 +11,8 @@
 
   "rules": {
 
+    "self_improve":          "CONFIRM",
+
     "===  TIER: AUTO  ===": "─────────────────────────────────────────────",
 
     "workspace_read":        "AUTO",

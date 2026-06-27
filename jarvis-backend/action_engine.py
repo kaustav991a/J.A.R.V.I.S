@@ -651,6 +651,9 @@ class ActionEngine:
         # ── Phase 8.2: OS Macro Engine ────────────────────────────────────────
         elif action == "os_macro":
             return self._os_macro(target)
+        # ── Self-Improvement: propose a code change → branch → test → PR ─────
+        elif action == "self_improve":
+            return await self._self_improve(target)
         # ── Personal-Document RAG: search the user's own notes/files ─────────
         elif action == "search_documents":
             return await asyncio.to_thread(self._search_documents, target)
@@ -1281,6 +1284,23 @@ class ActionEngine:
         except Exception as e:
             print(f"[ACTION ENGINE] Workspace read failed: {e}")
             return f"Workspace read offline: {e}"
+
+    async def _self_improve(self, target) -> str:
+        """
+        Guarded self-improvement (Roadmap §3.3): propose a code change, apply it on a
+        fresh branch, run the tests, and — only if they pass — push and open a PR for
+        human review. NEVER merges. Gated CONFIRM-tier so initiating it needs approval.
+        """
+        instruction = target if isinstance(target, str) else str(target or "")
+        if not instruction.strip():
+            return "What improvement would you like me to propose, sir?"
+        try:
+            from modules.self_improve import SelfImprovementEngine
+        except Exception as e:
+            return f"The self-improvement engine is unavailable, sir: {e}"
+        engine = SelfImprovementEngine(self.github_agent, self.workspace_agent)
+        report = await engine.run(instruction.strip())
+        return report.get("message", "Self-improvement run finished, sir.")
 
     def _search_documents(self, target) -> str:
         """
