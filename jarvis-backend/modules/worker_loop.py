@@ -40,6 +40,8 @@ class OvernightWorker:
         is_system_online_fn,        # () -> bool
         active_user_fn,             # () -> str
         poll_interval: float = 8.0,
+        replan_fn=None,             # async (goal, failed_step, error) -> list[action]
+        max_heal_attempts: int = 3, # §1.1b: bounded LLM self-correction retries
     ) -> None:
         self.execute_fn = execute_fn
         self.broadcast = broadcast_fn
@@ -47,6 +49,8 @@ class OvernightWorker:
         self.is_online = is_system_online_fn
         self.active_user = active_user_fn
         self.poll_interval = poll_interval
+        self.replan_fn = replan_fn
+        self.max_heal_attempts = max_heal_attempts
         self.is_running = True
 
     # -----------------------------------------------------------------------
@@ -99,6 +103,7 @@ class OvernightWorker:
                 tier = governance_manager.get_tier(atype)  # read-only; no pending-slot mutation
 
                 if tier == "AUTO":
+                    meta = None
                     try:
                         meta = await self.execute_fn(action, True, None)
                         res = meta.get("result", meta) if isinstance(meta, dict) else meta
@@ -107,6 +112,15 @@ class OvernightWorker:
                         traceback.print_exc()
                         res = f"action error: {type(ae).__name__}: {ae}"
                     results.append(f"step {i + 1} [{atype}]: {str(res)[:500]}")
+
+                    # ── §1.1b: dynamic LLM self-correction ───────────────────
+                    # If the step failed and a replanner is wired, feed
+                    # {goal, failed_step, error} back to the brain for a NEW
+                    # plan and retry — bounded, governance-gated, never crashes.
+                    if self._is_step_failure(meta, res) and self.replan_fn is not None:
+                        healed = await self._self_heal(title, action, res, results)
+                        if healed is not None:
+                            res = healed  # latest (recovered) result feeds the summary
                 elif tier == "CONFIRM":
                     needs_confirm = True
                     results.append(f"step {i + 1} [{atype}]: deferred — needs your authorisation (CONFIRM tier)")
@@ -149,6 +163,68 @@ class OvernightWorker:
                 await self._notify({"status": "task_failed", "task_id": tid, "title": title})
             except Exception:
                 pass
+
+    # -----------------------------------------------------------------------
+    # §1.1b — LLM self-correction
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _is_step_failure(meta, res) -> bool:
+        """A step counts as failed on a FAILED engine state or a failure string."""
+        rs = str(res)
+        if rs.startswith(("GOVERNANCE_BLOCKED:", "GOVERNANCE_CONFIRM:")):
+            return True
+        if isinstance(meta, dict) and meta.get("state") == "FAILED":
+            return True
+        low = rs.lower()
+        return low.startswith(("action error", "action failed", "error:", "failed:"))
+
+    async def _self_heal(self, goal: str, failed_action: dict, error, results: list) -> str | None:
+        """Ask the brain for a new plan to overcome a failed step; retry it.
+
+        Bounded by `max_heal_attempts`. Only AUTO-tier recovery actions are run
+        unattended (governance preserved). Returns the last recovered result on
+        success, or None if recovery couldn't be achieved.
+        """
+        step_desc = failed_action
+        err = error
+        for attempt in range(1, self.max_heal_attempts + 1):
+            try:
+                new_actions = await self.replan_fn(goal, step_desc, err)
+            except Exception as e:
+                print(f"[WORKER] self-heal replan error: {e}", flush=True)
+                break
+            if not new_actions:
+                break
+            results.append(f"  ↻ self-heal attempt {attempt}: replanned {len(new_actions)} action(s)")
+
+            all_ok = True
+            last_res = None
+            for na in new_actions:
+                natype = str(na.get("action_type", "")).strip() or "unknown"
+                tier = governance_manager.get_tier(natype)
+                if tier != "AUTO":
+                    results.append(f"    [{natype}]: skipped during heal (tier {tier})")
+                    all_ok = False
+                    continue
+                m = None
+                try:
+                    m = await self.execute_fn(na, True, None)
+                    r = m.get("result", m) if isinstance(m, dict) else m
+                except Exception as e:
+                    r = f"action error: {type(e).__name__}: {e}"
+                results.append(f"    [{natype}]: {str(r)[:300]}")
+                if self._is_step_failure(m, r):
+                    all_ok = False
+                    step_desc, err = na, r   # carry the new failure forward for the next attempt
+                else:
+                    last_res = r
+
+            if all_ok and last_res is not None:
+                results.append(f"  ✅ self-heal succeeded on attempt {attempt}")
+                return last_res
+
+        results.append(f"  ✗ self-heal exhausted — step could not be recovered")
+        return None
 
     # -----------------------------------------------------------------------
     # Report results queued while the user was away (called on wake)

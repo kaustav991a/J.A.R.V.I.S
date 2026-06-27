@@ -43,6 +43,7 @@ from modules import task_queue  # --- Roadmap §1.1: durable goal queue ---
 from modules.worker_loop import OvernightWorker  # --- Roadmap §1.1: Overnight Worker Loop ---
 from modules.session_manager import COMMAND_LOCK, CallbackChannel, SESSIONS  # --- Concurrent session scoping ---
 from modules import telegram_bot  # --- Telegram Remote Gateway ---
+from modules import planner  # --- ReAct Orchestrator (Roadmap §1.2) ---
 # Phase 6 – Governance Engine
 from governance_manager import governance_manager
 from socket_manager import register_client, unregister_client, send_ui_update, set_app_loop
@@ -700,6 +701,8 @@ async def lifespan(app: FastAPI):
         speak_fn=speaker.speak_text,
         is_system_online_fn=lambda: SYSTEM_ONLINE,
         active_user_fn=lambda: active_user,
+        # §1.1b: feed failures back to the brain for a new plan (bounded retries).
+        replan_fn=planner.replan_after_failure,
     )
     asyncio.create_task(overnight_worker.start())
 
@@ -935,6 +938,21 @@ async def run_remote_command(command_text: str, channel) -> None:
         asyncio.create_task(asyncio.to_thread(extract_and_store_memory, command_text, user))
     except Exception:
         pass
+
+    # ── ReAct planner fast-path bypass (Roadmap §1.2) ────────────────────────
+    # Only CLEARLY multi-step goals enter the heavy Think→Act→Observe loop;
+    # simple commands fall straight through to the low-latency single-shot path.
+    if planner.should_plan(command_text):
+        print(f"[REMOTE:{kind}] Complex goal → ReAct planner.", flush=True)
+        try:
+            outcome = await planner.run_react(
+                command_text, user, engine.execute_with_retry, notify=channel.notify
+            )
+            await channel.reply(outcome.get("final_answer") or "Done, Sir.")
+            return
+        except Exception as e:
+            print(f"[REMOTE] Planner fault, falling back to single-shot: {e}", flush=True)
+            # Fall through to the standard path on any planner error.
 
     try:
         llm_response = await asyncio.to_thread(process_command, command_text, user)
@@ -1422,7 +1440,26 @@ async def backdoor_command(req: BackdoorRequest):
     
     try:
         asyncio.create_task(asyncio.to_thread(extract_and_store_memory, command_text, active_user))
-        
+
+        # ── ReAct planner fast-path bypass (Roadmap §1.2) ────────────────────
+        # Multi-step goals run the Think→Act→Observe loop; simple commands fall
+        # through to the existing single-shot pipeline (no added latency).
+        if planner.should_plan(command_text):
+            print("[BACKDOOR] Complex goal → ReAct planner.", flush=True)
+            try:
+                async def _plan_notify(status, message=""):
+                    await safe_send_all({"status": "processing_llm", "message": message or status})
+                outcome = await planner.run_react(
+                    command_text, active_user, engine.execute_with_retry, notify=_plan_notify
+                )
+                _final = outcome.get("final_answer") or "Done, Sir."
+                await safe_send_all({"status": "complete", "result": _final})
+                asyncio.create_task(speaker.speak_text(_final))
+                return {"status": "success"}
+            except Exception as _pe:
+                print(f"[BACKDOOR] Planner fault, falling back to single-shot: {_pe}", flush=True)
+                # Fall through to the standard pipeline on any planner error.
+
         llm_response = await asyncio.to_thread(process_command, command_text, active_user)
         clean_response = llm_response.replace("```json", "").replace("```", "").strip()
         
