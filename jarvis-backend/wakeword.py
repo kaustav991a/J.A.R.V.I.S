@@ -1,3 +1,4 @@
+import os
 import speech_recognition as sr
 import threading
 import speaker
@@ -7,6 +8,32 @@ import speaker
 # Mirrors the toggle in recorder.py
 # ==========================================
 USE_LOCAL_STT = False
+
+# ==========================================
+# §1.3 FULL-DUPLEX (headphone-safe)
+# When enabled (JARVIS_FULL_DUPLEX=1), barge-in doesn't just STOP playback — it
+# CAPTURES and transcribes what you said over J.A.R.V.I.S. and hands it back as the
+# next command, so you can talk over him and he adapts to your actual words.
+# Use headphones so the mic never hears his own TTS (cheap echo cancellation).
+# ==========================================
+FULL_DUPLEX = os.getenv("JARVIS_FULL_DUPLEX", "0").strip().lower() in ("1", "true", "yes", "on")
+
+# A command captured during full-duplex over-talk, waiting to be consumed by the
+# main loop (so the first words you speak over him are never lost).
+_pending_utterance: str | None = None
+
+
+def set_pending_utterance(text: str) -> None:
+    global _pending_utterance
+    _pending_utterance = text
+
+
+def pop_pending_utterance() -> str | None:
+    """Return and clear any over-talk utterance captured during full-duplex barge-in."""
+    global _pending_utterance
+    u = _pending_utterance
+    _pending_utterance = None
+    return u
 
 # --- Phase 8: Lazy-load local STT model only when needed ---
 _local_stt_instance = None
@@ -127,14 +154,26 @@ def wait_for_jarvis():
                 # Uses instant VAD detection instead of slow Cloud STT
                 if speaker.is_system_speaking:
                     try:
-                        # Very short listen window — just enough to detect speech
-                        audio = recognizer.listen(source, timeout=0.3, phrase_time_limit=1.0)
-                        
-                        # Instant VAD check — no transcription needed
-                        if has_human_speech(audio):
-                            print(f"\n[BARGE-IN] Speech detected during playback. Stopping audio.", flush=True)
-                            speaker.stop_audio()
-                            return True
+                        if FULL_DUPLEX:
+                            # Full-duplex: capture the OVER-TALK (a longer window), stop
+                            # playback, transcribe it, and stash it so the main loop runs
+                            # it as the command — he adapts to what you actually said.
+                            audio = recognizer.listen(source, timeout=0.4, phrase_time_limit=4.0)
+                            if has_human_speech(audio):
+                                print("\n[BARGE-IN/FD] Over-talk detected — capturing your words.", flush=True)
+                                speaker.stop_audio()
+                                text = _transcribe(recognizer, audio)
+                                if text and len(text.strip()) >= 2:
+                                    set_pending_utterance(text.strip())
+                                    print(f"[BARGE-IN/FD] Captured: '{text.strip()}'", flush=True)
+                                return True
+                        else:
+                            # Classic barge-in: instant VAD detect → stop. No transcription.
+                            audio = recognizer.listen(source, timeout=0.3, phrase_time_limit=1.0)
+                            if has_human_speech(audio):
+                                print(f"\n[BARGE-IN] Speech detected during playback. Stopping audio.", flush=True)
+                                speaker.stop_audio()
+                                return True
                     except Exception:
                         pass
                     continue

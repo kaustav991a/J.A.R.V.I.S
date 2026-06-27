@@ -33,7 +33,7 @@ from brain import (
 )
 from action_engine import ActionEngine
 from recorder import listen_to_mic
-from wakeword import wait_for_wake_word, wait_for_jarvis, is_shutting_down 
+from wakeword import wait_for_wake_word, wait_for_jarvis, is_shutting_down, pop_pending_utterance
 import vision # --- Optical Biometrics ---
 from ambient_vision import ambient_vision_daemon # --- Phase 5: Ambient Perception ---
 from background_monitor import ProactiveAgent
@@ -2069,17 +2069,26 @@ async def websocket_endpoint(websocket: WebSocket):
                     jarvis_called = await asyncio.to_thread(wait_for_jarvis)
                     
                 if jarvis_called:
-                    # Do not say "Yes sir" right after the morning briefing
-                    if not first_run:
+                    # §1.3 Full-duplex: if the user talked OVER J.A.R.V.I.S., that captured
+                    # utterance IS the command — use it directly and skip the "Yes sir?".
+                    _fd_pending = pop_pending_utterance()
+                    # Do not say "Yes sir" right after the morning briefing, or when the
+                    # user already spoke a full-duplex command.
+                    if not first_run and not _fd_pending:
                         if active_user == "MOUSUMI":
                             await speaker.speak_text("Yes, Madam?")
                         else:
                             await speaker.speak_text("Yes, sir?")
                     first_run = False
-                        
+
                     while True:
-                        await safe_send({"status": "listening", "message": "AWAITING INPUT..."})
-                        command_text = await asyncio.to_thread(listen_to_mic, sync_status_update)
+                        if _fd_pending:
+                            command_text = _fd_pending
+                            _fd_pending = None
+                            print(f"[FULL-DUPLEX] Using captured over-talk as command: '{command_text}'", flush=True)
+                        else:
+                            await safe_send({"status": "listening", "message": "AWAITING INPUT..."})
+                            command_text = await asyncio.to_thread(listen_to_mic, sync_status_update)
                         
                         # --- SEAMLESS CONVERSATION LOGIC ---
                         if command_text in ["UNKNOWN", "ERROR"]:
