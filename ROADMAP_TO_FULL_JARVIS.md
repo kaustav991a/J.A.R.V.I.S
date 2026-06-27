@@ -13,7 +13,7 @@ The real J.A.R.V.I.S. was defined by four qualities, not a feature list. Where t
 | Quality | Was | **Now** | What still closes it |
 |---|---|---|---|
 | **Always present** (never down, reachable anywhere) | Partial | ✅ **Strong** | Watchdog ✅ + Telegram Gateway ✅ shipped. Add in-process daemon health-restart. |
-| **Truly agentic** (pursues goals, self-corrects) | Missing | 🔶 **Partial** | Durable worker loop ✅, but no **planner** (§1.2) and no **LLM self-correction** (§1.1b). |
+| **Truly agentic** (pursues goals, self-corrects) | Missing | ✅ **Strong** | Durable worker loop ✅ + **ReAct planner** ✅ (§1.2) + **LLM self-correction** ✅ (§1.1b). Remaining: deeper planning, tool-use breadth. |
 | **Naturally conversational** (full-duplex, instant) | Partial | 🔶 **Partial** | Fast cloud ✅ + VAD barge-in ✅, but **streaming STT** + **full-duplex** + echo-cancel still ❌ (§1.3). |
 | **Genuinely yours** (knows you, controls your world) | Strong | 🔶 **Strong/half** | *Knows you* ✅ (biometrics + 4-tier memory). *Controls your world* ❌ — only PC + TV, no smart-home, no personal-doc RAG. |
 
@@ -52,14 +52,21 @@ The remaining 30–35% is concentrated in **three** places: a real **planner**, 
 
 ### 🥇 TIER 1 — What he fundamentally *is*
 
-#### 1.1 Continuous Autonomous Agency — 🔶 **half-done**
-- ✅ **Done:** durable queue + Overnight Worker Loop (drains, executes, governance-gates, crash-recovers, reports).
-- ❌ **Missing (1.1b — self-correction):** when an action fails, the worker logs/retries with **hardcoded** fallbacks (`action_engine._attempt_fallback`) — it never **re-prompts the LLM with the error** to find a new approach. Genuine self-healing only exists inside the narrow Figma pipeline (`agent_worker.py`).
-- **Build:** on failure, feed `{goal, plan, step, error}` back to the brain for a corrective re-plan (cap attempts). The trace ring + `execute_with_retry(return_meta=True)` already capture what you need.
+#### 1.1 Continuous Autonomous Agency — ✅ **DONE**
+- ✅ Durable queue + Overnight Worker Loop (drains, executes, governance-gates, crash-recovers, reports).
+- ✅ **§1.1b self-correction (shipped 2026-06-27):** on a failed step the worker feeds
+  `{goal, failed_step, error}` to `planner.replan_after_failure`, gets a NEW plan, and retries —
+  bounded to 3 attempts, AUTO-tier-only recovery, never crashes (`modules/worker_loop.py:_self_heal`).
+- **Remaining:** richer cross-task memory of what worked; learned fallback strategies.
 
-#### 1.2 A Real Planner / Orchestrator — ❌ **MISSING (biggest agency gap)**
-- **Today:** one LLM call emits a **flat `actions` array** that runs once (`brain.process_command` → `action_engine`). Complex goals ("research X, draft a doc, email it to me") don't decompose.
-- **Build:** a **plan → execute → observe → re-plan** (ReAct) layer between `brain.process_command` and `action_engine`. Keep the single-shot path for simple commands; escalate to the planner only for multi-step intents. This unlocks "do the whole thing," and it's the prerequisite that makes §1.1b worth building.
+#### 1.2 A Real Planner / Orchestrator — ✅ **DONE (shipped 2026-06-27)**
+- ✅ **ReAct orchestrator** (`modules/planner.py`): Think → Act → Observe loop with a scratchpad,
+  sitting between `brain.process_command` and `action_engine`. Multi-step goals decompose one step
+  at a time and re-plan around failures; a conservative `should_plan()` gate keeps simple commands on
+  the low-latency single-shot path. Governance enforced per step (CONFIRM refused unattended); each
+  Act under `COMMAND_LOCK`. Wired into both the remote (Telegram) and HUD/voice dispatch paths.
+- **Remaining:** broaden the planner's tool catalogue, add step-level cost/risk budgeting, and let it
+  call sub-plans (hierarchical planning) for very large goals.
 
 #### 1.3 Full-Duplex, Always-Listening Conversation — 🔶 **partial**
 - ✅ **Done:** VAD-during-playback barge-in (any speech interrupts), keyword interrupts, fast cloud round-trip.
