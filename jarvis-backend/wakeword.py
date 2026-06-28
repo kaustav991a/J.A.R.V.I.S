@@ -150,32 +150,14 @@ def wait_for_jarvis():
             print("[SYSTEM] Passive Listening for 'Hello Jarvis'...", flush=True)
             
             while not is_shutting_down.is_set():
-                # --- PHASE 3: FAST INTERRUPTION ENGINE (BARGE-IN) ---
-                # Uses instant VAD detection instead of slow Cloud STT
+                # --- BARGE-IN DISABLED (deafen while speaking) ---
+                # Barge-in let the mic listen WHILE J.A.R.V.I.S. spoke, which on a
+                # headset picked up his own TTS / breath-noise and re-triggered an
+                # endless talk loop. Now we simply wait until he finishes speaking
+                # before listening again — no interruption, no self-trigger.
                 if speaker.is_system_speaking:
-                    try:
-                        if FULL_DUPLEX:
-                            # Full-duplex: capture the OVER-TALK (a longer window), stop
-                            # playback, transcribe it, and stash it so the main loop runs
-                            # it as the command — he adapts to what you actually said.
-                            audio = recognizer.listen(source, timeout=0.4, phrase_time_limit=4.0)
-                            if has_human_speech(audio):
-                                print("\n[BARGE-IN/FD] Over-talk detected — capturing your words.", flush=True)
-                                speaker.stop_audio()
-                                text = _transcribe(recognizer, audio)
-                                if text and len(text.strip()) >= 2:
-                                    set_pending_utterance(text.strip())
-                                    print(f"[BARGE-IN/FD] Captured: '{text.strip()}'", flush=True)
-                                return True
-                        else:
-                            # Classic barge-in: instant VAD detect → stop. No transcription.
-                            audio = recognizer.listen(source, timeout=0.3, phrase_time_limit=1.0)
-                            if has_human_speech(audio):
-                                print(f"\n[BARGE-IN] Speech detected during playback. Stopping audio.", flush=True)
-                                speaker.stop_audio()
-                                return True
-                    except Exception:
-                        pass
+                    import time
+                    time.sleep(0.1)
                     continue
 
                 try:

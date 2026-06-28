@@ -1,5 +1,6 @@
 # Road to the Full J.A.R.V.I.S.
-### The gap between *this* build and Tony Stark's J.A.R.V.I.S. — and exactly how to close it.
+
+### The gap between _this_ build and Tony Stark's J.A.R.V.I.S. — and exactly how to close it.
 
 > Honest engineering gap-analysis, tied to what exists in the codebase. **Last verified against
 > code: 2026-06-27** (full subsystem audit). Status legend: ✅ done · 🔶 partial · ❌ missing.
@@ -10,12 +11,12 @@
 
 The real J.A.R.V.I.S. was defined by four qualities, not a feature list. Where this build stands today:
 
-| Quality | Start | **Now** | Score | What still closes it |
-|---|---|---|---|---|
-| **Always present** (never down, reachable anywhere) | Partial | ✅ **Strong** | ~90% | Watchdog ✅ + Telegram Gateway ✅ + session scoping ✅. Remaining: in-process daemon health-restart. |
-| **Truly agentic** (pursues goals, self-corrects) | Missing | ✅ **Strong** | ~80% | Worker loop ✅ + **ReAct planner** ✅ (§1.2) + **LLM self-correction** ✅ (§1.1b). Remaining: hierarchical planning, learned strategies. |
-| **Naturally conversational** (full-duplex, instant) | Partial | ✅ **Strong** | ~88% | Fast cloud ✅ + barge-in ✅ + fast-lane ✅ + full-duplex over-talk ✅ + **streaming STT** ✅ + **AEC** ✅ + continuous pipeline ✅ (§1.3). Remaining: on-device AEC reference sync + tuning. |
-| **Genuinely yours** (knows you, controls your world) | Strong | ✅ **Strong** | ~75% | *Knows you* ✅✅ (biometrics + 4-tier memory + **personal-doc RAG** ✅ §4). *Controls your world* — PC + TV only; **smart-home ❌** (§2.1). |
+| Quality                                              | Start   | **Now**       | Score | What still closes it                                                                                                                                                                         |
+| ---------------------------------------------------- | ------- | ------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Always present** (never down, reachable anywhere)  | Partial | ✅ **Strong** | ~90%  | Watchdog ✅ + Telegram Gateway ✅ + session scoping ✅. Remaining: in-process daemon health-restart.                                                                                         |
+| **Truly agentic** (pursues goals, self-corrects)     | Missing | ✅ **Strong** | ~80%  | Worker loop ✅ + **ReAct planner** ✅ (§1.2) + **LLM self-correction** ✅ (§1.1b). Remaining: hierarchical planning, learned strategies.                                                     |
+| **Naturally conversational** (full-duplex, instant)  | Partial | ✅ **Strong** | ~88%  | Fast cloud ✅ + barge-in ✅ + fast-lane ✅ + full-duplex over-talk ✅ + **streaming STT** ✅ + **AEC** ✅ + continuous pipeline ✅ (§1.3). Remaining: on-device AEC reference sync + tuning. |
+| **Genuinely yours** (knows you, controls your world) | Strong  | ✅ **Strong** | ~75%  | _Knows you_ ✅✅ (biometrics + 4-tier memory + **personal-doc RAG** ✅ §4). _Controls your world_ — PC + TV only; **smart-home ❌** (§2.1).                                                  |
 
 ### ▶ Overall: **~90% of "the feeling of the real J.A.R.V.I.S."** (up from ~65% at the start of today)
 
@@ -33,36 +34,37 @@ loop, §3.4 fast-lane, §3.5 emotional prosody, §1.3 full-duplex over-talk, §4
 
 ## 0.1 Iron Man's J.A.R.V.I.S. vs. This Build — capability-by-capability
 
-A frank, weighted comparison against the *films'* J.A.R.V.I.S. Two honest numbers fall out: how
+A frank, weighted comparison against the _films'_ J.A.R.V.I.S. Two honest numbers fall out: how
 close the **experience** feels, and how close the **total capability breadth** is (the latter is
 dragged down by inherently hardware-bound, sci-fi abilities a software build can't own).
 
-| # | Movie J.A.R.V.I.S. capability | This build today | Parity |
-|---|---|---|---|
-| 1 | **Natural conversation & persona** (wit, butler tone, context) | Persona engine, Sass Index, somber/mentor modes, streaming TTS | **85%** |
-| 2 | **Always-on presence** (never down) | Watchdog respawns server + daemon supervisor + Telegram reach | **90%** |
-| 3 | **Memory / "knows you"** | 4-tier memory + biometrics + personal-document RAG | **85%** |
-| 4 | **Autonomous agency** (pursues goals, self-corrects) | ReAct planner + durable worker loop + LLM self-correction | **80%** |
-| 5 | **Real-time voice** (full-duplex, instant) | Fast-lane + full-duplex over-talk + streaming STT (vosk) + AEC + continuous pipeline | **85%** |
-| 6 | **Emotional intelligence** (reads & expresses mood) | Emotion detection + emotion-driven prosody + somber protocol | **70%** |
-| 7 | **Self-improvement** (writes/refines his own code) | Guarded propose→branch→test→PR loop (human merges) | **70%** |
-| 8 | **Remote reach** (reachable anywhere) | Telegram gateway (text + files + task queue) | **70%** |
-| 9 | **Security & defense** (lockdown, gates intrusions) | Governance tiers + intruder detection + lockdown overlay | **65%** |
-| 10 | **Perception / vision** (sees & understands the room) | Ambient YOLO + face ID + emotion; no deep scene graph | **60%** |
-| 11 | **Presence/context awareness** (working/away/asleep) | Context-state machine conditioning proactivity | **60%** |
-| 12 | **Holographic / AR interface** | React HUD (2D), live data overlays + generative charts | **45%** |
-| 13 | **Engineering & simulation** (designs, runs sims) | Figma→code autopilot + workspace/code tools | **40%** |
-| 14 | **Multi-device ubiquity** (runs the whole building) | Desk + phone; one machine, not an environment | **35%** |
-| 15 | **Physical-world control** (lights, locks, suit, robotics) | PC + TV (ADB) only; smart-home pending hardware | **20%** |
+| #   | Movie J.A.R.V.I.S. capability                                  | This build today                                                                     | Parity  |
+| --- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------- |
+| 1   | **Natural conversation & persona** (wit, butler tone, context) | Persona engine, Sass Index, somber/mentor modes, streaming TTS                       | **85%** |
+| 2   | **Always-on presence** (never down)                            | Watchdog respawns server + daemon supervisor + Telegram reach                        | **90%** |
+| 3   | **Memory / "knows you"**                                       | 4-tier memory + biometrics + personal-document RAG                                   | **85%** |
+| 4   | **Autonomous agency** (pursues goals, self-corrects)           | ReAct planner + durable worker loop + LLM self-correction                            | **80%** |
+| 5   | **Real-time voice** (full-duplex, instant)                     | Fast-lane + full-duplex over-talk + streaming STT (vosk) + AEC + continuous pipeline | **85%** |
+| 6   | **Emotional intelligence** (reads & expresses mood)            | Emotion detection + emotion-driven prosody + somber protocol                         | **70%** |
+| 7   | **Self-improvement** (writes/refines his own code)             | Guarded propose→branch→test→PR loop (human merges)                                   | **70%** |
+| 8   | **Remote reach** (reachable anywhere)                          | Telegram gateway (text + files + task queue)                                         | **70%** |
+| 9   | **Security & defense** (lockdown, gates intrusions)            | Governance tiers + intruder detection + lockdown overlay                             | **65%** |
+| 10  | **Perception / vision** (sees & understands the room)          | Ambient YOLO + face ID + emotion; no deep scene graph                                | **60%** |
+| 11  | **Presence/context awareness** (working/away/asleep)           | Context-state machine conditioning proactivity                                       | **60%** |
+| 12  | **Holographic / AR interface**                                 | React HUD (2D), live data overlays + generative charts                               | **45%** |
+| 13  | **Engineering & simulation** (designs, runs sims)              | Figma→code autopilot + workspace/code tools                                          | **40%** |
+| 14  | **Multi-device ubiquity** (runs the whole building)            | Desk + phone; one machine, not an environment                                        | **35%** |
+| 15  | **Physical-world control** (lights, locks, suit, robotics)     | PC + TV (ADB) only; smart-home pending hardware                                      | **20%** |
 
 **Two headline numbers:**
-- ▶ **Experience parity (does it *feel* like J.A.R.V.I.S.?): ~90%.** Rows 1–8 — conversation, presence,
+
+- ▶ **Experience parity (does it _feel_ like J.A.R.V.I.S.?): ~90%.** Rows 1–8 — conversation, presence,
   memory, agency, voice — are where the "feel" lives, and after streaming STT + AEC they're strong.
 - ▶ **Total capability parity (incl. the cinematic/physical sci-fi): ~64%.** Rows 12–15 — AR holograms,
   whole-building ubiquity, robotics/suit, full home control — are hardware/sci-fi bound and cap the ceiling.
 
 > The gap that remains is almost entirely **physical-world reach and a holographic interface** — i.e. money
-> and hardware, not architecture. As a *software* J.A.R.V.I.S., this build is ~85% of the way to the
+> and hardware, not architecture. As a _software_ J.A.R.V.I.S., this build is ~85% of the way to the
 > on-screen experience; closing rows 12–15 is a hardware journey (smart-home hub, AR glasses, robotics).
 
 ---
@@ -73,7 +75,7 @@ dragged down by inherently hardware-bound, sci-fi abilities a software build can
 
 - 🎙️ **Voice loop** — Silero-VAD wake engine + phonetic keyword net (`wakeword.py`, `wake_engine.py`); face ID via DeepFace + IP camera (`vision.py`); Google STT with **faster-whisper** offline fallback (`recorder.py`, `local_stt.py`); edge-tts (`en-GB-RyanNeural`) with **Piper** offline fallback (`speaker.py`, `local_tts.py`).
 - 🗣️ **Sentence-streaming TTS** with **prosody tags** — `[pause:]`, `[pitch:]`, `[rate:]`, `[sigh]` (`speaker.py:183-220`).
-- ⏯️ **Hybrid barge-in** — keyword ("stop"/"quiet") **and** VAD-during-playback: *any* speech interrupts mid-sentence (`wakeword.py:128-139`, `main.py` interrupt_flag). *(Better than the old roadmap claimed.)*
+- ⏯️ **Hybrid barge-in** — keyword ("stop"/"quiet") **and** VAD-during-playback: _any_ speech interrupts mid-sentence (`wakeword.py:128-139`, `main.py` interrupt_flag). _(Better than the old roadmap claimed.)_
 - 🎩 **Persona engine** — `BASE_CORE`, intent modules, tone overlays, **Sass Index**, per-user butler character.
 - 🧠 **4-tier memory** — working buffer (auto-compress), **session digest** (sleep/wake continuity), **long-term SQLite** (`jarvis_longterm.db`, injected into every prompt), **semantic Chroma** + **episodic** session logs.
 - 🛠️ **~67 action types**, all gated by a fail-safe **governance** policy (94 rules, AUTO/CONFIRM/BLOCK).
@@ -94,9 +96,10 @@ dragged down by inherently hardware-bound, sci-fi abilities a software build can
 
 ## 2. The Core Gaps (ranked by impact)
 
-### 🥇 TIER 1 — What he fundamentally *is*
+### 🥇 TIER 1 — What he fundamentally _is_
 
 #### 1.1 Continuous Autonomous Agency — ✅ **DONE**
+
 - ✅ Durable queue + Overnight Worker Loop (drains, executes, governance-gates, crash-recovers, reports).
 - ✅ **§1.1b self-correction (shipped 2026-06-27):** on a failed step the worker feeds
   `{goal, failed_step, error}` to `planner.replan_after_failure`, gets a NEW plan, and retries —
@@ -104,6 +107,7 @@ dragged down by inherently hardware-bound, sci-fi abilities a software build can
 - **Remaining:** richer cross-task memory of what worked; learned fallback strategies.
 
 #### 1.2 A Real Planner / Orchestrator — ✅ **DONE (shipped 2026-06-27)**
+
 - ✅ **ReAct orchestrator** (`modules/planner.py`): Think → Act → Observe loop with a scratchpad,
   sitting between `brain.process_command` and `action_engine`. Multi-step goals decompose one step
   at a time and re-plan around failures; a conservative `should_plan()` gate keeps simple commands on
@@ -114,6 +118,7 @@ dragged down by inherently hardware-bound, sci-fi abilities a software build can
   (hierarchical planning) for very large goals.
 
 #### 1.3 Full-Duplex, Always-Listening Conversation — ✅ **mostly done**
+
 - ✅ VAD-during-playback barge-in + keyword interrupts + fast cloud round-trip.
 - ✅ **Full-duplex over-talk capture (2026-06-27)**: `JARVIS_FULL_DUPLEX=1` — talk over him, he stops
   AND transcribes your words and adapts (`wakeword.py` + voice loop).
@@ -132,13 +137,16 @@ dragged down by inherently hardware-bound, sci-fi abilities a software build can
 ### 🥈 TIER 2 — Reach & presence
 
 #### 2.1 Smart-Home / IoT Control — ❌ **MISSING**
+
 - **Today:** only the TV (ADB). No `home_agent`.
-- **Build:** a `home_agent` speaking **Home Assistant / MQTT / Matter** — one adapter unlocks lights, locks, climate, blinds, cameras. Governance: lights = AUTO, locks/security = CONFIRM. *"J.A.R.V.I.S., dim the lights and lock up."*
+- **Build:** a `home_agent` speaking **Home Assistant / MQTT / Matter** — one adapter unlocks lights, locks, climate, blinds, cameras. Governance: lights = AUTO, locks/security = CONFIRM. _"J.A.R.V.I.S., dim the lights and lock up."_
 
 #### 2.2 Remote Gateway — ✅ **DONE**
-- Telegram gateway live (owner-firewalled, same brain, task queueing, file delivery). *Next reach: push notifications and remote file search.*
+
+- Telegram gateway live (owner-firewalled, same brain, task queueing, file delivery). _Next reach: push notifications and remote file search._
 
 #### 2.3 Presence & Context Awareness — 🔶 **partial**
+
 - ✅ **Done:** vision-based presence (in-frame), absence/return detection, time-of-day proactivity.
 - ❌ **Missing:** **home/away** detection (Wi-Fi/BLE/phone geofence) and a real **context-state machine** (working / relaxing / away / asleep) conditioning proactivity. Today it's a `is_focus_mode` boolean + timers.
 
@@ -147,23 +155,28 @@ dragged down by inherently hardware-bound, sci-fi abilities a software build can
 ### 🥉 TIER 3 — Reliability, self-improvement & polish
 
 #### 3.1 Unkillable Watchdog — ✅ **DONE** (process + daemon level)
+
 - `watchdog.py` restarts the server on any death. ✅ **Daemon health-restart shipped (2026-06-27)**:
   `modules/daemon_supervisor.py` adopts the proactive/overwatch/routine/worker asyncio tasks and re-spawns
   any that crash (with a restart cap; respects shutdown). No full server bounce needed.
 
 #### 3.2 Concurrency / Multi-Session Safety — ✅ **DONE**
+
 - Session scoping + `COMMAND_LOCK` shipped. **Remaining polish:** move the engine's `_pending_save_decision` / `_pending_notepad_decision` slots into per-session state (currently shared on the singleton).
 
 #### 3.3 Guarded Self-Improvement Loop — ❌ **MISSING** (primitives exist)
+
 - You have `workspace_write/patch` + `github_*`. **Build** a strictly human-in-the-loop loop: propose change → write to a branch → run tests → open PR → **you approve**. Never auto-merge. (Pairs with §1.1b + §1.2.)
 
 #### 3.4 Latency → "instant" — 🔶 **mostly done**
+
 - ✅ cloud_first routing is fast. ✅ **Deterministic fast-lane shipped** (`modules/fast_path.py`): mute/unmute/
   play-pause/next/previous/lock and time/date answers skip the LLM entirely and respond instantly (wired
   into both the remote and HUD/voice dispatch). ❌ Remaining: streaming STT (transcribe as you speak) +
   speculative TTS warm-up.
 
 #### 3.5 Voice Realism & Emotional Prosody — ✅ **DONE**
+
 - ✅ `[pause]/[pitch]/[rate]/[sigh]` tag engine + ✅ **emotion-driven prosody (2026-06-27)**:
   `classify_intent` sets `speaker.set_emotion(emotion, sass)` each turn, shifting the TTS pitch/rate
   baseline (somber → lower/slower, urgent → higher/faster, high-sass casual → brighter); inline tags still

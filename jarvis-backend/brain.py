@@ -114,8 +114,17 @@ Use this if you need to search the web, open/close an app, remember a fact, pull
 - Example: {"actions": [{"action_type": "close_browser", "target": "browser"}, {"action_type": "open_calculator", "target": "calculator"}]}
 - WRONG: "Sir, here is the action: {"actions": ...}" ← THIS IS WRONG. Never do this.
 - CORRECT: {"actions": [{"action_type": "web_search", "target": "query"}]} ← Start with { immediately.
+"""
 
-Available Actions for JSON Output:
+
+# =============================================================================
+# ACTION CATALOGUE — the full MODE 2 action list + routing rules + examples.
+# Split out of BASE_CORE so it is injected ONLY on action-likely turns
+# (see build_dynamic_prompt's `include_actions`). This keeps casual/conversational
+# turns ~5.4k tokens lighter, so they fit Groq's free-tier 6k tokens-per-minute
+# budget instead of 413-failing and falling back to the weak local model.
+# =============================================================================
+ACTION_CATALOGUE = """Available Actions for JSON Output:
 - "native_app_launcher": open/launch an app. target=app name.
 - "ghost_type": inject text into active app. target="text_to_type|^s" (^s=save, omit if not saving). Content ONLY — never put filename in content.
 - "ghost_save_file": OS-level save. target="directory|filename".
@@ -173,8 +182,8 @@ GMAIL ROUTING RULES — ABSOLUTE:
 - "find_file": target=filename/query.
 - "create_note": target="Title: Content".
 - "check_vitals": health metrics for voice/readout only (no HUD panel). target="vitals".
-- "hud_open_widget": show a glass HUD data panel. Targets (normalized by the engine): "vitals", "mail", "calendar", "calculator", "notepad", "browser".
-- "hud_close_widget": dismiss that panel. Same targets as hud_open_widget.
+- "hud_open_widget": show a glass HUD data panel. Targets (normalized by the engine): "vitals", "mail", "calendar", "calculator", "notepad", "browser", "camera". Use target="camera" for the live optical/camera feed ("show me what you see", "open the camera feed", "show the optical feed").
+- "hud_close_widget": dismiss that panel. Same targets as hud_open_widget (incl. "camera" to hide the optical feed).
 - "morning_briefing": Gathers data from health, calendar, and email. Target must be empty string ''. AUTO tier.
 - "tv_control": legacy TV keypad control. target="power"|"volume_up_5"|"volume_down_5"|"mute"|"home"|"back".
 - "tv_play_media": play/search media on TV. target="App: content" ONLY when the user names the platform **in this message**, OR bare "content" to trigger on-TV app discovery—never infer platform from memories (THE ASSUMPTION BAN).
@@ -253,7 +262,7 @@ THE SYNTHESIS RULE — ABSOLUTE: When you receive a payload starting with [BRIEF
 
 MANDATORY MODE 2 TRIGGERS (always JSON, never converse):
 morning briefing / daily update / how does my day look / what's on today → morning_briefing (AUTO, target="")
-show mail/email/inbox **widget** or **panel on the HUD** → hud_open_widget (target="mail") | show calendar/schedule **widget on HUD** → hud_open_widget (target="calendar") | show vitals/health **widget on HUD** → hud_open_widget (target="vitals") | hide those panels → hud_close_widget with same target | reading inbox content aloud (no widget) → gmail_read_unread or check_email | vitals readout only (no widget) → check_vitals | calendar/schedule readout only (no HUD widget) → check_calendar | stop/close HUD music or embedded video (not OS mute) → close_app target="music" OR close_display target="search_panel"
+show mail/email/inbox **widget** or **panel on the HUD** → hud_open_widget (target="mail") | show calendar/schedule **widget on HUD** → hud_open_widget (target="calendar") | show vitals/health **widget on HUD** → hud_open_widget (target="vitals") | show the camera/optical feed / "show me what you see" / "open your eyes" → hud_open_widget (target="camera") | hide the camera feed / "close your eyes" → hud_close_widget (target="camera") | hide those panels → hud_close_widget with same target | reading inbox content aloud (no widget) → gmail_read_unread or check_email | vitals readout only (no widget) → check_vitals | calendar/schedule readout only (no HUD widget) → check_calendar | stop/close HUD music or embedded video (not OS mute) → close_app target="music" OR close_display target="search_panel"
 quick fact / what is / who is / look up / latest / current / price → tavily_search | deeper research or "browse <site>" → web_search / web_browse | find file/locate → find_file | read screen → read_screen | build/generate the Figma design (only with a file key) → run_autopilot
 cpu/ram/disk/diagnostics → system_status | recall/memory → memory_recall
 focus mode toggle → enable_focus_mode/disable_focus_mode | mute/volume/lock → os_control | tv status → tv_control
@@ -266,6 +275,7 @@ ANY request to write/create/generate code, a script, a program, a function, or a
 {"actions": [{"action_type": "hud_open_widget", "target": "vitals"}]}
 {"actions": [{"action_type": "hud_open_widget", "target": "mail"}]}
 {"actions": [{"action_type": "hud_open_widget", "target": "calendar"}]}
+{"actions": [{"action_type": "hud_open_widget", "target": "camera"}]}
 {"actions": [{"action_type": "check_vitals", "target": "vitals"}]}
 {"actions": [{"action_type": "check_email", "target": "inbox"}]}
 {"actions": [{"action_type": "web_search", "target": "latest AI news"}]}
@@ -275,6 +285,135 @@ ANY request to write/create/generate code, a script, a program, a function, or a
 {"actions": [{"action_type": "native_app_launcher", "target": "Notepad"}, {"action_type": "ghost_type", "target": "Hello World|^s"}, {"action_type": "ghost_save_file", "target": "Desktop|test.txt"}]}
 ----------------
 """
+
+# =============================================================================
+# TURN-SCOPED ACTION CATALOGUE (Groq 6k-TPM fix)
+# The full ACTION_CATALOGUE above is ~5.4k tokens and, added to BASE_CORE (~2k),
+# blew past Groq's free-tier 6k tokens/minute limit on every action turn (413s).
+# Instead we send a small always-on CORE plus ONLY the domain section(s) the turn
+# actually needs (gated by intent + keywords). A typical action turn now carries
+# CORE (~0.8k tok) + at most one or two domain sections instead of the whole list.
+# Full capability is preserved per-domain; build_action_catalogue() assembles it.
+# =============================================================================
+_CAT_HEADER = "Available Actions for JSON Output:\n"
+
+_CAT_CORE = """\
+CORE ACTIONS (always available):
+- "hud_open_widget": show a glass HUD panel / full-screen stage. target="vitals"|"mail"|"calendar"|"calculator"|"notepad"|"browser"|"camera"|"map". Use "camera" for the live optical feed ("show me what you see","open the camera feed","open your eyes"); "map" for any map/location request ("open the map","show me a map","where I stay","map of <place>").
+- "hud_close_widget": dismiss that panel/stage. Same targets (incl. "camera","map").
+- "close_display": close/dismiss the search panel. target="search_panel".
+- "render_chart": visualise numeric data on the HUD. target={"title":"...","type":"bar"|"line"|"pie","data":[{"label":"Mon","value":12}]}. Use for "chart/graph/plot/visualise this".
+- "system_status": CPU/RAM/disk diagnostics. target="hardware".
+- "get_telemetry": full live system snapshot. target="snapshot".
+- "os_control": target="mute"|"unmute"|"volume_up"|"volume_down"|"next_track"|"prev_track"|"play_pause"|"lock_screen".
+- "tavily_search": FAST AI lookup — PREFER for quick facts, definitions, current events, prices, "what is/who is/when is/latest". target=query. AUTO.
+- "web_search": deeper/multi-result research. target=query.
+- "web_search_image": ONLY for "show picture"/"what does X look like". target=query.
+- "play_music": target="genre/song on platform" (this PC / HUD embed — NOT the TV).
+- "memory_recall": retrieve stored facts. target=query.
+- "remember_fact": target="Category: fact details".
+- "search_documents": semantic search over the user's OWN indexed notes/documents. target=query.
+- "morning_briefing": health+calendar+email digest. target="". AUTO.
+- "check_vitals": health metrics (voice/readout only). target="vitals".
+- "check_calendar": today's events. target="today". | "create_event": target=event description. | "clear_schedule": target="today".
+- "find_file": target=filename/query. | "create_note": target="Title: Content".
+- "read_screen": OCR the screen. target="screen".
+- "open_sticky_note"/"close_sticky_note": target="note". | "open_browser"/"close_browser": target="browser". | "open_calculator"/"close_calculator": target="calculator".
+- "sleep_protocol": target="sleep".
+- "enable_focus_mode"/"disable_focus_mode": target="focus". CRITICAL: "disable"→disable_focus_mode, NEVER enable.
+
+MODE 2 TRIGGERS (always JSON, never converse):
+morning briefing/daily update/how's my day → morning_briefing (target="")
+show mail/calendar/vitals/camera/map widget|panel on HUD → hud_open_widget (matching target) | hide it → hud_close_widget
+"show me what you see"/"open your eyes" → hud_open_widget target="camera" | "open the map"/"map of X"/"where I stay" → hud_open_widget target="map"
+quick fact/what is/who is/look up/latest/price → tavily_search | recall/memory → memory_recall
+cpu/ram/disk/diagnostics → system_status | mute/volume/lock → os_control | chart/graph/plot → render_chart
+play on YouTube/Spotify/browser on THIS PC (no TV named) → play_music
+
+CHAINING: multiple distinct tasks → all actions in one JSON array. EXCEPT briefings: never chain health+calendar+email; use morning_briefing alone.
+
+KEY EXAMPLES:
+{"actions": [{"action_type": "hud_open_widget", "target": "camera"}]}
+{"actions": [{"action_type": "hud_open_widget", "target": "map"}]}
+{"actions": [{"action_type": "tavily_search", "target": "latest AI news"}]}
+"""
+
+_CAT_PCOP = """\
+PC-OPS ACTIONS:
+- "native_app_launcher": open/launch an app. target=app name. | "close_app": close an app. target=app name.
+- "ghost_type": inject text into active app. target="text_to_type|^s" (^s=save). Content ONLY — never put the filename in content.
+- "ghost_save_file": OS-level save. target="directory|filename".
+- "gui_action": single input. target="keyboard_type"|"keyboard_press"|"mouse_scroll". | "agentic_gui_task": LAST RESORT for complex visual-only tasks ghost_type cannot handle.
+- "run_terminal_command": OS shell op. target="verb: argument". Verbs: list_directory, create_folder, move_file, copy_file, delete_file, list_processes, kill_process, network_info, ping, lock, sleep.
+- "os_macro": named OS macro. target="deep_work"|"shallow_work"|"diagnostic"|"entertainment" (deep_work URL override: "deep_work:http://localhost:5173"). AUTO.
+- "run_autopilot": overnight Figma→code build. target="<figma_file_key>" (or "key|out_dir"); ask for the key if not given. AUTO.
+- "web_browse": navigate to URL. target=url. | "web_click": target=element_id. | "web_type": target="element_id|text". | "web_scroll": "up"/"down". | "web_back": "". | "web_close": "".
+OS MACRO RULES: deep work/lock me in/code mode/work mode → os_macro target="deep_work". exit/end/unlock/I'm done/shallow work → os_macro target="shallow_work". diagnostics/task manager → "diagnostic". entertainment/movie time → "entertainment". NEVER native_app_launcher for these. Addressing JARVIS by name ("jarvis how are you") is NOT deep-work intent. NEVER use the native_app/ghost chain for code or files with extensions — use the coding/workspace actions.
+"""
+
+_CAT_CODE = """\
+CODING / WORKSPACE / GIT ACTIONS:
+- "workspace_read": read a project file into context. target=filepath.
+- "workspace_write": create/overwrite a project file. target="filepath|file_content".
+- "workspace_patch": surgical line edit. target="filepath|exact_search_string|replacement_string". exact_search_string MUST be the LITERAL current text char-for-char (from a prior [workspace_read/write result]) — never a placeholder/paraphrase.
+- "self_improve": propose a change to your OWN codebase on a branch, run tests, open a PR (never merges). target="what to improve". CONFIRM.
+- "github_status": git status. target="" or repo path. AUTO. | "github_log": last N commits. target="N" or "repo_path|N". AUTO. | "github_diff": diff --stat. target="" or repo path. AUTO.
+- "github_commit": stage all + commit. target="message" or "repo_path|message". CONFIRM. | "github_push": push to origin. target="" or repo path. CONFIRM.
+ROUTING: ANY filename with an extension (.py/.js/.jsx/.ts/.json/.html/.css/.md/.txt/.exe…) OR any request to write/create/generate code/a script/program/function/class — EVEN "save to desktop" — → workspace_* ONLY, NEVER the Notepad chain. status/log/diff → AUTO; commit/push → CONFIRM. NEVER raw git via run_terminal_command.
+"""
+
+_CAT_COMMS = """\
+EMAIL / MESSAGING ACTIONS:
+- "gmail_read_unread": PRIMARY for new/unread mail. target="" (top 5) or "N". AUTO.
+- "gmail_read": search-based fetch. target=Gmail query (e.g. "from:x@y.com","is:unread") or "query|N". AUTO.
+- "gmail_send": send a NEW email. target="to@email.com | Subject | Body" or JSON {"to","subject","body"}. CONFIRM (governance asks first).
+- "gmail_reply": reply in a thread. target="thread_id | body" or JSON {"thread_id","body"}. CONFIRM.
+- "check_email"/"read_email"/"search_email"/"send_email": legacy equivalents (prefer the gmail_* actions).
+- "telegram_send_file": send a file to the operator's phone. target=filepath or {"path","caption"}. Use for "send/text/deliver me <file>".
+ROUTING: "check email"/"any new emails"/"unread" → gmail_read_unread. "find/search email about X" → gmail_read. "send/email X saying Y" → gmail_send (ask for recipient first if missing; fill to+subject+body). "reply to that thread" → gmail_reply (needs thread_id from a prior read).
+OUTGOING EMAIL VOICE: subjects/bodies are real mail FROM the user TO the recipient — write first-person to them with a normal greeting/sign-off. NEVER address the user ("Sir") or use assistant-to-user wording in the mail text.
+"""
+
+_CAT_TV = """\
+TV / TELEVISION ACTIONS (only when the user names TV/television/big screen):
+- "tv_power": toggle TV on/off via ADB. target="". AUTO. | "tv_volume": target="up"|"down"|"mute" or "up|5"/"down|3". AUTO.
+- "tv_launch_app": open a TV app. target=app name ("netflix","youtube","prime video","hotstar","sonyliv","spotify"). AUTO.
+- "tv_play_media": play/search media on TV. target="App: content" when an app is named THIS message, else bare "content" (engine discovers apps). AUTO.
+- "tv_search": YouTube search on TV. target="App: query". | "tv_control": legacy keypad. target="power"|"volume_up_5"|"volume_down_5"|"mute"|"home"|"back".
+ROUTING: "turn on/off TV" → tv_power. "TV volume up/down/mute" → tv_volume. "open <app> on TV" (no media named) → tv_launch_app. "play/watch/search <content> on TV" → tv_play_media (bare target if app not named; NEVER guess an app from memory). NEVER tv_cast.
+"""
+
+_COMMS_HINTS = ("email", "mail", "inbox", "gmail", "reply", "telegram", "message", "send me", "text me", "deliver")
+_TV_HINTS = ("tv", "television", "big screen", "netflix", "hotstar", "prime video", "sonyliv")
+_CODE_HINTS = (
+    "code", "script", "program", "function", "class", "git", "commit", "push", "repo",
+    "workspace", "patch", "refactor", "self improve", "improve yourself",
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".html", ".css", ".md", ".txt", ".bat", ".exe", ".dll",
+)
+_PCOP_HINTS = (
+    "open", "launch", "start", "close", "app", "terminal", "command", "macro",
+    "deep work", "shallow work", "focus", "type", "scroll", "browse", "url", "website",
+    "diagnostic", "task manager", "autopilot", "figma", "folder", "delete", "move", "copy",
+    "kill", "process",
+)
+
+
+def build_action_catalogue(intent: str, user_text: str) -> str:
+    """Turn-scoped catalogue: always CORE, plus only the domain section(s) this turn
+    needs (by classified intent + keyword hints). Keeps the payload well under Groq's
+    6k TPM while preserving full per-domain action capability. Errs toward inclusion."""
+    t = (user_text or "").lower()
+    parts = [_CAT_HEADER, _CAT_CORE]
+    if intent == "PC_OP" or any(h in t for h in _PCOP_HINTS):
+        parts.append(_CAT_PCOP)
+    if intent == "CODER" or any(h in t for h in _CODE_HINTS):
+        parts.append(_CAT_CODE)
+    if any(h in t for h in _COMMS_HINTS):
+        parts.append(_CAT_COMMS)
+    if any(h in t for h in _TV_HINTS):
+        parts.append(_CAT_TV)
+    return "\n".join(parts)
+
 
 # =============================================================================
 # DYNAMIC PERSONA MATRIX — MODULE BLOCKS
@@ -771,6 +910,31 @@ Output ONLY raw JSON. No markdown, no explanation."""
             "response_mode": "CINEMATIC", "sass_index": 50,
         }
 
+# Broad set of tokens that signal the turn may need a MODE 2 action. When ANY appears
+# (or the intent is CODER/PC_OP, or a deterministic action is forced), the heavy
+# ACTION_CATALOGUE is included. Pure chitchat ("how are you", "huh", "thanks", greetings)
+# matches none of these → slim conversational prompt that fits Groq's 6k TPM.
+_ACTION_HINT_WORDS = (
+    "open", "close", "launch", "start", "play", "watch", "listen", "search", "find",
+    "locate", "show", "list", "read", "write", "create", "make", "run", "execute",
+    "send", "email", "mail", "inbox", "reply", "commit", "push", "git", "calendar",
+    "schedule", "event", "remind", "note", "weather", "news", "price", "look up",
+    "lookup", "vitals", "health", "steps", "focus", "deep work", "mute", "unmute",
+    "volume", "lock", "sleep", "screen", "chart", "graph", "plot", "brief", "autopilot",
+    "figma", "terminal", "command", "file", "folder", "delete", "move", "copy", "camera",
+    "eyes", "feed", "optical", "telegram", "document", "picture", "image", "tv",
+    "television", "diagnostic", "macro", "browse", "url", "website", "what is", "whats",
+    "what's", "who is", "when is", "where is", "how do i", "how to",
+)
+
+
+def _action_likely(user_text: str) -> bool:
+    """Heuristic: does this turn plausibly need a tool/action? Errs toward True so
+    action capability is never lost; only obvious chitchat gets the slim prompt."""
+    t = (user_text or "").lower()
+    return any(w in t for w in _ACTION_HINT_WORDS)
+
+
 def build_dynamic_prompt(
     classification: dict,
     active_user: str,
@@ -783,14 +947,20 @@ def build_dynamic_prompt(
     episodic_context: str,
     visual_ctx: str,
     long_term_memory_block: str = "",  # Phase 5: [LONG-TERM MEMORY] injected here
+    include_actions: bool = True,       # inject the action catalogue (action turns only)
+    user_text: str = "",               # used to scope the catalogue to this turn's domain
 ) -> str:
     """
     Assembles the final system prompt in this order:
-      1. BASE_CORE       — immutable J.A.R.V.I.S. identity and rules
-      2. MODULE block    — one of CODER / PC_OP / MENTOR / GENERAL
-      3. TONE overlay    — one of URGENT / FRUSTRATED / SASSY (or none)
-      4. State context   — live time, security state, memories, visual feed
-      5. Brevity flag    — injected last so it overrides everything above
+      1. BASE_CORE        — immutable J.A.R.V.I.S. identity and rules (persona)
+      1.5 ACTION_CATALOGUE— full MODE 2 action list (only when include_actions=True)
+      2. MODULE block     — one of CODER / PC_OP / MENTOR / GENERAL
+      3. TONE overlay     — one of URGENT / FRUSTRATED / SASSY (or none)
+      4. State context    — live time, security state, memories, visual feed
+      5. Brevity flag     — injected last so it overrides everything above
+
+    `include_actions` is False for clearly-conversational turns so the ~5.4k-token
+    catalogue is omitted, keeping the payload under Groq's free-tier 6k TPM limit.
     """
     intent        = classification.get("intent", "GENERAL")
     emotion       = classification.get("emotion", "CASUAL")
@@ -803,9 +973,24 @@ def build_dynamic_prompt(
         f"BREVITY: {brevity_mode} | RESPONSE_MODE: {response_mode}"
     )
 
-    # --- Layer 1: Immutable base ---
+    # --- Layer 1: Immutable base (persona) ---
     prompt_parts = [BASE_CORE]
-    
+
+    # --- Layer 1.5: Action catalogue — only on action-likely turns, scoped to this
+    # turn so the payload stays under Groq's 6k TPM limit. Primary path is the
+    # semantic RAG router (retrieves only relevant actions); if the vector store /
+    # embedder is unavailable it returns None and we fall back to keyword gating. ---
+    if include_actions:
+        catalogue = None
+        try:
+            from modules import action_router
+            catalogue = action_router.build_catalogue(intent, user_text)
+        except Exception as _ar_e:
+            print(f"[BRAIN] RAG action-router unavailable ({_ar_e}); using keyword catalogue.", flush=True)
+        if not catalogue:
+            catalogue = build_action_catalogue(intent, user_text)
+        prompt_parts.append(catalogue)
+
     # --- Layer 2: Intent-driven module (mutually exclusive) ---
     module_map = {
         "CODER": MODULE_CODER,
@@ -1035,14 +1220,25 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
             classification["brevity_mode"] = False
             print("[BRAIN] brevity_mode vetoed: action-forced operation detected in user text.")
 
+    deterministic_action = _should_force_action_json(user_text)
+
+    # Only carry the ~5.4k-token ACTION_CATALOGUE when the turn plausibly needs an
+    # action; pure chitchat uses the slim persona prompt so it fits Groq's 6k TPM.
+    _intent = classification.get("intent")
+    include_actions = (
+        deterministic_action
+        or _intent in ("CODER", "PC_OP")
+        or _action_likely(user_text)
+    )
+
     dynamic_system_prompt = build_dynamic_prompt(
         classification, active_user, persona_instructions, "",
         current_time_str, time_of_day, security_state, semantic_context,
         episodic_context, visual_ctx,
         long_term_memory_block=_ltm_block,  # Phase 5: inject structured memories
+        include_actions=include_actions,
+        user_text=user_text,  # scope the action catalogue to this turn's domain
     )
-
-    deterministic_action = _should_force_action_json(user_text)
     if deterministic_action and not is_locked:
         dynamic_system_prompt += (
             "\n\n--- JSON SILENCE PROTOCOL (MODE 2) ---\n"
@@ -1148,6 +1344,31 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
             if '"disable_focus_mode"' not in response:
                 response = '{"actions": [{"action_type": "disable_focus_mode", "target": "focus"}]}'
                 print("[BRAIN] Guard: injected disable_focus_mode.")
+
+        # ── Camera / optical-feed HUD guard ──────────────────────────────────────
+        # "show me what you see" / "open the camera feed" → open; "close your eyes" /
+        # "hide the camera" → close. Hide is checked first so "close the camera feed"
+        # isn't mis-caught by the "camera feed" open signal.
+        _cam_hide_signals = [
+            "hide the camera", "hide camera", "close the camera", "close camera",
+            "hide the feed", "close the feed", "hide the optical feed",
+            "close the optical feed", "turn off the camera", "stop the camera",
+            "close your eyes", "shut your eyes",
+        ]
+        _cam_show_signals = [
+            "show the camera", "show camera", "open the camera", "open camera",
+            "camera feed", "optical feed", "show the feed", "show me the camera",
+            "show me what you see", "show me what you're seeing", "open your eyes",
+            "show your eyes", "show me what you can see",
+        ]
+        if any(s in user_lower_chk for s in _cam_hide_signals):
+            if '"hud_close_widget"' not in response or '"camera"' not in response:
+                response = '{"actions": [{"action_type": "hud_close_widget", "target": "camera"}]}'
+                print("[BRAIN] Guard: injected hud_close_widget (camera).")
+        elif any(s in user_lower_chk for s in _cam_show_signals):
+            if '"hud_open_widget"' not in response or '"camera"' not in response:
+                response = '{"actions": [{"action_type": "hud_open_widget", "target": "camera"}]}'
+                print("[BRAIN] Guard: injected hud_open_widget (camera).")
 
         # ── Residual enable↔disable swap (catches partial mis-routing) ───────────
         _disable_signals = ["disable", "turn off", "deactivate", "stop focus", "end focus"]
@@ -1339,14 +1560,25 @@ def process_stream(user_text: str, active_user: str = "KAUSTAV"):
     )
     _ltm_block   = memory_manager.format_memory_block(_ltm_records)
 
+    deterministic_action = _should_force_action_json(user_text)
+
+    # Only carry the ~5.4k-token ACTION_CATALOGUE when the turn plausibly needs an
+    # action; pure chitchat uses the slim persona prompt so it fits Groq's 6k TPM.
+    _intent = classification.get("intent")
+    include_actions = (
+        deterministic_action
+        or _intent in ("CODER", "PC_OP")
+        or _action_likely(user_text)
+    )
+
     dynamic_system_prompt = build_dynamic_prompt(
         classification, active_user, persona_instructions, "",
         current_time_str, time_of_day, security_state, semantic_context,
         episodic_context, visual_ctx,
         long_term_memory_block=_ltm_block,  # Phase 5: inject structured memories
+        include_actions=include_actions,
+        user_text=user_text,  # scope the action catalogue to this turn's domain
     )
-
-    deterministic_action = _should_force_action_json(user_text)
     if deterministic_action and not is_locked:
         dynamic_system_prompt += (
             "\n\n--- JSON SILENCE PROTOCOL (MODE 2) ---\n"

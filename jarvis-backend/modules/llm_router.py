@@ -29,6 +29,10 @@ OLLAMA_URL        = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 LOCAL_MODEL       = os.getenv("OLLAMA_MODEL", "llama3:8b")          # primary reasoning
 VISION_MODEL      = os.getenv("OLLAMA_VISION_MODEL", "llava:latest")  # vision cortex
 GROQ_MODEL        = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+# Gemini cloud fallback — separate org/quota from Groq, so a drained Groq daily
+# bucket escalates here instead of dying. Skipped automatically if GEMINI_API_KEY
+# is unset. Uses the legacy google-generativeai SDK (already a dependency).
+GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # Lowered from 30s: a healthy local 8B returns its first token well under 15s.
 # If the local cortex can't meet this, the circuit breaker (below) routes to the
 # cloud instead of making every single call wait out a long timeout.
@@ -74,22 +78,37 @@ def _reset_ollama_breaker() -> None:
 # ===========================================================================
 # Routing decision
 # ===========================================================================
+def _gemini_configured() -> bool:
+    return bool(os.getenv("GEMINI_API_KEY", "").strip())
+
+
 def _route_order(complexity: str, model: str | None) -> list[str]:
     """
     Returns the ordered list of providers to attempt.
     - A llava/vision model is pinned local-only (privacy + the cloud has no llava).
     - 'heavy' tasks go cloud-first (extreme reasoning), local as a safety net.
     - Otherwise local-first (default) unless JARVIS_LLM_MODE=cloud_first.
+    - Gemini sits between Groq and the local route as a separate-quota cloud fallback:
+      when Groq's daily bucket is drained it escalates to Gemini before the (slow,
+      CPU-bound) local model. Dropped entirely if GEMINI_API_KEY is unset.
     - If the local circuit breaker is OPEN, the local route is dropped from text
       routes entirely (vision still tries local — there's no cloud llava).
     """
     if model and "llava" in model.lower():
         return ["ollama"]
+    # --- TEMPORARY (user request): Groq-only for all text reasoning ---
+    # "no gemini no local AI for now" — the local CPU model was slow and Gemini was
+    # an extra dependency the user wanted out of the path. Text routes to Groq only;
+    # vision (llava) still pins local above since there's no cloud llava.
+    # To restore the full Groq → Gemini → Ollama chain, delete this line.
+    return ["groq"]
     if complexity == "heavy" or LLM_MODE == "cloud_first":
-        order = ["groq", "ollama"]
+        order = ["groq", "gemini", "ollama"]
     else:
-        order = ["ollama", "groq"]  # local-first default
+        order = ["ollama", "groq", "gemini"]  # local-first default
 
+    if not _gemini_configured():
+        order = [p for p in order if p != "gemini"]
     if _ollama_breaker_open():
         order = [p for p in order if p != "ollama"] or ["groq"]
     return order
@@ -126,6 +145,8 @@ def universal_llm_call(
                 )
                 _reset_ollama_breaker()  # local answered — keep using it
                 return result
+            elif name == "gemini":
+                return _call_gemini(messages, temperature, max_tokens, stream, json_mode, timeout)
             else:  # groq
                 return _call_groq(messages, temperature, max_tokens, stream, json_mode, timeout)
         except Exception as e:
@@ -232,6 +253,78 @@ def _call_groq(messages, temperature, max_tokens, stream, json_mode, timeout):
 
     g = _gen()
     first = next(g, "")  # triggers the request; raises on auth/rate errors
+
+    def _safe():
+        if first:
+            yield first
+        yield from g
+    return _safe()
+
+
+# ===========================================================================
+# Provider: GEMINI CLOUD (separate-quota fallback)
+# ===========================================================================
+_gemini_ready = False
+
+
+def _ensure_gemini():
+    """Configure the Gemini SDK once; raise if no key so the router escalates onward."""
+    global _gemini_ready
+    import warnings
+    warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
+    import google.generativeai as genai
+
+    if not _gemini_ready:
+        key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not key:
+            raise RuntimeError("GEMINI_API_KEY not set")
+        genai.configure(api_key=key)
+        _gemini_ready = True
+    return genai
+
+
+def _split_messages_for_gemini(messages):
+    """OpenAI-style messages → (system_instruction, Gemini contents).
+
+    Gemini takes system text separately and uses roles 'user'/'model'.
+    """
+    system_parts, contents = [], []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content", "") or ""
+        if role == "system":
+            system_parts.append(content)
+        elif role == "assistant":
+            contents.append({"role": "model", "parts": [content]})
+        else:  # user (and any unknown role) maps to user
+            contents.append({"role": "user", "parts": [content]})
+    system_instruction = "\n\n".join(p for p in system_parts if p) or None
+    return system_instruction, contents
+
+
+def _call_gemini(messages, temperature, max_tokens, stream, json_mode, timeout):
+    genai = _ensure_gemini()
+    system_instruction, contents = _split_messages_for_gemini(messages)
+
+    gen_cfg = {"temperature": temperature, "max_output_tokens": max_tokens}
+    if json_mode:
+        gen_cfg["response_mime_type"] = "application/json"
+
+    model_obj = genai.GenerativeModel(
+        GEMINI_MODEL, system_instruction=system_instruction, generation_config=gen_cfg
+    )
+    req_opts = {"timeout": timeout}
+
+    if not stream:
+        resp = model_obj.generate_content(contents, request_options=req_opts)
+        return (resp.text or "").strip()
+
+    def _gen():
+        for chunk in model_obj.generate_content(contents, stream=True, request_options=req_opts):
+            yield getattr(chunk, "text", "") or ""
+
+    g = _gen()
+    first = next(g, "")  # triggers the request; raises on auth/quota errors → escalate
 
     def _safe():
         if first:

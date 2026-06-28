@@ -14,13 +14,24 @@ DESIGN
   come back through a `TelegramChannel` (an OutputChannel) so a phone reply never
   leaks to the desk speakers or the HUD.
 
-* Strict owner firewall. Every update is validated against TELEGRAM_USER_ID from
-  the environment. Any other user gets a cold rejection and is logged; their
-  message never reaches the brain or the engine.
+* Multi-user firewall + permission tiers (Phase 4.5). Every update is matched
+  against a small registry of recognised identities, each loaded from the
+  environment:
+      - TELEGRAM_USER_ID     → Kaustav (ADMIN tier, "Sir", unrestricted)
+      - TELEGRAM_GF_ID       → Mousumi (VIP GUEST tier, "Madam")
+      - TELEGRAM_BROTHER_ID  → Kinshuk (VIP GUEST tier, "Mr. Kinshuk")
+  Any unrecognised id hits a cold, silent firewall: it is logged and dropped —
+  no reply, no brain, no engine. Recognised callers carry their identity on the
+  TelegramChannel (`user` + `permission_tier`), which the shared command core
+  uses to greet them correctly and to enforce what they may do. VIP guests may
+  chat and run fast read-only searches (scores, weather, general knowledge) but
+  are refused every structural action (OS, files, terminal, Autopilot, Gmail,
+  Git, telemetry) with a polite, fixed rejection phrase.
 
 * Graceful when unconfigured. If TELEGRAM_BOT_TOKEN / TELEGRAM_USER_ID are
   absent, `start_bot()` logs and no-ops, so the rest of J.A.R.V.I.S. boots
-  normally without Telegram.
+  normally without Telegram. The VIP ids are optional — absent ones simply mean
+  that guest cannot connect.
 
 Background tasks (e.g. "Build this Figma key …") are queued via an injected
 `queue_goal_fn`, and J.A.R.V.I.S. can push files back to the chat via
@@ -41,6 +52,12 @@ from modules.session_manager import OutputChannel
 _BOT_TOKEN: Optional[str] = None
 _OWNER_ID: Optional[int] = None
 
+# Phase 4.5: recognised-identity registry, keyed by numeric Telegram user id.
+# Populated in start_bot() from TELEGRAM_USER_ID / TELEGRAM_GF_ID /
+# TELEGRAM_BROTHER_ID. Each value is an identity dict (see _make_identity).
+# Anyone NOT in this map is an unrecognised intruder → silent firewall.
+_IDENTITIES: dict[int, dict] = {}
+
 # Lazily-created aiogram objects + the running poll task.
 _bot = None                       # aiogram.Bot
 _dispatcher = None                # aiogram.Dispatcher
@@ -54,6 +71,36 @@ _status_fn: Optional[Callable[[], Awaitable[str]]] = None
 
 _OWNER_USER = "KAUSTAV"  # the admin identity remote commands run as
 
+# ── Permission tiers (mirror action_engine.ADMIN_TIER / VIP_GUEST_TIER) ──────
+# Kept as bare literals so this transport module stays free of the engine's
+# heavy import chain. The strings MUST match action_engine, which is the
+# authoritative enforcement point.
+_ADMIN_TIER = "admin"
+_VIP_GUEST_TIER = "vip_guest"
+
+# Fixed phrase shown to a VIP guest who attempts a privileged/blocked action.
+_VIP_REJECTION = "I'm afraid I cannot perform that action without direct authorization from Sir."
+
+
+def _make_identity(user: str, tier: str, honorific: str, label: str, greeting: str) -> dict:
+    """Build a recognised-identity record stored in _IDENTITIES."""
+    return {
+        "user": user,            # active_user string the brain keys persona off
+        "tier": tier,            # _ADMIN_TIER | _VIP_GUEST_TIER
+        "honorific": honorific,  # how logs/fallbacks address them
+        "label": label,          # human label for logs
+        "greeting": greeting,    # /start welcome text
+    }
+
+
+def _identify(message) -> Optional[dict]:
+    """Map an incoming update to a recognised identity, or None for intruders."""
+    user = getattr(message, "from_user", None)
+    uid = getattr(user, "id", None)
+    if uid is None:
+        return None
+    return _IDENTITIES.get(uid)
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # Output channel
@@ -63,11 +110,18 @@ class TelegramChannel(OutputChannel):
 
     kind = "telegram"
 
-    def __init__(self, chat_id: int, user: str = _OWNER_USER) -> None:
+    def __init__(self, chat_id: int, user: str = _OWNER_USER,
+                 permission_tier: str = _ADMIN_TIER, honorific: str = "Sir") -> None:
         # Channel id is scoped to the telegram chat/user — this is the unit of
-        # concurrent session isolation for the phone.
+        # concurrent session isolation for the phone. `user` selects the brain's
+        # persona; `permission_tier` gates what the command core will run for
+        # this caller; `honorific` lets generic fallback strings address the
+        # caller correctly. All ride on the channel so a guest's session,
+        # working memory, and tool stream stay isolated from the desk HUD's.
         super().__init__(channel_id=f"telegram:{chat_id}", user=user)
         self.chat_id = chat_id
+        self.permission_tier = permission_tier
+        self.honorific = honorific
 
     async def reply(self, text: str) -> None:
         if not text or not text.strip() or _bot is None:
@@ -98,23 +152,42 @@ def _chunk(text: str, size: int) -> list[str]:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Owner firewall
+# Multi-user firewall
 # ════════════════════════════════════════════════════════════════════════════
-def _is_owner(message) -> bool:
-    user = getattr(message, "from_user", None)
-    return bool(user and _OWNER_ID is not None and user.id == _OWNER_ID)
+def _is_admin(message) -> bool:
+    ident = _identify(message)
+    return bool(ident and ident["tier"] == _ADMIN_TIER)
 
 
-async def _reject(message) -> None:
-    """Cold firewall rejection for any non-owner. Logged; brain never invoked."""
+def _channel_for(message) -> "TelegramChannel":
+    """Build an identity-scoped channel for a recognised caller.
+
+    Only call after _identify() has confirmed the caller is recognised.
+    """
+    ident = _identify(message) or _IDENTITIES.get(_OWNER_ID, {})
+    return TelegramChannel(
+        message.chat.id,
+        user=ident.get("user", _OWNER_USER),
+        permission_tier=ident.get("tier", _ADMIN_TIER),
+        honorific=ident.get("honorific", "Sir"),
+    )
+
+
+async def _firewall(message) -> None:
+    """Cold, SILENT firewall for any unrecognised id. Logged; never answered.
+
+    A reply would confirm the bot exists and is listening; an intruder gets
+    nothing. The brain and engine are never invoked.
+    """
     user = getattr(message, "from_user", None)
     uid = getattr(user, "id", "?")
     uname = getattr(user, "username", "?")
-    print(f"[TELEGRAM] ⛔ Unauthorized access attempt — id={uid} username=@{uname}", flush=True)
-    try:
-        await message.answer("⛔ Access denied. This is a private system. The attempt has been logged.")
-    except Exception:
-        pass
+    print(f"[TELEGRAM] ⛔ Silent firewall — unrecognised id={uid} username=@{uname}", flush=True)
+
+
+async def _deny_privileged(channel: "TelegramChannel") -> None:
+    """Polite refusal sent to a recognised VIP guest who lacks the privilege."""
+    await channel.reply(_VIP_REJECTION)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -128,21 +201,17 @@ def _build_dispatcher():
 
     @router.message(Command("start"))
     async def cmd_start(message):
-        if not _is_owner(message):
-            return await _reject(message)
-        await message.answer(
-            "J.A.R.V.I.S. online and at your service, Sir.\n\n"
-            "• Just text me to issue a command.\n"
-            "• /task <goal> — queue a background task (e.g. \"/task build figma key abc123\").\n"
-            "• /tasks — list queued/finished tasks.\n"
-            "• /status — system status.\n"
-            "• /offline <token> — gracefully take the system offline (watchdog)."
-        )
+        ident = _identify(message)
+        if ident is None:
+            return await _firewall(message)
+        await message.answer(ident["greeting"])
 
     @router.message(Command("status"))
     async def cmd_status(message):
-        if not _is_owner(message):
-            return await _reject(message)
+        if _identify(message) is None:
+            return await _firewall(message)
+        if not _is_admin(message):
+            return await _deny_privileged(_channel_for(message))
         await TelegramChannel(message.chat.id).notify("typing")
         if _status_fn is not None:
             try:
@@ -155,8 +224,10 @@ def _build_dispatcher():
 
     @router.message(Command("task"))
     async def cmd_task(message):
-        if not _is_owner(message):
-            return await _reject(message)
+        if _identify(message) is None:
+            return await _firewall(message)
+        if not _is_admin(message):
+            return await _deny_privileged(_channel_for(message))
         goal = (message.text or "").partition(" ")[2].strip()
         if not goal:
             return await message.answer("Give me a goal, Sir — e.g. \"/task build figma key abc123\".")
@@ -179,8 +250,10 @@ def _build_dispatcher():
 
     @router.message(Command("tasks"))
     async def cmd_tasks(message):
-        if not _is_owner(message):
-            return await _reject(message)
+        if _identify(message) is None:
+            return await _firewall(message)
+        if not _is_admin(message):
+            return await _deny_privileged(_channel_for(message))
         if _list_tasks_fn is None:
             return await message.answer("Task list is not available right now, Sir.")
         try:
@@ -196,31 +269,43 @@ def _build_dispatcher():
 
     @router.message(Command("offline"))
     async def cmd_offline(message):
-        if not _is_owner(message):
-            return await _reject(message)
+        if _identify(message) is None:
+            return await _firewall(message)
+        if not _is_admin(message):
+            return await _deny_privileged(_channel_for(message))
         token = (message.text or "").partition(" ")[2].strip()
         ok, msg = _request_watchdog_shutdown(token)
         await message.answer(msg)
 
     @router.message(F.text)
     async def on_text(message):
-        if not _is_owner(message):
-            return await _reject(message)
+        ident = _identify(message)
+        if ident is None:
+            return await _firewall(message)
         if _process_fn is None:
             return await message.answer("My reasoning core isn't wired up yet, Sir.")
-        channel = TelegramChannel(message.chat.id)
+        # Identity rides on the channel: `user` drives the brain's persona/
+        # honorifics, `permission_tier` is enforced by run_remote_command +
+        # the ActionEngine before any tool runs. Each guest's session is keyed
+        # by their own telegram chat id, isolating their working memory and
+        # tool stream from the desk HUD and from each other.
+        channel = TelegramChannel(
+            message.chat.id, user=ident["user"], permission_tier=ident["tier"],
+            honorific=ident["honorific"],
+        )
         await channel.notify("typing")
         try:
             await _process_fn(message.text, channel)
         except Exception as e:
             print(f"[TELEGRAM] process_fn fault: {e}\n{traceback.format_exc()}", flush=True)
-            await channel.reply("I encountered a fault processing that, Sir.")
+            await channel.reply("I encountered a fault processing that.")
 
     @router.message()
     async def on_other(message):
-        if not _is_owner(message):
-            return await _reject(message)
-        await message.answer("I can only act on text commands for now, Sir.")
+        ident = _identify(message)
+        if ident is None:
+            return await _firewall(message)
+        await message.answer("I can only act on text commands for now.")
 
     dp = Dispatcher()
     dp.include_router(router)
@@ -296,6 +381,7 @@ def start_bot(
     """
     global _BOT_TOKEN, _OWNER_ID, _bot, _dispatcher, _poll_task
     global _process_fn, _queue_goal_fn, _list_tasks_fn, _status_fn
+    global _IDENTITIES
 
     _BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     owner_raw = os.getenv("TELEGRAM_USER_ID", "").strip()
@@ -326,6 +412,62 @@ def start_bot(
         )
         return False
 
+    # ── Phase 4.5: build the recognised-identity registry ────────────────────
+    # Admin is mandatory (validated above). The two VIP guests are optional —
+    # a missing/invalid id simply means that person cannot connect. We never
+    # let a malformed VIP id abort the whole gateway.
+    _IDENTITIES = {}
+    _IDENTITIES[_OWNER_ID] = _make_identity(
+        user=_OWNER_USER,
+        tier=_ADMIN_TIER,
+        honorific="Sir",
+        label="Kaustav (Admin)",
+        greeting=(
+            "J.A.R.V.I.S. online and at your service, Sir.\n\n"
+            "• Just text me to issue a command.\n"
+            "• /task <goal> — queue a background task (e.g. \"/task build figma key abc123\").\n"
+            "• /tasks — list queued/finished tasks.\n"
+            "• /status — system status.\n"
+            "• /offline <token> — gracefully take the system offline (watchdog)."
+        ),
+    )
+
+    def _register_vip(env_key: str, user: str, honorific: str, label: str, greeting: str) -> None:
+        raw = os.getenv(env_key, "").strip()
+        if not raw:
+            return
+        if not raw.lstrip("-").isdigit():
+            print(f"[TELEGRAM] ⚠ {env_key} is not a numeric id ('{raw}') — {label} skipped.", flush=True)
+            return
+        vid = int(raw)
+        if vid in _IDENTITIES:
+            print(f"[TELEGRAM] ⚠ {env_key} collides with an existing identity (id={vid}) — {label} skipped.", flush=True)
+            return
+        _IDENTITIES[vid] = _make_identity(
+            user=user, tier=_VIP_GUEST_TIER, honorific=honorific, label=label, greeting=greeting,
+        )
+
+    _register_vip(
+        "TELEGRAM_GF_ID", "MOUSUMI", "Madam", "Mousumi (VIP Guest)",
+        greeting=(
+            "At your service, Madam. J.A.R.V.I.S. here.\n\n"
+            "It is a pleasure to have you. You may chat with me freely, ask after the "
+            "weather, the score of a match, or anything you're curious about, and I'll "
+            "look it up at once. Some of the house controls are reserved for Sir, but "
+            "for everything else — I am entirely at your disposal, Miss Mousumi."
+        ),
+    )
+    _register_vip(
+        "TELEGRAM_BROTHER_ID", "KINSHUK", "Mr. Kinshuk", "Kinshuk (VIP Guest)",
+        greeting=(
+            "J.A.R.V.I.S. online — good to see you, Mr. Kinshuk.\n\n"
+            "Feel free to chat, ask for the weather, scores, news, or general "
+            "knowledge and I'll fetch it straight away. The system controls and "
+            "Sir's personal integrations are restricted, but for conversation and "
+            "lookups I'm at your service."
+        ),
+    )
+
     try:
         from aiogram import Bot
     except Exception as e:
@@ -350,7 +492,12 @@ def start_bot(
             print(f"[TELEGRAM] Polling loop crashed: {e}\n{traceback.format_exc()}", flush=True)
 
     _poll_task = asyncio.create_task(_run())
-    print(f"[TELEGRAM] ✅ Gateway online — owner id {_OWNER_ID}. Polling started.", flush=True)
+    _roster = ", ".join(f"{i['label']} [{i['tier']}]" for i in _IDENTITIES.values())
+    print(
+        f"[TELEGRAM] ✅ Gateway online — {len(_IDENTITIES)} recognised identit"
+        f"{'y' if len(_IDENTITIES) == 1 else 'ies'}: {_roster}. Polling started.",
+        flush=True,
+    )
     return True
 
 

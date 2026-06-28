@@ -31,7 +31,7 @@ from brain import (
     get_last_sass_index,
     client as groq_client,
 )
-from action_engine import ActionEngine
+from action_engine import ActionEngine, tier_allows, ADMIN_TIER, TIER_BLOCKED_PREFIX
 from recorder import listen_to_mic
 from wakeword import wait_for_wake_word, wait_for_jarvis, is_shutting_down, pop_pending_utterance
 import vision # --- Optical Biometrics ---
@@ -90,6 +90,8 @@ def _hud_open_widget_message(widget: str) -> str:
         "calculator": "Calculator on the HUD, sir.",
         "notepad": "Notes panel on the HUD, sir.",
         "browser": "Browser panel on the HUD, sir.",
+        "camera": "Optical feed on the HUD, sir.",
+        "map": "Tactical map on the HUD, sir.",
     }.get(widget, "Panel on the HUD, sir.")
 
 
@@ -862,6 +864,32 @@ async def calendar_today():
         print(f"[API] Calendar error: {e}")
         return {"configured": False, "events": [], "error": str(e)}
 
+@app.get("/api/vision/state")
+async def vision_state():
+    """
+    Optical-feed state for the HUD camera panel. The browser pulls the raw MJPEG
+    directly from the phone (camera_url); this endpoint supplies JARVIS's
+    detections so the HUD can draw bounding boxes/labels/identity on top, scaled
+    from the analysed frame (frame_w/frame_h) to the displayed video size.
+    """
+    try:
+        from ambient_vision import shared_optical_cache as c
+        return {
+            "camera_active": bool(c.get("camera_active")),
+            "camera_url": c.get("camera_url"),
+            "frame_w": c.get("frame_w", 0),
+            "frame_h": c.get("frame_h", 0),
+            "detections": c.get("detections", []),
+            "objects_in_view": sorted(c.get("objects_in_view", set())),
+            "people_in_view": sorted(c.get("people_in_view", set())),
+            "dominant_emotion": c.get("dominant_emotion", "neutral"),
+            "intruder_detected": bool(c.get("intruder_detected")),
+            "last_updated": c.get("last_updated", 0),
+        }
+    except Exception as e:
+        print(f"[API] Vision state error: {e}")
+        return {"camera_active": False, "camera_url": None, "detections": [], "error": str(e)}
+
 @app.get("/api/health/summary")
 async def health_summary():
     """Returns Google Fit health data (steps, hr) for the frontend widget."""
@@ -1000,7 +1028,15 @@ async def run_remote_command(command_text: str, channel) -> None:
     """Execute a text command for a non-HUD channel and reply on that channel only."""
     user = (getattr(channel, "user", None) or "KAUSTAV")
     kind = getattr(channel, "kind", "remote")
-    print(f"\n[REMOTE:{kind}] Command from {user}: {command_text}", flush=True)
+    # Phase 4.5: permission tier rides on the channel (admin desk/HUD + Telegram
+    # admin → ADMIN_TIER; Telegram VIP guests → vip_guest). It gates every path
+    # below that can drive the ActionEngine. ADMIN_TIER is the safe default so
+    # the HUD and any channel that omits a tier remain unrestricted.
+    tier = getattr(channel, "permission_tier", ADMIN_TIER)
+    # How to address this caller in generic fallback lines (the brain/synthesis
+    # already honour persona; this only covers the bare "Done"/"Standing by" tails).
+    honor = getattr(channel, "honorific", "Sir")
+    print(f"\n[REMOTE:{kind}] Command from {user} (tier={tier}): {command_text}", flush=True)
 
     # Background memory extraction — identical to the HUD path.
     try:
@@ -1011,16 +1047,29 @@ async def run_remote_command(command_text: str, channel) -> None:
     # ── Deterministic fast-lane (Roadmap §3.4) — skip the LLM entirely ───────
     _fp = fast_path.match(command_text)
     if _fp is not None:
-        if _fp.get("action"):
+        fp_action = _fp.get("action")
+        if fp_action:
+            # Tier gate: a restricted caller can never run a fast-path *action*
+            # (mute/lock/media all touch the host). Say-only fast paths (time/
+            # date) carry no action and fall through to the reply below.
+            if not tier_allows(tier, fp_action.get("action_type", "")):
+                await channel.reply(
+                    "I'm afraid I cannot perform that action without direct authorization from Sir."
+                )
+                return
             async with COMMAND_LOCK:
-                await engine.execute_with_retry(_fp["action"], True, None)
-        await channel.reply(_fp.get("say") or "Done, Sir.")
+                await engine.execute_with_retry(fp_action, True, None, permission_tier=tier)
+        await channel.reply(_fp.get("say") or f"Done, {honor}.")
         return
 
     # ── ReAct planner fast-path bypass (Roadmap §1.2) ────────────────────────
     # Only CLEARLY multi-step goals enter the heavy Think→Act→Observe loop;
     # simple commands fall straight through to the low-latency single-shot path.
-    if planner.should_plan(command_text):
+    # Tier gate: the ReAct planner runs an unbounded multi-step Think→Act→Observe
+    # loop straight against the engine (autopilot-class). It is admin-only — a
+    # VIP guest's complex request falls through to the single-shot path, where
+    # each produced action is filtered against their allowlist.
+    if tier == ADMIN_TIER and planner.should_plan(command_text):
         print(f"[REMOTE:{kind}] Complex goal → ReAct planner.", flush=True)
         try:
             outcome = await planner.run_react(
@@ -1036,7 +1085,7 @@ async def run_remote_command(command_text: str, channel) -> None:
         llm_response = await asyncio.to_thread(process_command, command_text, user)
     except Exception as e:
         print(f"[REMOTE] Brain fault: {e}", flush=True)
-        await channel.reply("I encountered a fault reaching my reasoning core, Sir.")
+        await channel.reply(f"I encountered a fault reaching my reasoning core, {honor}.")
         return
 
     clean_response = llm_response.replace("```json", "").replace("```", "").strip()
@@ -1055,16 +1104,32 @@ async def run_remote_command(command_text: str, channel) -> None:
 
     # Pure conversational reply (no actions).
     if not json_match:
-        await channel.reply(clean_response or "Standing by, Sir.")
+        await channel.reply(clean_response or f"Standing by, {honor}.")
         return
 
     try:
         parsed_json = json.loads(_heal_json(json_match))
     except json.JSONDecodeError:
-        await channel.reply(clean_response or "Standing by, Sir.")
+        await channel.reply(clean_response or f"Standing by, {honor}.")
         return
 
     actions = _normalize_os_control_batch(parsed_json.get("actions", []), command_text)
+
+    # ── Phase 4.5: tier pre-filter (refuse the WHOLE batch atomically) ───────
+    # Before touching the engine, verify every action is in-tier. If a VIP guest
+    # asks for anything privileged, we refuse the entire turn here — so a blocked
+    # action can never run as a side effect of an otherwise-allowed batch, and no
+    # engine state is mutated at all. (The engine re-checks per action as
+    # defence-in-depth, but this keeps the refusal clean and all-or-nothing.)
+    if tier != ADMIN_TIER:
+        for a in actions:
+            if not tier_allows(tier, a.get("action_type", "")):
+                print(f"[REMOTE:{kind}] ⛔ Tier refusal — '{a.get('action_type','')}' not permitted for {user}.", flush=True)
+                await channel.reply(
+                    "I'm afraid I cannot perform that action without direct authorization from Sir."
+                )
+                return
+
     batched_data: list[tuple[str, str]] = []
     replied = False
 
@@ -1074,9 +1139,19 @@ async def run_remote_command(command_text: str, channel) -> None:
             trace_id = engine.new_trace_id()
             # Serialise the shared engine across channels.
             async with COMMAND_LOCK:
-                exec_meta = await engine.execute_with_retry(intent_json, True, trace_id)
+                exec_meta = await engine.execute_with_retry(
+                    intent_json, True, trace_id, permission_tier=tier
+                )
             result = exec_meta.get("result", exec_meta) if isinstance(exec_meta, dict) else exec_meta
             result_str = str(result)
+
+            # ── Phase 4.5: tier-refusal sentinel (defence-in-depth) ───────────
+            if isinstance(result, str) and result.startswith(TIER_BLOCKED_PREFIX):
+                await channel.reply(
+                    "I'm afraid I cannot perform that action without direct authorization from Sir."
+                )
+                replied = True
+                continue
 
             # ── Governance sentinels ──────────────────────────────────────────
             if isinstance(result, str) and result.startswith("GOVERNANCE_BLOCKED:"):
@@ -1139,7 +1214,7 @@ async def run_remote_command(command_text: str, channel) -> None:
                 replied = True
 
         if not replied:
-            await channel.reply("Done, Sir.")
+            await channel.reply(f"Done, {honor}.")
 
     except Exception as e:
         print(f"[REMOTE] Execution fault: {e}", flush=True)
@@ -1149,7 +1224,7 @@ async def run_remote_command(command_text: str, channel) -> None:
                 errf.write(traceback.format_exc() + "\n")
         except Exception:
             pass
-        await channel.reply("I encountered an execution fault, Sir.")
+        await channel.reply(f"I encountered an execution fault, {honor}.")
 
 
 # ── Injected callbacks for remote channels (Telegram /task, /tasks, /status) ──

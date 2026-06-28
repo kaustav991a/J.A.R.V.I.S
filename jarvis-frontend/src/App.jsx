@@ -9,6 +9,8 @@ import BrowserWidget from "./components/BrowserWidget";
 import HealthWidget from "./components/HealthWidget";
 import EmailWidget from "./components/EmailWidget";
 import CalendarWidget from "./components/CalendarWidget";
+import CameraFeedWidget from "./components/CameraFeedWidget";
+import MapWidget from "./components/MapWidget";
 import ScanlineTransition from "./components/ScanlineTransition";
 import TypewriterText from "./components/TypewriterText";
 import { MinimalHudClock } from "./components/ClockWidget";
@@ -128,6 +130,15 @@ function App() {
   const [isHealthWidgetOpen, setIsHealthWidgetOpen] = useState(false);
   const [isMailWidgetOpen, setIsMailWidgetOpen] = useState(false);
   const [isCalendarWidgetOpen, setIsCalendarWidgetOpen] = useState(false);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [isMapOpen, setIsMapOpen] = useState(false);
+  const [mapQuery, setMapQuery] = useState("");
+
+  // --- TAB SLIDER: Tab 0 = JARVIS circle, Tab 1 = full-screen activity stage ---
+  // Auto-slides to the stage when a full-screen surface (camera / video / map)
+  // opens; manual dots let the user slide back to the circle without closing it.
+  const [activeTab, setActiveTab] = useState(0);
+  const [lastStage, setLastStage] = useState(null); // which stage was opened most recently
 
   // --- NEW: Backdoor Command State ---
   const [backdoorCommand, setBackdoorCommand] = useState("");
@@ -251,6 +262,8 @@ function App() {
           setIsHealthWidgetOpen(false);
           setIsMailWidgetOpen(false);
           setIsCalendarWidgetOpen(false);
+          setIsCameraOpen(false);
+          setIsMapOpen(false);
         }
         if (data.widget === "system_log") {
           if (data.state === "visible") {
@@ -268,6 +281,11 @@ function App() {
         if (data.open_widget === "vitals") setIsHealthWidgetOpen(true);
         if (data.open_widget === "mail") setIsMailWidgetOpen(true);
         if (data.open_widget === "calendar") setIsCalendarWidgetOpen(true);
+        if (data.open_widget === "camera") setIsCameraOpen(true);
+        if (data.open_widget === "map") {
+          setIsMapOpen(true);
+          if (data.map_query) setMapQuery(data.map_query);
+        }
         if (data.open_widget === "browser") {
           setIsBrowserOpen(true);
           if (data.browser_url) setBrowserUrl(data.browser_url);
@@ -277,6 +295,8 @@ function App() {
         if (data.close_widget === "vitals") setIsHealthWidgetOpen(false);
         if (data.close_widget === "mail") setIsMailWidgetOpen(false);
         if (data.close_widget === "calendar") setIsCalendarWidgetOpen(false);
+        if (data.close_widget === "camera") setIsCameraOpen(false);
+        if (data.close_widget === "map") setIsMapOpen(false);
         if (data.close_widget === "browser") setIsBrowserOpen(false);
         return;
       }
@@ -360,6 +380,11 @@ function App() {
         if (data.status === "play_youtube") {
           setBrowserUrl(data.url);
           setIsBrowserOpen(true);
+        }
+
+        if (data.status === "show_map") {
+          setMapQuery(data.query || data.location || "");
+          setIsMapOpen(true);
         }
 
         if (data.status === "close_search") {
@@ -449,6 +474,8 @@ function App() {
       setIsHealthWidgetOpen(false);
       setIsMailWidgetOpen(false);
       setIsCalendarWidgetOpen(false);
+      setIsCameraOpen(false);
+      setIsMapOpen(false);
       setOverlayData(null);
     };
 
@@ -484,11 +511,30 @@ function App() {
     }
   };
 
-  /** Full-canvas content (search or embedded media): reticle moves to corner. */
-  const isImmersiveLayout = isSearchPanelOpen || isBrowserOpen;
-  /** Floating glass tools — browser uses immersive canvas, not this layer. */
+  /** Full-canvas search/satellite content: reticle moves to corner (stays on Tab 1). */
+  const isImmersiveLayout = isSearchPanelOpen;
+  /** Floating glass tools (Tab 1). Camera/video/map now live on Tab 2's stage. */
   const hasModularSurface =
     isCalculatorOpen || isNotepadOpen || isHealthWidgetOpen || isMailWidgetOpen || isCalendarWidgetOpen;
+
+  // --- TAB 2 (activity stage) surfaces: camera feed, video/media, map ---
+  const openStages = [];
+  if (isCameraOpen) openStages.push("camera");
+  if (isBrowserOpen) openStages.push("media");
+  if (isMapOpen) openStages.push("map");
+  const stageOpen = openStages.length > 0;
+  /** The surface shown on Tab 2: the most-recently-opened still-open stage. */
+  const activeStage = openStages.includes(lastStage) ? lastStage : (openStages[0] || null);
+
+  // Remember which stage opened most recently (so re-opening one brings it forward).
+  useEffect(() => { if (isCameraOpen) setLastStage("camera"); }, [isCameraOpen]);
+  useEffect(() => { if (isBrowserOpen) setLastStage("media"); }, [isBrowserOpen]);
+  useEffect(() => { if (isMapOpen) setLastStage("map"); }, [isMapOpen]);
+
+  // Auto-slide: to Tab 1 when nothing is on the stage, to Tab 2 when something opens.
+  useEffect(() => {
+    setActiveTab(stageOpen ? 1 : 0);
+  }, [stageOpen]);
 
   const hudPhase = useMemo(() => {
     if (isImmersiveLayout) return "immersive";
@@ -534,6 +580,13 @@ function App() {
           <UplinkOverlay isActive={status === "processing_llm" || status === "searching"} />
           <LockdownOverlay isActive={isLockdown} />
           <IntroductionCeremony isActive={isCeremonyActive} onComplete={() => setIsCeremonyActive(false)} />
+
+          {/* ===== TWO-TAB SLIDER: Tab 0 = circle, Tab 1 = full-screen activity ===== */}
+          <div
+            className="hud-tab-track"
+            style={{ transform: `translateX(${activeTab * -100}%)` }}
+          >
+          <div className="hud-tab hud-tab--core">
 
           <motion.div
             className={`hud-core-stack ${hudPhase === "standby" ? "hud-core-pulse-standby" : ""
@@ -593,26 +646,6 @@ function App() {
                       </div>
                     )}
                     <p className="search-text">{searchResult}</p>
-                  </div>
-                </ScanlineTransition>
-              </motion.div>
-            )}
-            {hudPhase === "immersive" && isBrowserOpen && !isSearchPanelOpen && (
-              <motion.div
-                key="immersive-browser"
-                className="immersive-main-canvas immersive-main-canvas--media"
-                initial={{ opacity: 1, scale: 1, x: "-50%", y: "-48%" }}
-                animate={{ opacity: 1, scale: 1, x: "-50%", y: "-48%" }}
-                exit={{ opacity: 0, scale: 0.98, x: "-50%", y: "-45%" }}
-                transition={{ duration: 0.25, ease: HUD_EASE }}
-                style={{ position: "absolute", left: "50%", top: "48%" }}
-              >
-                <ScanlineTransition active>
-                  <div className="immersive-main-canvas__header immersive-main-canvas__header--cyan">
-                    MEDIA UPLINK
-                  </div>
-                  <div className="immersive-main-canvas__body immersive-main-canvas__body--flush">
-                    <BrowserWidget externalUrl={browserUrl} immersive />
                   </div>
                 </ScanlineTransition>
               </motion.div>
@@ -692,6 +725,110 @@ function App() {
             >
               <NotepadWidget />
             </Widget>
+          )}
+
+          </div>{/* /hud-tab--core (Tab 0) */}
+
+          {/* ===== Tab 1: full-screen activity stage (camera / video / map) ===== */}
+          <div className="hud-tab hud-tab--stage">
+            <AnimatePresence mode="wait">
+              {activeStage === "camera" && (
+                <motion.div
+                  key="stage-camera"
+                  className="activity-stage"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <div className="activity-stage__header">
+                    <span className="activity-stage__title">OPTICAL FEED</span>
+                    <button
+                      type="button"
+                      className="activity-stage__close"
+                      onClick={() => setIsCameraOpen(false)}
+                    >
+                      ✕ CLOSE
+                    </button>
+                  </div>
+                  <div className="activity-stage__body">
+                    <CameraFeedWidget />
+                  </div>
+                </motion.div>
+              )}
+
+              {activeStage === "media" && (
+                <motion.div
+                  key="stage-media"
+                  className="activity-stage"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <div className="activity-stage__header">
+                    <span className="activity-stage__title activity-stage__title--cyan">MEDIA UPLINK</span>
+                    <button
+                      type="button"
+                      className="activity-stage__close"
+                      onClick={() => setIsBrowserOpen(false)}
+                    >
+                      ✕ CLOSE
+                    </button>
+                  </div>
+                  <div className="activity-stage__body activity-stage__body--flush">
+                    <BrowserWidget externalUrl={browserUrl} immersive />
+                  </div>
+                </motion.div>
+              )}
+
+              {activeStage === "map" && (
+                <motion.div
+                  key="stage-map"
+                  className="activity-stage"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <div className="activity-stage__header">
+                    <span className="activity-stage__title activity-stage__title--cyan">TACTICAL MAP</span>
+                    <button
+                      type="button"
+                      className="activity-stage__close"
+                      onClick={() => setIsMapOpen(false)}
+                    >
+                      ✕ CLOSE
+                    </button>
+                  </div>
+                  <div className="activity-stage__body activity-stage__body--flush">
+                    <MapWidget query={mapQuery} />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>{/* /hud-tab--stage (Tab 1) */}
+
+          </div>{/* /hud-tab-track */}
+
+          {/* Tab navigation dots — always visible (home + activity stage) */}
+          {(
+            <div className="hud-tab-dots" role="tablist">
+              <button
+                type="button"
+                className={`hud-tab-dot ${activeTab === 0 ? "is-active" : ""}`}
+                onClick={() => setActiveTab(0)}
+                title="J.A.R.V.I.S. core"
+                aria-label="J.A.R.V.I.S. core"
+              />
+              <button
+                type="button"
+                className={`hud-tab-dot ${activeTab === 1 ? "is-active" : ""}`}
+                onClick={() => setActiveTab(1)}
+                title="Activity stage"
+                aria-label="Activity stage"
+              />
+            </div>
           )}
 
         </div>

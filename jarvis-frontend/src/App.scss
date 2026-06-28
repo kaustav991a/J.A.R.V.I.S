@@ -1259,6 +1259,162 @@ body {
 }
 
 /* ==========================================================================
+   6b. TWO-TAB SLIDER  (Tab 0 = JARVIS circle, Tab 1 = activity stage)
+   ========================================================================== */
+.dashboard-container__main {
+  overflow: hidden; /* clip the off-screen tab so it never bleeds in */
+}
+
+.hud-tab-track {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  transition: transform 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+}
+
+.hud-tab {
+  position: relative;
+  flex: 0 0 100%;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+}
+
+/* --- Tab 1: the full-screen activity stage --- */
+.activity-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 64px clamp(24px, 6vw, 130px) 104px;
+}
+
+.activity-stage__header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 12px;
+}
+
+.activity-stage__title {
+  font-size: 0.8rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: $accent-red;
+  text-shadow: 0 0 10px rgba($accent-red, 0.4);
+
+  &.activity-stage__title--cyan {
+    color: $cyan;
+    text-shadow: 0 0 10px rgba($cyan, 0.4);
+  }
+}
+
+.activity-stage__close {
+  background: rgba(4, 18, 28, 0.6);
+  border: 1px solid rgba($cyan, 0.35);
+  color: rgba(255, 255, 255, 0.85);
+  font-family: "Orbitron", sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.18em;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+
+  &:hover {
+    border-color: rgba($cyan, 0.7);
+    color: $cyan;
+    box-shadow: 0 0 14px rgba($cyan, 0.25);
+  }
+}
+
+.activity-stage__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba($cyan, 0.22);
+  border-radius: 16px;
+  background: rgba(4, 18, 28, 0.4);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  padding: 18px;
+
+  &.activity-stage__body--flush {
+    padding: 0;
+  }
+
+  /* Camera feed fills the stage instead of its small 460px widget size */
+  .camera-feed-ui {
+    width: min(82vw, 1100px);
+    max-width: 100%;
+  }
+
+  /* Media (browser/video) + map stretch to fill the flush body */
+  .browser-ui,
+  .map-feed-ui {
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+  }
+
+  .browser-frame-container {
+    flex: 1;
+    min-height: 0;
+  }
+}
+
+/* --- Tab navigation dots --- */
+.hud-tab-dots {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(4, 18, 28, 0.55);
+  border: 1px solid rgba($cyan, 0.25);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 60;
+}
+
+.hud-tab-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba($cyan, 0.5);
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.22s ease;
+
+  &:hover {
+    border-color: rgba($cyan, 0.9);
+  }
+
+  &.is-active {
+    background: $cyan;
+    box-shadow: 0 0 12px rgba($cyan, 0.7);
+    border-color: $cyan;
+  }
+}
+
+/* ==========================================================================
    7. CINEMATIC ANIMATIONS
    ========================================================================== */
 .hidden-start {

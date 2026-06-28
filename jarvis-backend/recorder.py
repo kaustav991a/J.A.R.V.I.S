@@ -9,6 +9,25 @@ import time # --- NEW: Required for the holding pattern ---
 # ==========================================
 USE_LOCAL_STT = False
 
+# ==========================================
+# JUNK / FILLER FILTER (headphone-noise guard)
+# Google STT transcribes breath/background noise as short filler words ("huh",
+# "uh", "um"…). In the seamless conversation loop these were being fed to the LLM
+# as real commands, making J.A.R.V.I.S. talk non-stop. Any utterance that is just
+# a filler word is treated as noise (returned as UNKNOWN → silently ignored).
+# ==========================================
+_FILLER_UTTERANCES = {
+    "huh", "uh", "um", "umm", "uhh", "hmm", "hm", "mm", "mmm", "mhm",
+    "ah", "ahh", "oh", "ohh", "eh", "ehh", "er", "err", "uh huh", "mm hmm",
+    "huh?", "uh.", "um.", "hmm.", "ah.", "oh.",
+}
+
+def _is_filler(text: str) -> bool:
+    if not text:
+        return True
+    t = text.strip().lower().rstrip(".!?,")
+    return t in _FILLER_UTTERANCES
+
 # --- Phase 8: Lazy-load local STT model only when needed ---
 _local_stt_instance = None
 def _get_local_stt():
@@ -77,6 +96,9 @@ def listen_to_mic(status_callback=None):
                     text = stt.transcribe_audio_data(raw_data, sample_rate=audio.sample_rate)
                     if not text or len(text.strip()) < 2:
                         return "UNKNOWN"
+                    if _is_filler(text):
+                        print(f"[EARS] Filler/noise ignored: '{text}'")
+                        return "UNKNOWN"
                     print(f"\n🗣️ You said: '{text}' [LOCAL STT]")
                 else:
                     try:
@@ -87,8 +109,11 @@ def listen_to_mic(status_callback=None):
                     except concurrent.futures.TimeoutError:
                         print("[EARS] Google Cloud STT timed out (7s).")
                         return "UNKNOWN"
+                    if _is_filler(text):
+                        print(f"[EARS] Filler/noise ignored: '{text}'")
+                        return "UNKNOWN"
                     print(f"\n🗣️ You said: '{text}' [CLOUD STT]")
-                    
+
                 return text
                 
             except sr.WaitTimeoutError:

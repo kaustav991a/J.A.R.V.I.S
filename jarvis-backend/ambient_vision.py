@@ -7,6 +7,11 @@ import threading
 import time
 import os
 
+# Camera (IP Webcam) endpoints — env-overridable so the IP can change without code edits.
+# CAMERA_URL is the MJPEG video stream; CAMERA_BASE is the lightweight reachability ping.
+CAMERA_URL  = os.getenv("JARVIS_CAMERA_URL", "http://192.168.0.106:8080/video")
+CAMERA_BASE = os.getenv("JARVIS_CAMERA_BASE", CAMERA_URL.rsplit("/", 1)[0])
+
 # --- SHARED CACHE ---
 shared_optical_cache = {
     "objects_in_view": set(),
@@ -18,11 +23,17 @@ shared_optical_cache = {
     "user_absent": False,
     "intruder_detected": False,
     "last_known_user": None,
+    # --- HUD optical-feed overlay (the browser pulls the raw MJPEG itself; these
+    #     let it draw JARVIS's detection boxes on top, scaled to the displayed video).
+    "detections": [],   # list of {label, box:[x1,y1,x2,y2], conf, identity?, emotion?}
+    "frame_w": 0,       # native width of the analysed frame (box coords are in this space)
+    "frame_h": 0,
+    "camera_url": CAMERA_URL,  # where the HUD should pull the live stream from
 }
 
 
 class AmbientVisionDaemon:
-    def __init__(self, camera_url="http://192.168.0.105:8080/video", interval=6.0):
+    def __init__(self, camera_url=CAMERA_URL, interval=6.0):
         self.camera_url = camera_url
         self.interval = interval
         self.base_interval = interval
@@ -65,7 +76,7 @@ class AmbientVisionDaemon:
         try:
             import urllib.request
 
-            urllib.request.urlopen("http://192.168.0.105:8080", timeout=1.0)
+            urllib.request.urlopen(CAMERA_BASE, timeout=1.0)
             return True
         except Exception:
             return False
@@ -92,6 +103,7 @@ class AmbientVisionDaemon:
                 shared_optical_cache["camera_active"] = False
                 shared_optical_cache["objects_in_view"] = set()
                 shared_optical_cache["people_in_view"] = set()
+                shared_optical_cache["detections"] = []
                 continue
 
             shared_optical_cache["camera_active"] = True
@@ -108,6 +120,8 @@ class AmbientVisionDaemon:
 
             detected_objects = set()
             person_boxes = []
+            detections = []
+            fh, fw = frame.shape[:2]
 
             model = self._ensure_yolo()
             if model:
@@ -117,17 +131,24 @@ class AmbientVisionDaemon:
                     for box in boxes:
                         cls_id = int(box.cls[0])
                         label = model.names[cls_id]
+                        conf = float(box.conf[0])
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
                         detected_objects.add(label)
 
+                        det = {"label": label, "box": [x1, y1, x2, y2], "conf": round(conf, 2)}
+                        detections.append(det)
+
                         if label == "person":
-                            x1, y1, x2, y2 = map(int, box.xyxy[0])
-                            person_boxes.append((x1, y1, x2, y2))
+                            # carry the det dict so identity/emotion can be attached below
+                            person_boxes.append((x1, y1, x2, y2, det))
 
             shared_optical_cache["objects_in_view"] = detected_objects
+            shared_optical_cache["frame_w"] = fw
+            shared_optical_cache["frame_h"] = fh
 
             detected_people = set()
             if person_boxes and self.identities:
-                for (x1, y1, x2, y2) in person_boxes:
+                for (x1, y1, x2, y2, det) in person_boxes:
                     h, w, _ = frame.shape
                     x1 = max(0, x1 - 20)
                     y1 = max(0, y1 - 20)
@@ -173,12 +194,15 @@ class AmbientVisionDaemon:
                         emotion = analyze_facial_emotion(face_crop)
                         if emotion:
                             shared_optical_cache["dominant_emotion"] = emotion
+                            det["emotion"] = emotion
                     except Exception:
                         pass
 
                     if best_match:
+                        det["identity"] = best_match
                         detected_people.add(best_match)
                     else:
+                        det["identity"] = "Unknown Person"
                         detected_people.add("Unknown Person")
 
             if detected_people:
@@ -215,6 +239,7 @@ class AmbientVisionDaemon:
                         shared_optical_cache["user_absent"] = True
 
             shared_optical_cache["people_in_view"] = detected_people
+            shared_optical_cache["detections"] = detections
             shared_optical_cache["last_updated"] = time.time()
 
 

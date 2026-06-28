@@ -58,6 +58,54 @@ class ActionState(str, Enum):
     COMPLETE = "COMPLETE"
     FAILED = "FAILED"
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 4.5: Multi-User Permission Tiers
+# ════════════════════════════════════════════════════════════════════════════
+# A second, identity-scoped gate that sits IN FRONT of the governance engine.
+# Governance asks "is this action safe to run at all?"; the tier gate asks
+# "is THIS caller allowed to run it?". Both must pass.
+#
+# The model is DEFAULT-DENY for everyone who is not the Administrator. A VIP
+# guest (girlfriend / brother on Telegram) may only invoke actions that appear
+# on the small allowlist below — fast, read-only, public-information tools that
+# expose none of Kaustav's machine, files, integrations, or automation. Anything
+# else is refused *before* any side effect, logging, or governance pend.
+#
+# The admin tier ("admin") bypasses the gate entirely and keeps unrestricted
+# structural access (OS, files, terminal, Autopilot/LangGraph, Gmail, Git,
+# telemetry). Tier strings are intentionally simple so callers (telegram_bot,
+# run_remote_command) can pass them through without importing an enum.
+ADMIN_TIER = "admin"
+VIP_GUEST_TIER = "vip_guest"
+
+# Allowlist for the VIP GUEST tier. Casual conversation produces NO action and
+# therefore never reaches this gate; only tool-backed actions are checked. We
+# permit fast info-gathering (match scores, weather, general knowledge, news)
+# and nothing that touches the host, personal data, or automation.
+VIP_GUEST_ALLOWED_ACTIONS = frozenset({
+    "tavily_search",   # fast LLM-grade lookups: match scores, weather, news
+    "web_search",      # general-knowledge web search
+})
+
+# Sentinel returned by execute() when the tier gate refuses an action. Mirrors
+# the GOVERNANCE_* sentinels so the remote pipeline can intercept and translate
+# it into the polite VIP rejection phrase.
+TIER_BLOCKED_PREFIX = "TIER_BLOCKED:"
+
+
+def tier_allows(permission_tier: str, action_type: str) -> bool:
+    """Return True if a caller at `permission_tier` may run `action_type`.
+
+    Admin is unrestricted; every other (restricted) tier is default-deny,
+    permitting only the VIP guest allowlist. An unknown/empty tier is treated
+    as restricted — fail closed, never open.
+    """
+    if permission_tier == ADMIN_TIER:
+        return True
+    return (action_type or "").lower() in VIP_GUEST_ALLOWED_ACTIONS
+
+
 class ActionEngine:
     def __init__(self):
         self.os_agent       = OSAgent()
@@ -312,7 +360,21 @@ class ActionEngine:
             keygen(adbkey)
         return PythonRSASigner.FromRSAKeyPath(adbkey)
 
-    async def execute(self, payload: dict, *, governance_bypass: bool = False) -> str:
+    async def execute(self, payload: dict, *, governance_bypass: bool = False,
+                      permission_tier: str = ADMIN_TIER) -> str:
+        # ── Phase 4.5: Tier Gate (identity-scoped; runs BEFORE governance) ──
+        # Default-deny for any non-admin caller. A refused action returns the
+        # TIER_BLOCKED sentinel immediately — no logging, no governance pend,
+        # no dispatch, zero side effects. Admin tier passes straight through.
+        _atype = (payload.get("action_type") or "").lower()
+        if not tier_allows(permission_tier, _atype):
+            print(
+                f"[TIER] ⛔ Action '{_atype}' refused for tier '{permission_tier}' "
+                f"(not on VIP guest allowlist).",
+                flush=True,
+            )
+            return f"{TIER_BLOCKED_PREFIX}{_atype}"
+
         # ── Phase 6: Governance Gate (must run before logging or dispatch) ──
         # PASS   → transparent, continues below.
         # BLOCK  → immediate rejection string (caller speaks it).
@@ -679,6 +741,7 @@ class ActionEngine:
         trace_id: str | None = None,
         *,
         governance_bypass: bool = False,
+        permission_tier: str = ADMIN_TIER,
     ):
         """
         Wraps execute() with intelligent fallback strategies.
@@ -696,7 +759,9 @@ class ActionEngine:
         # here, log the full traceback for diagnostics, record FAILED state, and
         # return a clean, localized error string the LLM/UI can speak gracefully.
         try:
-            result = await self.execute(payload, governance_bypass=governance_bypass)
+            result = await self.execute(
+                payload, governance_bypass=governance_bypass, permission_tier=permission_tier
+            )
         except Exception as exc:
             import traceback
             _atype = payload.get("action_type", "unknown")
@@ -718,6 +783,21 @@ class ActionEngine:
                     "used_fallback": False,
                 }
             return err_str
+
+        # ── Phase 4.5: propagate tier-refusal through return_meta path ────────
+        if isinstance(result, str) and result.startswith(TIER_BLOCKED_PREFIX):
+            self._set_action_state(
+                ActionState.FAILED, trace_id, payload=payload,
+                result=result, note="tier_refused",
+            )
+            if return_meta:
+                return {
+                    "trace_id":      trace_id,
+                    "state":         ActionState.FAILED.value,
+                    "result":        result,
+                    "used_fallback": False,
+                }
+            return result
 
         # ── Phase 6: propagate governance signals through return_meta path ────
         if isinstance(result, str) and result.startswith(("GOVERNANCE_BLOCKED:", "GOVERNANCE_CONFIRM:")):
@@ -1908,10 +1988,14 @@ class ActionEngine:
         return self.human_gui_agent.execute_gui_action("smart_open_app", app_name)
 
     def _normalize_hud_widget_id(self, target: str, *, default: str = "vitals") -> str:
-        """Map brain/target tokens to HUD widget ids: vitals, mail, calendar, calculator, notepad, browser."""
+        """Map brain/target tokens to HUD widget ids: vitals, mail, calendar, calculator, notepad, browser, camera."""
         t = (target or "").lower().strip()
         if not t:
             t = default
+        if t in ("camera", "feed", "optical", "optical feed", "vision", "cam", "webcam", "eyes", "video"):
+            return "camera"
+        if t in ("map", "maps", "location", "gps", "navigation", "navigate", "directions", "where i stay", "tactical map"):
+            return "map"
         if t in ("mail", "email", "gmail", "inbox", "messages"):
             return "mail"
         if t in ("calendar", "schedule", "agenda", "events", "today"):
@@ -1936,6 +2020,8 @@ class ActionEngine:
             return "browser"
         if any(k in t for k in ("health", "vital", "biometric", "fitness", "step")):
             return "vitals"
+        if any(k in t for k in ("camera", "optical", "webcam", "what you see", "what you're seeing")):
+            return "camera"
         return default
 
     def _hud_open_widget(self, target: str) -> dict:

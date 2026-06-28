@@ -1,0 +1,158 @@
+.camera-feed-ui {
+  display: flex;
+  flex-direction: column;
+  width: 460px;
+  max-width: 90vw;
+  color: #00ffcc;
+  font-family: "Rajdhani", "Orbitron", sans-serif;
+
+  .cam-viewport {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    background: #02080c;
+    overflow: hidden;
+    border: 1px solid rgba(0, 255, 204, 0.35);
+    box-shadow: inset 0 0 40px rgba(0, 255, 204, 0.08);
+
+    &.is-intruder {
+      border-color: rgba(255, 51, 102, 0.6);
+      box-shadow: inset 0 0 50px rgba(255, 51, 102, 0.18);
+    }
+  }
+
+  .cam-stream {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
+  }
+
+  .cam-overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+
+    .cam-det {
+      rect,
+      path { filter: drop-shadow(0 0 3px currentColor); }
+    }
+    .cam-det-label {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+  }
+
+  // Targeting corner brackets
+  .cam-corner {
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    border: 2px solid rgba(0, 255, 204, 0.7);
+    pointer-events: none;
+    &.tl { top: 6px; left: 6px; border-right: none; border-bottom: none; }
+    &.tr { top: 6px; right: 6px; border-left: none; border-bottom: none; }
+    &.bl { bottom: 6px; left: 6px; border-right: none; border-top: none; }
+    &.br { bottom: 6px; right: 6px; border-left: none; border-top: none; }
+  }
+
+  .cam-scanline {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(0, 255, 204, 0.55), transparent);
+    animation: cam-scan 4s linear infinite;
+    pointer-events: none;
+  }
+
+  @keyframes cam-scan {
+    0% { top: 0%; opacity: 0; }
+    10% { opacity: 1; }
+    90% { opacity: 1; }
+    100% { top: 100%; opacity: 0; }
+  }
+
+  .cam-live-tag {
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #00ffcc;
+    text-shadow: 0 0 6px rgba(0, 255, 204, 0.6);
+  }
+  .cam-live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ff3366;
+    box-shadow: 0 0 8px #ff3366;
+    animation: cam-blink 1.4s ease-in-out infinite;
+  }
+  @keyframes cam-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+  .cam-signal-lost {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: #ff3366;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-align: center;
+    background: repeating-linear-gradient(
+      0deg, rgba(255, 51, 102, 0.04) 0px, rgba(255, 51, 102, 0.04) 2px,
+      transparent 2px, transparent 4px
+    );
+    .cam-lost-glyph { font-size: 34px; }
+    .cam-lost-sub {
+      font-size: 11px;
+      font-weight: 400;
+      letter-spacing: 0.5px;
+      color: rgba(255, 51, 102, 0.7);
+    }
+  }
+
+  .cam-intruder-banner {
+    position: absolute;
+    bottom: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 4px 14px;
+    background: rgba(255, 51, 102, 0.85);
+    color: #fff;
+    font-weight: 700;
+    letter-spacing: 1px;
+    font-size: 13px;
+    animation: cam-blink 1s ease-in-out infinite;
+  }
+
+  .cam-status-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    border: 1px solid rgba(0, 255, 204, 0.2);
+    border-top: none;
+    background: rgba(0, 255, 204, 0.04);
+    b { color: #fff; font-weight: 700; }
+    .cam-stat-on { color: #00ffcc; }
+    .cam-stat-off { color: #ff3366; }
+  }
+}
