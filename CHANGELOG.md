@@ -5,6 +5,49 @@ This file follows the spirit of [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Always-On Cloud Gateway — Reach J.A.R.V.I.S. with the PC Off] — 2026-07-03
+
+A separate, feather-light cloud brain so J.A.R.V.I.S. is reachable from Telegram **even
+when the desk PC is off**. The full desk stack (`main.py` / `action_engine`) is Windows-
+and hardware-bound (mic, camera, vision, pywin32, pyautogui) and cannot run headless; this
+adds a decoupled process that shares only the *voice* and `cloud_first` reasoning. Deployed
+live on Render's free tier, kept warm by UptimeRobot — **$0**.
+
+### Added
+- **Cloud Gateway** (`jarvis-backend/cloud_gateway.py`) — a self-contained **FastAPI + aiogram
+  v3** Telegram bot. Reuses the J.A.R.V.I.S. persona (compact variant of `brain.BASE_CORE`) and
+  a self-contained **Groq key-rotation** brain (mirrors `modules/groq_key_manager.py`), with
+  rolling per-chat memory (last ~12 turns) and **best-effort DuckDuckGo lookups** for factual
+  queries (weather/scores/news). Chat and lookups only — privileged PC actions are politely
+  **deferred** (`_PC_DEFERRAL`) since the machine is unreachable from the cloud.
+- **Identity firewall** carried over from `modules/telegram_bot.py` — admin (Kaustav) + optional
+  VIP guests (Mousumi / Kinshuk) recognized by numeric Telegram id; unrecognized ids are silently
+  dropped.
+- **Dual transport** via `CLOUD_GATEWAY_MODE`: **webhook** (default; Telegram pushes to
+  `/webhook/<secret>`, survives free-tier sleep) or **polling** (for a VPS / paid worker). A
+  token-derived webhook path secret means neither the bot token nor an operator-invented secret
+  is ever needed in the URL.
+- **`/health` endpoint** for UptimeRobot keep-alive pings (returns status + recognized identities,
+  no secrets) so a free web service never idles into a cold start.
+- **Deploy artifacts:** `requirements-cloud.txt` (minimal, headless-safe deps — no
+  torch/tensorflow/pyaudio/pywin32), root **`render.yaml`** Blueprint (free web service, webhook
+  mode, health check), and **`jarvis-backend/CLOUD_GATEWAY.md`** deploy guide (Render + UptimeRobot).
+
+### Verified
+- Imports clean against the desk venv; reads the shared `.env` (2 identities, 5 Groq keys).
+- Deployed live at `https://jarvis-cloud-gateway.onrender.com` — webhook registered, UptimeRobot
+  monitor 100% up, **Telegram confirmed working end-to-end**.
+
+### Notes
+- Cloud and desk run **independently** — no shared memory yet (level 1). Structured for later
+  level-2 (shared hosted DB) or level-3 (bridge/relay to the desk brain when the PC is online).
+- Shared bot token: keep the cloud on **webhook** and the desk on **polling** to avoid a
+  poll-conflict.
+- Open hardening item: the webhook currently trusts any well-formed POST (no Telegram
+  secret-token header check yet) — low risk given the cloud has no privileged actions.
+
+---
+
 ## [Autonomy Monitoring & Manual Override] — 2026-06-27
 
 Stark-style visibility and control over the Overnight Worker: hear what J.A.R.V.I.S. is
