@@ -1,0 +1,9 @@
+# J.A.R.V.I.S. Cloud Gateway — minimal, headless-Linux-safe deps ONLY.
+# Deliberately NOT the desk requirements.txt (no torch/tensorflow/pyaudio/pywin32).
+# Keep this tiny so free-tier builds are fast and fit small memory limits.
+aiogram==3.29.0
+groq==1.2.0
+fastapi==0.136.3
+uvicorn[standard]==0.47.0
+python-dotenv==1.2.2
+ddgs==9.14.4

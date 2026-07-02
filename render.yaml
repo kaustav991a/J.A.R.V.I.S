@@ -1,0 +1,35 @@
+# Render Blueprint for the J.A.R.V.I.S. Cloud Gateway (always-on Telegram brain).
+# Must live at the REPO ROOT so Render's Blueprint auto-detects it.
+# Deploy: push to GitHub → Render → New → Blueprint → pick this repo.
+# Secrets (sync:false) are NOT committed — set them in the Render dashboard.
+services:
+  - type: web
+    name: jarvis-cloud-gateway
+    runtime: python
+    plan: free
+    # Build/run from the backend folder that holds cloud_gateway.py.
+    rootDir: jarvis-backend
+    buildCommand: pip install -r requirements-cloud.txt
+    startCommand: uvicorn cloud_gateway:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: CLOUD_GATEWAY_MODE
+        value: webhook
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: CLOUD_WEB_LOOKUP
+        value: "1"
+      # PUBLIC_URL must equal this service's own https URL once Render assigns it,
+      # e.g. https://jarvis-cloud-gateway.onrender.com  (set after first deploy).
+      - key: PUBLIC_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_USER_ID
+        sync: false
+      - key: TELEGRAM_GF_ID
+        sync: false
+      - key: TELEGRAM_BROTHER_ID
+        sync: false
+      - key: GROQ_API_KEYS
+        sync: false
