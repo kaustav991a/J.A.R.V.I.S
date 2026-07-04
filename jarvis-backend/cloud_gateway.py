@@ -358,6 +358,25 @@ _LOOKUP_HINTS = (
 )
 
 
+def _has_indic_script(text: str) -> bool:
+    """True if the text contains Bengali (U+0980–09FF) or Devanagari
+    (U+0900–097F) characters — i.e. the operator wrote/spoke in Indic script and
+    the model would otherwise mirror that script back."""
+    return any("ऀ" <= ch <= "৿" for ch in text)
+
+
+# Injected as a FRESH system turn right before the user message when the input is
+# in Indic script — recency makes the model obey this far more reliably than the
+# same rule buried in the long persona block.
+_ROMANISE_NUDGE = (
+    "SCRIPT OVERRIDE (highest priority): The operator's message is in Bengali "
+    "script, but you MUST reply using ONLY English/Latin letters — romanised "
+    "Benglish, NOT Bengali script (বাংলা). Write Bengali words phonetically in "
+    "Latin: 'Akhon 6:53 PM baje, Sir — apnar ki dorkar bolun.' EVERY sentence in "
+    "Latin letters. Do NOT output a single Bengali/Devanagari character."
+)
+
+
 async def think(chat_id: int, text: str, who: str, honorific: str) -> str:
     """Run one turn through the cloud brain, with rolling per-chat memory."""
     history = _HISTORY.setdefault(chat_id, [])
@@ -381,6 +400,8 @@ async def think(chat_id: int, text: str, who: str, honorific: str) -> str:
     system = _PERSONA.format(who=who, honorific=honorific) + date_ctx + grounding
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
+    if _has_indic_script(text):
+        messages.append({"role": "system", "content": _ROMANISE_NUDGE})
     messages.append({"role": "user", "content": text})
 
     reply = await asyncio.to_thread(_groq_complete, messages)
@@ -404,6 +425,8 @@ async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: s
     question = caption.strip() or "The operator sent this photo without a caption — react to it helpfully."
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
+    if _has_indic_script(question):
+        messages.append({"role": "system", "content": _ROMANISE_NUDGE})
     messages.append({
         "role": "user",
         "content": [
