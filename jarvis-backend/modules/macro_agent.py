@@ -32,6 +32,7 @@ running the kill is silently ignored — never raises.
 
 import os
 import platform
+import shutil
 import subprocess
 import time
 from typing import Callable
@@ -228,44 +229,45 @@ class MacroAgent:
         else:
             print("[MACRO AGENT] No distracting processes were running.", flush=True)
 
-        # ── Step 2: Open VS Code ───────────────────────────────────────
+        # ── Step 2: Open VS Code (VERIFY before claiming success) ───────
+        # Bug fixed 2026-07-05: the old path used Popen("code .", shell=True),
+        # which spawns cmd.exe and "succeeds" even when `code` isn't installed —
+        # so the FileNotFoundError fallback never fired and "VS Code opened" was
+        # reported unconditionally. Now we resolve a real executable first and
+        # only append the step when we actually launched one.
         workspace = os.getcwd()
+        flags = 0
+        if platform.system() == "Windows":
+            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
+        vscode_exe = None
+        for _cand in (
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
+            r"C:\Program Files\Microsoft VS Code\Code.exe",
+            r"C:\Program Files (x86)\Microsoft VS Code\Code.exe",
+        ):
+            if os.path.isfile(_cand):
+                vscode_exe = _cand
+                break
         try:
-            if platform.system() == "Windows":
-                # On Windows, `code` in PATH is usually code.cmd — list form + shell=False
-                # raises WinError 193 (%1 is not a valid Win32 application).
-                flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
-                subprocess.Popen(
-                    "code .",
-                    shell=True,
-                    cwd=workspace,
-                    creationflags=flags,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+            if vscode_exe:
+                _popen([vscode_exe, workspace])
+                steps.append("VS Code opened")
+                print(f"[MACRO AGENT] VS Code launched: {vscode_exe}", flush=True)
+            elif shutil.which("code"):
+                # `code` on PATH is code.cmd on Windows — list form + shell=False
+                # raises WinError 193, so it must go through the shell here.
+                if platform.system() == "Windows":
+                    subprocess.Popen(
+                        "code .", shell=True, cwd=workspace, creationflags=flags,
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                else:
+                    _popen(["code", "."], shell=False)
+                steps.append("VS Code opened")
+                print(f"[MACRO AGENT] VS Code launched via PATH in: {workspace}", flush=True)
             else:
-                _popen(["code", "."], shell=False)
-            steps.append("VS Code opened")
-            print(f"[MACRO AGENT] VS Code launched in: {workspace}", flush=True)
-        except FileNotFoundError:
-            # 'code' not on PATH — try common install paths
-            try:
-                vscode_paths = [
-                    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
-                    r"C:\Program Files\Microsoft VS Code\Code.exe",
-                ]
-                launched = False
-                for vsp in vscode_paths:
-                    if os.path.isfile(vsp):
-                        _popen([vsp, "."])
-                        steps.append("VS Code opened")
-                        launched = True
-                        break
-                if not launched:
-                    errors.append("VS Code not found on PATH or default install location")
-            except Exception as e:
-                errors.append(f"VS Code launch failed: {e}")
+                errors.append("VS Code not found on PATH or default install location")
         except Exception as e:
             errors.append(f"VS Code launch failed: {e}")
 

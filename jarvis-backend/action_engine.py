@@ -826,7 +826,7 @@ class ActionEngine:
         
         # Check if the result indicates a failure
         # SUCCESS — attach payload so telemetry / regression can correlate COMPLETE with action_type
-        if not self._is_failure(result):
+        if not self._is_failure(result, payload.get("action_type")):
             self._set_action_state(ActionState.COMPLETE, trace_id, payload=payload, result=result)
             if return_meta:
                 return {
@@ -881,25 +881,53 @@ class ActionEngine:
             }
         return result
     
-    def _is_failure(self, result) -> bool:
-        """Determines if an action result indicates failure."""
+    # Actions whose result IS data/content the user asked to see. Their text can
+    # legitimately contain "error"/"failed"/"couldn't" (log lines, file contents,
+    # search snippets, git/terminal output, OCR) — so these are NEVER phrase-scanned
+    # for failure. Only a dict {"success": False} marks them failed.
+    _CONTENT_ACTIONS = frozenset({
+        "read_screen", "workspace_read", "web_search", "tavily_search",
+        "web_search_image", "system_status", "get_telemetry", "memory_recall",
+        "check_email", "read_email", "gmail_read", "gmail_read_unread",
+        "check_calendar", "check_vitals", "run_terminal_command", "web_browse",
+    })
+
+    # Distinctive failure phrases the CONTROL/side-effect agents actually emit
+    # (2026-07-05 execution audit). Chosen not to collide with normal success
+    # output. These matter because the agents do NOT prefix failures with
+    # "error:"/"failed:", so without this a failed launch/type/save was scored
+    # COMPLETE and narrated as "Done, Sir" while nothing happened.
+    _FAILURE_PHRASES = (
+        "smart open failed", "gui execution error", "execution error",
+        "couldn't open", "could not open", "couldn't locate", "could not locate",
+        "couldn't find a running process", "could not find a running process",
+        "error navigating to", "error clicking", "error typing",
+        "save dialog not found", "save_dialog_not_found", "tavily_unconfigured",
+        "no relevant data", "unable to reach", "failed to", "write refused",
+        "read refused", "but couldn't open", "i couldn't", "i could not",
+    )
+
+    def _is_failure(self, result, action_type=None) -> bool:
+        """Determines if an action result indicates failure.
+
+        Context-aware: data/content actions are never phrase-scanned (their text
+        legitimately contains 'error'/'failed'); control/side-effect actions are
+        checked against the hard-failure prefixes AND the specific phrases their
+        agents emit, so a failed launch/type/save is no longer narrated as success.
+        """
         if isinstance(result, dict):
             return not result.get("success", True)
-        if isinstance(result, str):
-            # Screen-content results contain the raw OCR dump of whatever is on
-            # the user's monitor — that text may legitimately contain words like
-            # "error" or "failed" (e.g. log lines). Never flag these as failures.
-            if result.startswith("SCREEN CONTENTS:"):
-                return False
-            # String agents (git status, workspace summaries, etc.) often embed
-            # words like "error" or "failed" in quoted paths or upstream messages.
-            # Only treat an explicit hard-failure prefix as a retry/fail signal.
-            stripped = result.strip()
-            lower = stripped.lower()
-            if lower.startswith("error:") or lower.startswith("failed:"):
-                return True
+        if not isinstance(result, str):
             return False
-        return False
+        # Screen/content dumps — never flag (raw OCR/file/search/terminal text).
+        if result.startswith("SCREEN CONTENTS:"):
+            return False
+        if (action_type or "").lower() in self._CONTENT_ACTIONS:
+            return False
+        lower = result.strip().lower()
+        if lower.startswith(("error:", "failed:")):
+            return True
+        return any(p in lower for p in self._FAILURE_PHRASES)
     
     def _attempt_fallback(self, action: str, target: str, original_error: str):
         """Returns a fallback result or None if no strategy applies."""
@@ -935,20 +963,31 @@ class ActionEngine:
             except Exception:
                 pass
         
-        # --- LAUNCH APP FALLBACK: Try OS 'start' command ---
+        # --- LAUNCH APP FALLBACK: Try OS 'start' command, VERIFY it launched ---
+        # os.system('start ...') returns 0 even for a bogus name (cmd accepted the
+        # line), so we must NOT claim success blindly. Snapshot PIDs before/after:
+        # a new process ⇒ genuinely launched; none ⇒ honest failure (return None so
+        # the retry engine reports the original error instead of a phantom success).
         if action == "launch_app":
             try:
+                import psutil
+                import time as _t
+                before = {p.pid for p in psutil.process_iter()}
                 os.system(f'start "" "{target}"')
-                return f"Retry successful. Attempted to launch '{target}' via OS start command."
+                _t.sleep(1.2)
+                after = {p.pid for p in psutil.process_iter()}
+                if after - before:
+                    return f"Launched '{target}', Sir."
+                return None  # nothing spawned — don't fake a success
             except Exception:
-                pass
+                return None
         
         # --- WEB SEARCH FALLBACK: Broaden the query ---
         if action == "web_search" and ("no relevant data" in original_error.lower() or "error" in original_error.lower()):
             try:
                 broadened = f"{target} explained simply"
                 result = self._web_search(broadened)
-                if not self._is_failure(result):
+                if not self._is_failure(result, "web_search"):
                     return result
             except Exception:
                 pass

@@ -240,27 +240,41 @@ class FileAgent:
             return "Downloads folder not found, sir."
         
         moved = 0
+        skipped: list[str] = []
         for item in downloads.iterdir():
             if item.is_file():
                 ext = item.suffix.lower()
                 dest_folder = None
-                
+
                 for category, extensions in self.file_categories.items():
                     if ext in extensions:
                         dest_folder = downloads / category
                         break
-                
+
                 if dest_folder:
                     dest_folder.mkdir(exist_ok=True)
+                    dest = dest_folder / item.name
+                    # Don't clobber an existing file — pick a unique name.
+                    if dest.exists():
+                        n = 1
+                        while dest.exists():
+                            dest = dest_folder / f"{item.stem} ({n}){item.suffix}"
+                            n += 1
                     try:
-                        shutil.move(str(item), str(dest_folder / item.name))
+                        shutil.move(str(item), str(dest))
                         moved += 1
                     except Exception:
-                        continue
-        
-        if moved == 0:
+                        # In use / locked / permission — record it, don't hide it.
+                        skipped.append(item.name)
+
+        if moved == 0 and not skipped:
             return "Your Downloads folder is already tidy, sir. Nothing to organize."
-        return f"Downloads organized. {moved} file{'s' if moved != 1 else ''} sorted into categorized folders."
+        msg = f"Downloads organized. {moved} file{'s' if moved != 1 else ''} sorted into categorized folders."
+        if skipped:
+            k = len(skipped)
+            shown = ", ".join(skipped[:5]) + (f", and {k - 5} more" if k > 5 else "")
+            msg += f" {k} file{'s' if k != 1 else ''} couldn't be moved (in use or locked): {shown}."
+        return msg
     
     def _format_size(self, size_bytes: int) -> str:
         if size_bytes < 1024:
