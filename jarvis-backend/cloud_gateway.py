@@ -457,8 +457,12 @@ def _ensure_bot():
 @app.get("/health")
 async def health():
     roster = ", ".join(f"{i['who']} [{i['tier']}]" for i in _IDENTITIES.values()) or "none"
+    # Diagnostics only — no secret VALUES exposed, just which features are wired.
     return {"status": "ok", "service": "jarvis-cloud-gateway",
-            "mode": MODE, "identities": roster}
+            "mode": MODE, "identities": roster,
+            "search": "tavily" if _TAVILY_KEY else "duckduckgo",
+            "bridge": bool(BRIDGE_SECRET),
+            "desk_linked": _desk_connected()}
 
 
 @app.post(WEBHOOK_PATH)
