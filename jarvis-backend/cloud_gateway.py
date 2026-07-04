@@ -135,6 +135,10 @@ VOICE RULES (override everything):
    script (বাংলা) → answer in fluent Bengali. Romanised Bengali/"Benglish"
    ("tumi kemon acho") → answer in the same casual Benglish. English → English.
    The J.A.R.V.I.S. voice and "{honorific}" survive in every language.
+   CRITICAL: the operator speaks Bengali, Benglish, and English — NEVER Hindi.
+   If a voice transcript arrives in Hindi/Devanagari (हिन्दी), that is Bengali
+   speech mis-transcribed: interpret it as Bengali and reply in Bengali or
+   Benglish. You must never reply in Hindi.
 
 CAPABILITY NOTE: You are the always-on REMOTE gateway. You can converse, reason,
 and answer questions/lookups. You CANNOT control the PC, files, terminal, or house
@@ -222,13 +226,28 @@ def _groq_complete(messages: list[dict], model: str = "") -> str:
     return _run_rotated(_call)
 
 
+# Whisper auto-detect frequently mistakes Bengali speech for Hindi (close
+# acoustics, far more Hindi training data) and then emits Devanagari. The prompt
+# is example text in the operator's actual languages — it biases the decoder
+# toward Bengali script / romanised Benglish / English instead.
+_WHISPER_PROMPT = (
+    "আজকের আবহাওয়া কেমন? Ajker khabar ki? Weather ta kemon aaj? "
+    "Play some music. PC ta ki obostha e ache?"
+)
+GROQ_WHISPER_LANGUAGE = (os.getenv("GROQ_WHISPER_LANGUAGE") or "").strip()  # e.g. "bn" to force
+
+
 def _groq_transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
     """Blocking Whisper transcription (multilingual — handles Bengali/Benglish
     speech natively). Call via asyncio.to_thread."""
     def _call(client):
+        kwargs = {"prompt": _WHISPER_PROMPT}
+        if GROQ_WHISPER_LANGUAGE:
+            kwargs["language"] = GROQ_WHISPER_LANGUAGE
         resp = client.audio.transcriptions.create(
             file=(filename, audio),
             model=GROQ_WHISPER_MODEL,
+            **kwargs,
         )
         return (getattr(resp, "text", "") or "").strip()
 
@@ -510,6 +529,8 @@ def _build_dispatcher():
         if not transcript:
             return await message.answer(
                 "That voice note came through empty, %s." % ident["honorific"])
+        # Log what Whisper heard — the one clue when a reply lands in the wrong language.
+        print(f"[CLOUD] 🎤 voice → \"{transcript[:120]}\"", flush=True)
         await _answer(message, ident, transcript)
 
     @router.message(F.photo)

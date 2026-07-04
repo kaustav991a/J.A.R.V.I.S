@@ -170,15 +170,29 @@ async def _download_media(media) -> bytes:
     return buf.getvalue()
 
 
+# Whisper auto-detect frequently mistakes Bengali speech for Hindi and emits
+# Devanagari. This prompt is example text in the operator's actual languages —
+# it biases the decoder toward Bengali script / Benglish / English instead.
+_WHISPER_PROMPT = (
+    "আজকের আবহাওয়া কেমন? Ajker khabar ki? Weather ta kemon aaj? "
+    "Play some music. PC ta ki obostha e ache?"
+)
+
+
 def _transcribe_sync(audio: bytes, filename: str) -> str:
     """Blocking Groq Whisper transcription (multilingual — Bengali/Benglish
     speech included). Run via asyncio.to_thread."""
     from modules.groq_key_manager import run_with_key_rotation
 
     model = (os.getenv("GROQ_WHISPER_MODEL") or "whisper-large-v3").strip()
+    language = (os.getenv("GROQ_WHISPER_LANGUAGE") or "").strip()  # e.g. "bn" to force
 
     def _call(client):
-        resp = client.audio.transcriptions.create(file=(filename, audio), model=model)
+        kwargs = {"prompt": _WHISPER_PROMPT}
+        if language:
+            kwargs["language"] = language
+        resp = client.audio.transcriptions.create(
+            file=(filename, audio), model=model, **kwargs)
         return (getattr(resp, "text", "") or "").strip()
 
     return run_with_key_rotation(_call)
