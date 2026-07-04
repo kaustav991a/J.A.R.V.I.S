@@ -35,6 +35,10 @@ they do **not** share memory yet (see "Later" below).
    - `TELEGRAM_GF_ID`, `TELEGRAM_BROTHER_ID` — optional VIP ids
    - `GROQ_API_KEYS` — your comma-separated Groq keys
    - `PUBLIC_URL` — leave blank for the first deploy.
+   - `WEBHOOK_SECRET_TOKEN` — *optional.* A header secret Telegram echoes on every
+     webhook POST so forged requests to the path are rejected. Leave unset and a
+     stable one is derived from the bot token automatically; set it only if you
+     want to pin your own value.
 
 4. **First deploy** → Render assigns a URL like
    `https://jarvis-cloud-gateway.onrender.com`. Copy it, set **`PUBLIC_URL`** to

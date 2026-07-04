@@ -6,6 +6,25 @@ jarvis-backend/jarvis_chroma_db/
 jarvis-backend/credentials/
 *.pyc
 
+# --- Large model binaries (re-downloadable — see README "Fresh Install") ---
+jarvis-backend/models/vosk/
+jarvis-backend/*.onnx
+jarvis-backend/*.onnx.json
+jarvis-backend/*.pt
+jarvis-backend/*.tar.gz
+
+# --- Personal memory / RAG stores (auto-created; never commit) ---
+jarvis-backend/*.db
+jarvis-backend/memory/vector_db/
+jarvis-backend/personal_chroma_db/
+jarvis-backend/action_chroma_db/
+
+# --- Runtime artifacts ---
+jarvis-backend/watchdog.log
+jarvis-backend/error.log
+jarvis-backend/last_boot_date.txt
+jarvis-backend/test_grid_output.jpg
+
 # Frontend
 jarvis-frontend/node_modules/
 jarvis-frontend/dist/

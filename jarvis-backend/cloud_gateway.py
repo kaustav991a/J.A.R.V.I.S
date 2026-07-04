@@ -42,6 +42,7 @@ OPTIONAL ENV
     CLOUD_GATEWAY_MODE     webhook | polling            (default webhook)
     PUBLIC_URL             https URL of this service     (required for webhook)
     WEBHOOK_SECRET         path secret for the webhook   (default derived)
+    WEBHOOK_SECRET_TOKEN   header secret Telegram echoes  (default derived)
     PORT                   bind port                     (default 8080; Render sets it)
     CLOUD_WEB_LOOKUP       1 to enable best-effort DuckDuckGo lookups (default 1)
 """
@@ -73,6 +74,14 @@ WEBHOOK_SECRET = (os.getenv("WEBHOOK_SECRET") or "").strip()
 if not WEBHOOK_SECRET and BOT_TOKEN:
     WEBHOOK_SECRET = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:24]
 WEBHOOK_PATH = f"/webhook/{WEBHOOK_SECRET}"
+
+# Header secret token — Telegram echoes this in the X-Telegram-Bot-Api-Secret-Token
+# header on every webhook POST, letting us reject forged requests that guess the
+# path. Derived from the token (distinct salt from the path slug) unless overridden.
+# Telegram permits 1-256 chars of [A-Za-z0-9_-]; a hex digest satisfies that.
+WEBHOOK_SECRET_TOKEN = (os.getenv("WEBHOOK_SECRET_TOKEN") or "").strip()
+if not WEBHOOK_SECRET_TOKEN and BOT_TOKEN:
+    WEBHOOK_SECRET_TOKEN = hashlib.sha256(("webhook-header:" + BOT_TOKEN).encode()).hexdigest()
 
 # Permission tiers (cosmetic here — the cloud gateway has no privileged actions
 # to gate; kept so greetings/honorifics match the desk gateway).
@@ -321,7 +330,9 @@ def _build_dispatcher():
 # ════════════════════════════════════════════════════════════════════════════
 # FastAPI app — /health for UptimeRobot, /webhook for Telegram (webhook mode)
 # ════════════════════════════════════════════════════════════════════════════
-from fastapi import FastAPI, Request  # noqa: E402
+import hmac  # noqa: E402
+
+from fastapi import FastAPI, Request, Response  # noqa: E402
 
 app = FastAPI()
 _bot = None
@@ -349,6 +360,15 @@ async def health():
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
     from aiogram.types import Update
+    # Verify Telegram's secret-token header before doing any work. hmac.compare_digest
+    # avoids leaking match length via timing. A well-formed POST to the right path is
+    # no longer sufficient — the caller must also echo the shared secret.
+    if WEBHOOK_SECRET_TOKEN:
+        header = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if not hmac.compare_digest(header, WEBHOOK_SECRET_TOKEN):
+            uid = request.client.host if request.client else "?"
+            print(f"[CLOUD] ⛔ webhook secret-token mismatch from {uid}", flush=True)
+            return Response(status_code=403)
     bot, dp = _ensure_bot()
     data = await request.json()
     update = Update.model_validate(data, context={"bot": bot})
@@ -381,8 +401,13 @@ async def _startup():
             return
         url = f"{PUBLIC_URL}{WEBHOOK_PATH}"
         try:
-            await bot.set_webhook(url, drop_pending_updates=True)
-            print(f"[CLOUD] ✅ Webhook registered → {url}", flush=True)
+            await bot.set_webhook(
+                url,
+                drop_pending_updates=True,
+                secret_token=WEBHOOK_SECRET_TOKEN or None,
+            )
+            tok = "on" if WEBHOOK_SECRET_TOKEN else "off"
+            print(f"[CLOUD] ✅ Webhook registered → {url} (secret-token: {tok})", flush=True)
         except Exception as e:  # noqa: BLE001
             print(f"[CLOUD] ❌ set_webhook failed: {e}", flush=True)
 
