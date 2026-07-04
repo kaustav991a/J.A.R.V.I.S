@@ -105,6 +105,20 @@ if not WEBHOOK_SECRET_TOKEN and BOT_TOKEN:
 # both sides, so the desk-link endpoint can't be opened by accident.
 BRIDGE_SECRET = (os.getenv("BRIDGE_SECRET") or "").strip()
 
+# The cloud host's clock is UTC (Render), but "akhon kota baje?" means the
+# OPERATOR's wall clock. Default to IST; override with OPERATOR_TZ if needed.
+def _operator_tz():
+    name = (os.getenv("OPERATOR_TZ") or "Asia/Kolkata").strip()
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:  # zoneinfo db missing (bare Windows) — fixed IST offset
+        import datetime as _dt
+        return _dt.timezone(_dt.timedelta(hours=5, minutes=30), "IST")
+
+
+_OPERATOR_TZ = _operator_tz()
+
 # Permission tiers (cosmetic here — the cloud gateway has no privileged actions
 # to gate; kept so greetings/honorifics match the desk gateway).
 _ADMIN_TIER = "admin"
@@ -133,10 +147,14 @@ VOICE RULES (override everything):
 7. You are J.A.R.V.I.S., not a chatbot — never mention being an AI model, tools, or code.
 8. LANGUAGE MIRRORING: match the operator's LANGUAGE, but ALWAYS write in
    ENGLISH (Latin) letters — never Bengali (বাংলা) or Devanagari (हिन्दी) script.
-   Bengali input (spoken, Bengali script, or romanised "Benglish") → reply in
-   casual romanised Benglish: "Ajker weather bhaloi ache, Sir — 31 degree,
-   humidity ektu beshi." English → English. The J.A.R.V.I.S. voice and
-   "{honorific}" survive in every language.
+   Bengali input (spoken, Bengali script, or romanised "Benglish") → the ENTIRE
+   reply in casual romanised Benglish — EVERY sentence, including your preempt/
+   follow-up line. Never switch to an English sentence mid-reply (borrowed
+   English words like "weather", "meeting", "degree" are fine inside Benglish).
+   Bad:  "Akhon 1:44 PM baje — you got the time, what's next?"
+   Good: "Akhon 1:44 PM baje, Sir — bikelér dike ekta meeting achhe naki?"
+   English input → English reply. The J.A.R.V.I.S. voice and "{honorific}"
+   survive in every language.
    CRITICAL: the operator speaks Bengali, Benglish, and English — NEVER Hindi.
    If a voice transcript arrives in Hindi/Devanagari, that is Bengali speech
    mis-transcribed: interpret it as Bengali and reply in romanised Benglish.
@@ -355,10 +373,11 @@ async def think(chat_id: int, text: str, who: str, honorific: str) -> str:
             )
 
     # Anchor "today"/"now" so time-sensitive answers (scores, news) aren't guessed
-    # against the model's stale training cutoff.
+    # against the model's stale training cutoff. Operator's timezone, NOT the
+    # server's UTC clock.
     import datetime as _dt
-    now = _dt.datetime.now()
-    date_ctx = f"\n\nCURRENT DATE/TIME (operator's local clock): {now:%A, %d %B %Y, %H:%M}."
+    now = _dt.datetime.now(_OPERATOR_TZ)
+    date_ctx = f"\n\nCURRENT DATE/TIME (operator's local clock): {now:%A, %d %B %Y, %I:%M %p} IST."
     system = _PERSONA.format(who=who, honorific=honorific) + date_ctx + grounding
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
@@ -379,8 +398,8 @@ async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: s
     history = _HISTORY.setdefault(chat_id, [])
 
     import datetime as _dt
-    now = _dt.datetime.now()
-    date_ctx = f"\n\nCURRENT DATE/TIME (operator's local clock): {now:%A, %d %B %Y, %H:%M}."
+    now = _dt.datetime.now(_OPERATOR_TZ)
+    date_ctx = f"\n\nCURRENT DATE/TIME (operator's local clock): {now:%A, %d %B %Y, %I:%M %p} IST."
     system = _PERSONA.format(who=who, honorific=honorific) + date_ctx
     question = caption.strip() or "The operator sent this photo without a caption — react to it helpfully."
     messages = [{"role": "system", "content": system}]
