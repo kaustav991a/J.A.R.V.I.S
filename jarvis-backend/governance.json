@@ -39,6 +39,7 @@
     "check_vitals": "AUTO",
     "morning_briefing": "AUTO",
     "find_file": "AUTO",
+    "list_directory": "AUTO",
     "play_music": "AUTO",
     "open_link": "AUTO",
     "os_control": "AUTO",

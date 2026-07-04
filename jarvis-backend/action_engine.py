@@ -683,6 +683,11 @@ class ActionEngine:
             return self._clear_schedule()
         elif action == "find_file":
             return await asyncio.to_thread(self._find_file, target)
+        elif action == "list_directory":
+            # Read-only directory listing (sandboxed to the user home by
+            # terminal_agent._resolve_safe_path). A first-class safe action so it
+            # is NOT gated behind the deliberately-blocked run_terminal_command.
+            return await asyncio.to_thread(self.terminal_agent.list_directory, target or ".")
         elif action == "create_note":
             return self._create_note(target)
         elif action == "organize_downloads":
