@@ -722,18 +722,29 @@ async def lifespan(app: FastAPI):
     # Start the health-monitor last, after all daemons are adopted.
     asyncio.create_task(daemon_supervisor.start())
 
-    # --- Telegram Remote Gateway: untether J.A.R.V.I.S. from the desk ---
-    # Routes phone commands through the same run_remote_command pipeline (brain +
-    # ActionEngine) but replies only to Telegram — never the HUD or desk speakers.
+    # --- Remote access: untether J.A.R.V.I.S. from the desk ---
+    # Two mutually-exclusive front doors, both routing phone commands through the
+    # SAME run_remote_command pipeline (brain + ActionEngine) and replying only to
+    # the phone — never the HUD or desk speakers:
+    #   • Level-3 bridge (preferred): the always-on cloud gateway owns the Telegram
+    #     token and forwards recognised messages to us over an authenticated socket.
+    #     Enabled by JARVIS_CLOUD_BRIDGE=1 + JARVIS_BRIDGE_URL + BRIDGE_SECRET.
+    #   • Direct Telegram poller: the desk consumes the bot token itself.
+    # We start ONE of them — never both — because Telegram delivers updates to a
+    # single consumer, so a desk poller and the cloud webhook would contend.
     try:
-        telegram_bot.start_bot(
-            run_remote_command,
-            queue_goal_fn=remote_queue_goal,
-            list_tasks_fn=remote_list_tasks,
-            status_fn=remote_status,
-        )
+        from modules import cloud_bridge
+        if cloud_bridge.is_enabled():
+            cloud_bridge.start_bridge(run_remote_command)
+        else:
+            telegram_bot.start_bot(
+                run_remote_command,
+                queue_goal_fn=remote_queue_goal,
+                list_tasks_fn=remote_list_tasks,
+                status_fn=remote_status,
+            )
     except Exception as e:
-        print(f"[TELEGRAM] Gateway failed to start: {e}", flush=True)
+        print(f"[REMOTE] Gateway failed to start: {e}", flush=True)
 
     # --- §1.3 Continuous full-duplex pipeline (opt-in) ---
     # Streaming STT (vosk) + AEC running continuously; finals route through the SAME
@@ -783,6 +794,11 @@ async def lifespan(app: FastAPI):
     daemon_supervisor.is_running = False
     try:
         await telegram_bot.stop_bot()
+    except Exception:
+        pass
+    try:
+        from modules import cloud_bridge
+        await cloud_bridge.stop_bridge()
     except Exception:
         pass
     if proactive_agent:

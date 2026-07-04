@@ -5,6 +5,48 @@ This file follows the spirit of [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Level-3 Desk↔Cloud Bridge — One J.A.R.V.I.S., One Front Door] — 2026-07-04
+
+Fuses the always-on cloud gateway and the real desk brain into a single assistant.
+Until now they were two strangers: the cloud was reachable 24/7 but "lite" (no PC,
+no files, no real memory), and the desk was the real thing but only reachable at the
+machine. The bridge makes the cloud the **sole front door** and, whenever the PC is
+online, routes every recognized Telegram message to the **real desk brain** — full
+ActionEngine, ReAct planner, and your actual memory — with graceful fallback to the
+cloud's local brain when the PC is off. This also solves memory sync (there is only
+ever *one* memory) and the Telegram single-consumer conflict (the desk no longer
+competes for the bot token).
+
+### Added
+- **Desk bridge client** (`jarvis-backend/modules/cloud_bridge.py`) — dials **out** to
+  the cloud's `/desk-link` WebSocket (auto-reconnect w/ capped exponential backoff),
+  authenticates with a shared `BRIDGE_SECRET`, and runs each forwarded command through
+  the **same `run_remote_command` pipeline** as voice/HUD/Telegram. A `BridgeChannel`
+  (`OutputChannel`) streams replies/typing back up the socket, scoped per remote chat.
+- **Cloud `/desk-link` endpoint** (`cloud_gateway.py`) — secret-checked (`X-Bridge-Secret`,
+  `hmac.compare_digest`) *before* accept; tracks the linked desk (last-writer-wins), relays
+  the desk's `reply`/`notify` frames to the right Telegram chat, and falls back to local
+  `think()` on disconnect. Telegram handler now forwards to the desk when linked.
+- **Single-front-door wiring** (`main.py`) — starts **either** the bridge (when
+  `JARVIS_CLOUD_BRIDGE=1` + `JARVIS_BRIDGE_URL` + `BRIDGE_SECRET`) **or** the direct
+  Telegram poller, never both, since Telegram delivers to a single consumer.
+
+### Protocol
+- JSON frames over TLS WebSocket: cloud→desk `{cmd: req_id, chat_id, user, tier, honorific, text}`;
+  desk→cloud `{notify}` / `{reply: chat_id, text}` / `{done: req_id}`. Cloud upper-cases the
+  identity name so the desk brain keys persona/memory consistently (`KAUSTAV`/`MOUSUMI`/`KINSHUK`).
+- v1 scope: text replies + typing. File delivery over the bridge is deferred (`send_document`
+  returns a polite "ready on the desk" note).
+
+### Verified
+- 17/17 protocol unit tests (frame construction, uppercasing, tier/honorific passthrough,
+  send-failure fallback, secret comparison, `BridgeChannel` frame shapes + 4000-char chunking).
+- 6/6 live end-to-end tests against the running FastAPI endpoint (wrong/no secret rejected,
+  correct secret accepted with `welcome` + identities, stable under frames). All three
+  backend files compile clean.
+
+---
+
 ## [Always-On Cloud Gateway — Reach J.A.R.V.I.S. with the PC Off] — 2026-07-03
 
 A separate, feather-light cloud brain so J.A.R.V.I.S. is reachable from Telegram **even

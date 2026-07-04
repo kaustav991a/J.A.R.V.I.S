@@ -71,10 +71,34 @@ the same `.env` as the desk stack.
 > **same bot token** — two pollers fight over updates. For a shared bot, keep the
 > cloud on **webhook** (default) and the desk on polling; they coexist fine.
 
-## Later: sharing state with the desk (levels 2 & 3)
-- **Level 2 — shared memory:** point both at one hosted DB so memory is unified.
-- **Level 3 — bridge/relay:** when the PC is online, the cloud forwards privileged
-  commands to the real desk brain (full PC control); when off, it answers itself.
+## Level-3 desk↔cloud bridge (DONE — 2026-07-04)
 
-`cloud_gateway.py` is structured (`_PC_DEFERRAL`, isolated `think()`) so these
-can be added without a rewrite.
+The cloud gateway can now be the **single front door**: when your desk PC is online,
+it forwards each recognized message to the **real desk brain** (full PC control + real
+memory) over an authenticated WebSocket, and falls back to its own local brain when the
+PC is off. There is only one memory, and no bot-token contention.
+
+**Enable it (both sides share one secret):**
+
+1. **Cloud** — set `BRIDGE_SECRET` in the Render dashboard (any long random string) and
+   redeploy. Keep the cloud on **webhook** mode.
+2. **Desk** — in `jarvis-backend/.env`:
+   ```dotenv
+   JARVIS_CLOUD_BRIDGE=1
+   JARVIS_BRIDGE_URL=wss://jarvis-cloud-gateway.onrender.com/desk-link
+   BRIDGE_SECRET=<same secret as the cloud>
+   ```
+   On boot the desk logs `[BRIDGE] ✅ Linked to cloud front door → …`; the cloud logs
+   `[CLOUD] ✅ Desk linked — remote commands now route to the desk brain.`
+
+When the bridge is enabled, the desk starts the bridge **instead of** its own Telegram
+poller (`main.py`), so nothing competes for the token. Turn it off (`JARVIS_CLOUD_BRIDGE=0`)
+to revert to the desk polling directly.
+
+- **Level 2 — shared memory** (not needed once the bridge is on): point both at one hosted
+  DB. The bridge supersedes this by keeping memory on the desk.
+
+> ⚠️ When running `cloud_gateway.py` **locally** for a test, NEVER start it in **polling**
+> mode against your real bot token — polling first calls `delete_webhook`, which knocks the
+> live production gateway off its webhook. Use webhook mode without `PUBLIC_URL` (no network),
+> or a throwaway test bot token.

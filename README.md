@@ -180,6 +180,14 @@ JARVIS_TV_IP= / JARVIS_TV_NAME= / JARVIS_ADB_PATH=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_USER_ID=                   # your numeric Telegram id (admin)
 TELEGRAM_GF_ID= / TELEGRAM_BROTHER_ID=   # VIP guest ids
+
+# --- Level-3 desk↔cloud bridge (optional) ---
+# When enabled, the always-on cloud gateway becomes the single Telegram front
+# door and forwards messages to THIS desk (full PC control + real memory) over an
+# authenticated socket; the desk stops polling Telegram directly. See below.
+JARVIS_CLOUD_BRIDGE=0               # 1 to enable the bridge on this desk
+JARVIS_BRIDGE_URL=                  # wss://<your-cloud>.onrender.com/desk-link
+BRIDGE_SECRET=                      # shared secret; MUST match the cloud's BRIDGE_SECRET
 ```
 
 The **cloud gateway** has its own env + deploy guide in [`jarvis-backend/CLOUD_GATEWAY.md`](jarvis-backend/CLOUD_GATEWAY.md).

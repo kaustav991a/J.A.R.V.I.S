@@ -45,6 +45,12 @@ OPTIONAL ENV
     WEBHOOK_SECRET_TOKEN   header secret Telegram echoes  (default derived)
     PORT                   bind port                     (default 8080; Render sets it)
     CLOUD_WEB_LOOKUP       1 to enable best-effort DuckDuckGo lookups (default 1)
+    BRIDGE_SECRET          shared secret for the level-3 desk-link bridge; when set
+                           AND a desk connects to /desk-link, recognised messages
+                           route to the real desk brain (full PC control + real
+                           memory) with graceful local fallback when the desk is
+                           offline. Must match the desk's BRIDGE_SECRET. Bridge OFF
+                           if unset. (See modules/cloud_bridge.py on the desk.)
 """
 
 from __future__ import annotations
@@ -82,6 +88,13 @@ WEBHOOK_PATH = f"/webhook/{WEBHOOK_SECRET}"
 WEBHOOK_SECRET_TOKEN = (os.getenv("WEBHOOK_SECRET_TOKEN") or "").strip()
 if not WEBHOOK_SECRET_TOKEN and BOT_TOKEN:
     WEBHOOK_SECRET_TOKEN = hashlib.sha256(("webhook-header:" + BOT_TOKEN).encode()).hexdigest()
+
+# Level-3 bridge — shared secret the desk must present to open /desk-link. When
+# set, a connected desk becomes the front door's brain (full PC control + real
+# memory); when absent or no desk is linked, the cloud answers locally. No default
+# is derived: the bridge stays OFF unless the operator sets a matching secret on
+# both sides, so the desk-link endpoint can't be opened by accident.
+BRIDGE_SECRET = (os.getenv("BRIDGE_SECRET") or "").strip()
 
 # Permission tiers (cosmetic here — the cloud gateway has no privileged actions
 # to gate; kept so greetings/honorifics match the desk gateway).
@@ -306,6 +319,10 @@ def _build_dispatcher():
             await message.bot.send_chat_action(message.chat.id, "typing")
         except Exception:
             pass
+        # Level-3 bridge: if the desk is linked, hand this to the REAL desk brain
+        # (full PC control + real memory). Replies stream back over the socket.
+        if _desk_connected() and await _forward_to_desk(message, ident):
+            return
         try:
             reply = await think(message.chat.id, message.text,
                                 ident["who"], ident["honorific"])
@@ -331,13 +348,24 @@ def _build_dispatcher():
 # FastAPI app — /health for UptimeRobot, /webhook for Telegram (webhook mode)
 # ════════════════════════════════════════════════════════════════════════════
 import hmac  # noqa: E402
+import itertools  # noqa: E402
 
-from fastapi import FastAPI, Request, Response  # noqa: E402
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect  # noqa: E402
 
 app = FastAPI()
 _bot = None
 _dp = None
 _poll_task = None
+
+# ── Level-3 bridge state ─────────────────────────────────────────────────────
+# The single connected desk socket (or None). When set, recognised Telegram
+# messages are forwarded to the desk instead of being answered by think().
+_desk_ws: Optional[WebSocket] = None
+_req_seq = itertools.count(1)
+
+
+def _desk_connected() -> bool:
+    return _desk_ws is not None
 
 
 def _ensure_bot():
@@ -374,6 +402,99 @@ async def telegram_webhook(request: Request):
     update = Update.model_validate(data, context={"bot": bot})
     await dp.feed_update(bot, update)
     return {"ok": True}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Level-3 desk↔cloud bridge
+# ════════════════════════════════════════════════════════════════════════════
+async def _forward_to_desk(message, ident: dict) -> bool:
+    """Forward a recognised Telegram message to the linked desk brain.
+
+    Returns True if it was handed off (caller must NOT also answer locally),
+    False if the hand-off failed so the caller can fall back to think().
+    """
+    ws = _desk_ws
+    if ws is None:
+        return False
+    frame = {
+        "type": "cmd",
+        "req_id": next(_req_seq),
+        "chat_id": message.chat.id,
+        # Desk brain keys persona/memory off an UPPERCASE user string
+        # ("KAUSTAV"/"MOUSUMI"/"KINSHUK") — align cloud's display name to it.
+        "user": (ident.get("who") or "KAUSTAV").upper(),
+        "tier": ident.get("tier"),
+        "honorific": ident.get("honorific") or "Sir",
+        "text": message.text,
+    }
+    try:
+        await ws.send_json(frame)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] desk forward failed ({e}); falling back to local brain.", flush=True)
+        return False
+
+
+@app.websocket("/desk-link")
+async def desk_link(websocket: WebSocket):
+    """The desk dials in here to become the front door's brain.
+
+    Auth is a shared BRIDGE_SECRET presented in the X-Bridge-Secret header and
+    checked BEFORE the socket is accepted. While connected, this desk receives
+    forwarded commands and streams replies back for relay to Telegram.
+    """
+    global _desk_ws
+    if not BRIDGE_SECRET:
+        # Bridge not configured on the cloud — refuse without accepting.
+        await websocket.close(code=1008)
+        return
+    presented = websocket.headers.get("x-bridge-secret", "")
+    if not hmac.compare_digest(presented, BRIDGE_SECRET):
+        peer = websocket.client.host if websocket.client else "?"
+        print(f"[CLOUD] ⛔ desk-link secret mismatch from {peer}", flush=True)
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    # Last-writer-wins: a reconnecting desk replaces any stale socket.
+    prev = _desk_ws
+    _desk_ws = websocket
+    if prev is not None:
+        try:
+            await prev.close(code=1012)  # service restart
+        except Exception:
+            pass
+    roster = ", ".join(f"{i['who']} [{i['tier']}]" for i in _IDENTITIES.values()) or "none"
+    print("[CLOUD] ✅ Desk linked — remote commands now route to the desk brain.", flush=True)
+    bot, _ = _ensure_bot()
+    try:
+        await websocket.send_json({"type": "welcome", "identities": roster})
+        while True:
+            frame = await websocket.receive_json()
+            ftype = frame.get("type")
+            chat_id = frame.get("chat_id")
+            if ftype == "reply" and chat_id is not None:
+                text = (frame.get("text") or "").strip()
+                if text:
+                    for i in range(0, len(text), 4000):
+                        try:
+                            await bot.send_message(chat_id, text[i:i + 4000])
+                        except Exception as e:  # noqa: BLE001
+                            print(f"[CLOUD] relay send failed: {e}", flush=True)
+                            break
+            elif ftype == "notify" and chat_id is not None:
+                try:
+                    await bot.send_chat_action(chat_id, "typing")
+                except Exception:
+                    pass
+            # "done" and unknown frames need no relay.
+    except WebSocketDisconnect:
+        print("[CLOUD] Desk link dropped — falling back to local brain.", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] desk-link fault: {e}", flush=True)
+    finally:
+        if _desk_ws is websocket:
+            _desk_ws = None
 
 
 @app.on_event("startup")
