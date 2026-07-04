@@ -642,8 +642,12 @@ def _ensure_bot():
     return _bot, _dp
 
 
+# UptimeRobot pings with HTTP HEAD by default, so register HEAD alongside GET;
+# both return 200 OK. (FastAPI/Starlette does not auto-answer HEAD for a GET route.)
 @app.get("/")
+@app.head("/")
 @app.get("/health")
+@app.head("/health")
 async def health():
     roster = ", ".join(f"{i['who']} [{i['tier']}]" for i in _IDENTITIES.values()) or "none"
     # Diagnostics only — no secret VALUES exposed, just which features are wired.
