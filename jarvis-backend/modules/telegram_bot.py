@@ -14,6 +14,11 @@ DESIGN
   come back through a `TelegramChannel` (an OutputChannel) so a phone reply never
   leaks to the desk speakers or the HUD.
 
+* Voice notes and photos are reduced to TEXT here (Groq Whisper transcript /
+  Groq vision description — env GROQ_WHISPER_MODEL, GROQ_VISION_MODEL) and then
+  handed to the same process_fn, so the real brain still does all the reasoning
+  and permission tiers apply unchanged.
+
 * Multi-user firewall + permission tiers (Phase 4.5). Every update is matched
   against a small registry of recognised identities, each loaded from the
   environment:
@@ -149,6 +154,64 @@ class TelegramChannel(OutputChannel):
 
 def _chunk(text: str, size: int) -> list[str]:
     return [text[i:i + size] for i in range(0, len(text), size)] or [text]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Inbound media → text (keeps this module transport-only: voice notes become a
+# transcript and photos become a factual description, and BOTH are then handed
+# to the same injected process_fn as any typed command — the brain still does
+# all the reasoning).
+# ════════════════════════════════════════════════════════════════════════════
+async def _download_media(media) -> bytes:
+    """Pull a Telegram file (voice/audio/photo size) into memory."""
+    import io
+    buf = io.BytesIO()
+    await _bot.download(media, destination=buf)
+    return buf.getvalue()
+
+
+def _transcribe_sync(audio: bytes, filename: str) -> str:
+    """Blocking Groq Whisper transcription (multilingual — Bengali/Benglish
+    speech included). Run via asyncio.to_thread."""
+    from modules.groq_key_manager import run_with_key_rotation
+
+    model = (os.getenv("GROQ_WHISPER_MODEL") or "whisper-large-v3").strip()
+
+    def _call(client):
+        resp = client.audio.transcriptions.create(file=(filename, audio), model=model)
+        return (getattr(resp, "text", "") or "").strip()
+
+    return run_with_key_rotation(_call)
+
+
+def _describe_image_sync(image: bytes) -> str:
+    """Blocking Groq vision call that turns a photo into a factual description
+    the desk brain can reason over. Run via asyncio.to_thread."""
+    import base64
+    from modules.groq_key_manager import run_with_key_rotation
+
+    model = (os.getenv("GROQ_VISION_MODEL")
+             or "meta-llama/llama-4-scout-17b-16e-instruct").strip()
+    b64 = base64.b64encode(image).decode()
+
+    def _call(client):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": (
+                    "Describe this image factually in 2-4 sentences: subjects, "
+                    "any visible text (quote it verbatim), setting, and anything "
+                    "notable. No preamble, no opinions."
+                )},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]}],
+            temperature=0.2,
+            max_tokens=400,
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    return run_with_key_rotation(_call)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -300,12 +363,75 @@ def _build_dispatcher():
             print(f"[TELEGRAM] process_fn fault: {e}\n{traceback.format_exc()}", flush=True)
             await channel.reply("I encountered a fault processing that.")
 
+    @router.message(F.voice | F.audio)
+    async def on_voice(message):
+        """Voice note → Whisper transcript → the exact same brain path as text."""
+        ident = _identify(message)
+        if ident is None:
+            return await _firewall(message)
+        if _process_fn is None:
+            return await message.answer("My reasoning core isn't wired up yet, Sir.")
+        channel = TelegramChannel(
+            message.chat.id, user=ident["user"], permission_tier=ident["tier"],
+            honorific=ident["honorific"],
+        )
+        await channel.notify("typing")
+        media = message.voice or message.audio
+        try:
+            audio = await _download_media(media)
+            fname = getattr(media, "file_name", None) or "voice.ogg"
+            transcript = await asyncio.to_thread(_transcribe_sync, audio, fname)
+        except Exception as e:
+            print(f"[TELEGRAM] voice transcription fault: {e}\n{traceback.format_exc()}", flush=True)
+            return await channel.reply(
+                f"I couldn't make out that voice note, {ident['honorific']} — mind typing it?")
+        if not transcript:
+            return await channel.reply(
+                f"That voice note came through empty, {ident['honorific']}.")
+        print(f"[TELEGRAM] 🎤 voice → \"{transcript[:80]}\"", flush=True)
+        try:
+            await _process_fn(transcript, channel)
+        except Exception as e:
+            print(f"[TELEGRAM] process_fn fault: {e}\n{traceback.format_exc()}", flush=True)
+            await channel.reply("I encountered a fault processing that.")
+
+    @router.message(F.photo)
+    async def on_photo(message):
+        """Photo → vision description → the brain answers with full persona/memory."""
+        ident = _identify(message)
+        if ident is None:
+            return await _firewall(message)
+        if _process_fn is None:
+            return await message.answer("My reasoning core isn't wired up yet, Sir.")
+        channel = TelegramChannel(
+            message.chat.id, user=ident["user"], permission_tier=ident["tier"],
+            honorific=ident["honorific"],
+        )
+        await channel.notify("typing")
+        try:
+            image = await _download_media(message.photo[-1])  # largest size
+            desc = await asyncio.to_thread(_describe_image_sync, image)
+        except Exception as e:
+            print(f"[TELEGRAM] photo vision fault: {e}\n{traceback.format_exc()}", flush=True)
+            return await channel.reply(
+                f"My visual cortex faltered on that one, {ident['honorific']} — send it again in a moment.")
+        caption = (message.caption or "").strip()
+        command = (
+            f"[I've sent you a photo over Telegram. What the image shows: {desc}] "
+            + (caption or "What do you make of it?")
+        )
+        try:
+            await _process_fn(command, channel)
+        except Exception as e:
+            print(f"[TELEGRAM] process_fn fault: {e}\n{traceback.format_exc()}", flush=True)
+            await channel.reply("I encountered a fault processing that.")
+
     @router.message()
     async def on_other(message):
         ident = _identify(message)
         if ident is None:
             return await _firewall(message)
-        await message.answer("I can only act on text commands for now.")
+        await message.answer("Text, voice notes, and photos I can work with — that one I can't, yet.")
 
     dp = Dispatcher()
     dp.include_router(router)

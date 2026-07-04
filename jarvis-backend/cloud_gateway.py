@@ -39,6 +39,10 @@ OPTIONAL ENV
 ------------
     TELEGRAM_GF_ID / TELEGRAM_BROTHER_ID   VIP guest numeric ids
     GROQ_MODEL             default llama-3.3-70b-versatile (good remote chat)
+    GROQ_VISION_MODEL      default meta-llama/llama-4-scout-17b-16e-instruct
+                           (answers Telegram photos)
+    GROQ_WHISPER_MODEL     default whisper-large-v3 (transcribes Telegram voice
+                           notes; multilingual — Bengali included)
     CLOUD_GATEWAY_MODE     webhook | polling            (default webhook)
     PUBLIC_URL             https URL of this service     (required for webhook)
     WEBHOOK_SECRET         path secret for the webhook   (default derived)
@@ -74,6 +78,9 @@ MODE = (os.getenv("CLOUD_GATEWAY_MODE") or "webhook").strip().lower()
 PUBLIC_URL = (os.getenv("PUBLIC_URL") or "").strip().rstrip("/")
 PORT = int(os.getenv("PORT", "8080"))
 GROQ_MODEL = (os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
+GROQ_VISION_MODEL = (os.getenv("GROQ_VISION_MODEL")
+                     or "meta-llama/llama-4-scout-17b-16e-instruct").strip()
+GROQ_WHISPER_MODEL = (os.getenv("GROQ_WHISPER_MODEL") or "whisper-large-v3").strip()
 WEB_LOOKUP = (os.getenv("CLOUD_WEB_LOOKUP", "1").strip() == "1")
 
 # Webhook path secret — a stable, non-guessable slug derived from the token so we
@@ -124,6 +131,10 @@ VOICE RULES (override everything):
 5. NO SYCOPHANCY: don't praise ideas or thank for compliments; deflect with dry competence.
 6. CONTRACTIONS always ("I'll", "you've"). Occasional dry British inversion.
 7. You are J.A.R.V.I.S., not a chatbot — never mention being an AI model, tools, or code.
+8. LANGUAGE MIRRORING: reply in whatever language the operator writes. Bengali
+   script (বাংলা) → answer in fluent Bengali. Romanised Bengali/"Benglish"
+   ("tumi kemon acho") → answer in the same casual Benglish. English → English.
+   The J.A.R.V.I.S. voice and "{honorific}" survive in every language.
 
 CAPABILITY NOTE: You are the always-on REMOTE gateway. You can converse, reason,
 and answer questions/lookups. You CANNOT control the PC, files, terminal, or house
@@ -169,8 +180,8 @@ def _looks_recoverable(exc: BaseException) -> bool:
     return ("rate" in msg and "limit" in msg) or "invalid api key" in msg or "429" in msg
 
 
-def _groq_complete(messages: list[dict]) -> str:
-    """Blocking Groq chat completion with key rotation. Call via asyncio.to_thread."""
+def _run_rotated(call_fn):
+    """Run call_fn(groq_client), rotating through the key pool on 401/429."""
     from groq import Groq
 
     global _active_idx
@@ -184,16 +195,10 @@ def _groq_complete(messages: list[dict]) -> str:
     for attempt in range(n):
         idx = (start + attempt) % n
         try:
-            client = Groq(api_key=_KEYS[idx])
-            resp = client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=messages,
-                temperature=0.6,
-                max_tokens=700,
-            )
+            out = call_fn(Groq(api_key=_KEYS[idx]))
             with _key_lock:
                 _active_idx = idx
-            return (resp.choices[0].message.content or "").strip()
+            return out
         except BaseException as e:  # noqa: BLE001
             if _looks_recoverable(e):
                 last_exc = e
@@ -201,6 +206,33 @@ def _groq_complete(messages: list[dict]) -> str:
                 continue
             raise
     raise last_exc or RuntimeError("Groq key rotation exhausted.")
+
+
+def _groq_complete(messages: list[dict], model: str = "") -> str:
+    """Blocking Groq chat completion with key rotation. Call via asyncio.to_thread."""
+    def _call(client):
+        resp = client.chat.completions.create(
+            model=model or GROQ_MODEL,
+            messages=messages,
+            temperature=0.6,
+            max_tokens=700,
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    return _run_rotated(_call)
+
+
+def _groq_transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
+    """Blocking Whisper transcription (multilingual — handles Bengali/Benglish
+    speech natively). Call via asyncio.to_thread."""
+    def _call(client):
+        resp = client.audio.transcriptions.create(
+            file=(filename, audio),
+            model=GROQ_WHISPER_MODEL,
+        )
+        return (getattr(resp, "text", "") or "").strip()
+
+    return _run_rotated(_call)
 
 
 _TAVILY_KEY = (os.getenv("TAVILY_API_KEY") or "").strip()
@@ -320,6 +352,38 @@ async def think(chat_id: int, text: str, who: str, honorific: str) -> str:
     return reply
 
 
+async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: str) -> str:
+    """Answer a Telegram photo through the Groq vision model, in persona and
+    with the same rolling per-chat memory as think()."""
+    history = _HISTORY.setdefault(chat_id, [])
+
+    import datetime as _dt
+    now = _dt.datetime.now()
+    date_ctx = f"\n\nCURRENT DATE/TIME (operator's local clock): {now:%A, %d %B %Y, %H:%M}."
+    system = _PERSONA.format(who=who, honorific=honorific) + date_ctx
+    question = caption.strip() or "The operator sent this photo without a caption — react to it helpfully."
+    messages = [{"role": "system", "content": system}]
+    messages.extend(history[-_MAX_TURNS:])
+    messages.append({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": question},
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+        ],
+    })
+
+    reply = await asyncio.to_thread(_groq_complete, messages, GROQ_VISION_MODEL)
+
+    # Store a text stand-in for the image so follow-up turns keep context
+    # without re-sending base64 through the chat model.
+    history.append({"role": "user", "content": f"[sent a photo] {question}"})
+    history.append({"role": "assistant", "content": reply})
+    if len(history) > _MAX_TURNS * 2:
+        del history[: len(history) - _MAX_TURNS * 2]
+    return reply
+
+
 # Per-chat rolling memory (level-1 "independent" memory; resets on restart).
 _HISTORY: dict[int, list[dict]] = {}
 
@@ -384,36 +448,96 @@ def _build_dispatcher():
             return
         await message.answer(ident["greeting"])
 
-    @router.message(F.text)
-    async def on_text(message):
+    def _gatekeep(message) -> Optional[dict]:
+        """Identify the caller or log-and-drop (silent firewall)."""
         ident = _identify(message)
         if ident is None:
             uid = getattr(getattr(message, "from_user", None), "id", "?")
             print(f"[CLOUD] ⛔ firewall drop id={uid}", flush=True)
-            return
+        return ident
+
+    async def _typing(message):
         try:
             await message.bot.send_chat_action(message.chat.id, "typing")
         except Exception:
             pass
+
+    async def _send_chunked(message, reply: str):
+        # Telegram hard-limits messages to 4096 chars.
+        for i in range(0, len(reply), 4000):
+            await message.answer(reply[i:i + 4000])
+
+    async def _answer(message, ident: dict, text: str):
+        """Shared brain path for anything reduced to text (typed or transcribed)."""
         # Level-3 bridge: if the desk is linked, hand this to the REAL desk brain
         # (full PC control + real memory). Replies stream back over the socket.
-        if _desk_connected() and await _forward_to_desk(message, ident):
+        if _desk_connected() and await _forward_to_desk(message, ident, text):
             return
         try:
-            reply = await think(message.chat.id, message.text,
+            reply = await think(message.chat.id, text,
                                 ident["who"], ident["honorific"])
         except Exception as e:  # noqa: BLE001
             print(f"[CLOUD] think() fault: {e}\n{traceback.format_exc()}", flush=True)
             reply = "I hit a fault reaching my reasoning core just now — try again in a moment."
-        # Telegram hard-limits messages to 4096 chars.
-        for i in range(0, len(reply), 4000):
-            await message.answer(reply[i:i + 4000])
+        await _send_chunked(message, reply)
+
+    @router.message(F.text)
+    async def on_text(message):
+        ident = _gatekeep(message)
+        if ident is None:
+            return
+        await _typing(message)
+        await _answer(message, ident, message.text)
+
+    @router.message(F.voice | F.audio)
+    async def on_voice(message):
+        """Voice note → Whisper transcript → same brain path as typed text."""
+        ident = _gatekeep(message)
+        if ident is None:
+            return
+        await _typing(message)
+        media = message.voice or message.audio
+        try:
+            import io
+            buf = io.BytesIO()
+            await message.bot.download(media, destination=buf)
+            fname = getattr(media, "file_name", None) or "voice.ogg"
+            transcript = await asyncio.to_thread(_groq_transcribe, buf.getvalue(), fname)
+        except Exception as e:  # noqa: BLE001
+            print(f"[CLOUD] voice transcription fault: {e}\n{traceback.format_exc()}", flush=True)
+            return await message.answer(
+                "I couldn't make out that voice note, %s — mind typing it?" % ident["honorific"])
+        if not transcript:
+            return await message.answer(
+                "That voice note came through empty, %s." % ident["honorific"])
+        await _answer(message, ident, transcript)
+
+    @router.message(F.photo)
+    async def on_photo(message):
+        """Photo → Groq vision answer. Always answered by the cloud (the bridge
+        frames are text-only), even when the desk is linked."""
+        ident = _gatekeep(message)
+        if ident is None:
+            return
+        await _typing(message)
+        try:
+            import base64
+            import io
+            buf = io.BytesIO()
+            await message.bot.download(message.photo[-1], destination=buf)  # largest size
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            reply = await see(message.chat.id, b64, message.caption or "",
+                              ident["who"], ident["honorific"])
+        except Exception as e:  # noqa: BLE001
+            print(f"[CLOUD] photo vision fault: {e}\n{traceback.format_exc()}", flush=True)
+            reply = "My visual cortex faltered on that one — send it again in a moment."
+        await _send_chunked(message, reply)
 
     @router.message()
     async def on_other(message):
         if _identify(message) is None:
             return
-        await message.answer("I can only act on text out here, Sir.")
+        await message.answer("Text, voice notes, and photos I can handle out here — that one I can't.")
 
     dp = Dispatcher()
     dp.include_router(router)
@@ -487,8 +611,9 @@ async def telegram_webhook(request: Request):
 # ════════════════════════════════════════════════════════════════════════════
 # Level-3 desk↔cloud bridge
 # ════════════════════════════════════════════════════════════════════════════
-async def _forward_to_desk(message, ident: dict) -> bool:
-    """Forward a recognised Telegram message to the linked desk brain.
+async def _forward_to_desk(message, ident: dict, text: str) -> bool:
+    """Forward a recognised Telegram message (typed or voice-transcribed) to
+    the linked desk brain.
 
     Returns True if it was handed off (caller must NOT also answer locally),
     False if the hand-off failed so the caller can fall back to think().
@@ -505,7 +630,7 @@ async def _forward_to_desk(message, ident: dict) -> bool:
         "user": (ident.get("who") or "KAUSTAV").upper(),
         "tier": ident.get("tier"),
         "honorific": ident.get("honorific") or "Sir",
-        "text": message.text,
+        "text": text,
     }
     try:
         await ws.send_json(frame)

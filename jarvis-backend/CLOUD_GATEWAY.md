@@ -10,7 +10,10 @@ Render's free tier kept warm by UptimeRobot.
 | Runs on | Render/VPS, 24/7 | your Windows PC |
 | Needs the PC | ❌ no | ✅ yes |
 | Chat, Q&A, weather/scores/news lookups | ✅ | ✅ |
-| PC control, files, terminal, voice, HUD, vision | ❌ (politely defers) | ✅ |
+| Telegram voice notes (Groq Whisper, multilingual incl. Bengali) | ✅ | ✅ |
+| Telegram photos (Groq Llama-4 vision) | ✅ | ✅ (described, then answered by the desk brain) |
+| Bengali / Benglish / English — mirrors your language | ✅ | ✅ |
+| PC control, files, terminal, mic/HUD/camera vision | ❌ (politely defers) | ✅ |
 | Memory | own rolling chat memory (resets on restart) | full ChromaDB/SQLite |
 
 Same bot, same persona, same identity firewall. The two run **independently** —
