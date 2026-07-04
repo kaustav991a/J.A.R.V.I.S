@@ -44,7 +44,9 @@ OPTIONAL ENV
     WEBHOOK_SECRET         path secret for the webhook   (default derived)
     WEBHOOK_SECRET_TOKEN   header secret Telegram echoes  (default derived)
     PORT                   bind port                     (default 8080; Render sets it)
-    CLOUD_WEB_LOOKUP       1 to enable best-effort DuckDuckGo lookups (default 1)
+    CLOUD_WEB_LOOKUP       1 to enable best-effort web lookups (default 1)
+    TAVILY_API_KEY         optional; if set, lookups use Tavily (far better for live
+                           scores/news) and fall back to DuckDuckGo. Same key the desk uses.
     BRIDGE_SECRET          shared secret for the level-3 desk-link bridge; when set
                            AND a desk connects to /desk-link, recognised messages
                            route to the real desk brain (full PC control + real
@@ -126,7 +128,18 @@ VOICE RULES (override everything):
 CAPABILITY NOTE: You are the always-on REMOTE gateway. You can converse, reason,
 and answer questions/lookups. You CANNOT control the PC, files, terminal, or house
 systems from here — those live on the desk system and only work when it is online.
-If asked for such an action, briefly defer it (do not pretend you did it)."""
+If asked for such an action, briefly defer it (do not pretend you did it).
+
+CRITICAL — NO FABRICATION OF PERSONAL FACTS: From the cloud you have NO access to
+the operator's calendar, meetings, schedule, reminders, email, files, health data,
+tasks, or anything on the PC. You do NOT know their appointments. NEVER invent,
+assume, or "recall" such a fact — do not say "you have a meeting at 10" or similar
+unless the operator themselves stated it earlier in THIS conversation. If asked
+about their schedule/calendar/email/files, say plainly you can't see those from the
+cloud and will have them when the desk is online. A truthful "I can't see that from
+here, {honorific}" is always correct; a confident guess is a serious failure.
+When you use the LIVE WEB CONTEXT below, ground answers in it and don't pad with
+invented specifics; if it doesn't cover the question, say so briefly."""
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -190,23 +203,81 @@ def _groq_complete(messages: list[dict]) -> str:
     raise last_exc or RuntimeError("Groq key rotation exhausted.")
 
 
+_TAVILY_KEY = (os.getenv("TAVILY_API_KEY") or "").strip()
+
+
+def _tavily_lookup(query: str) -> str:
+    """Grounding via Tavily (same provider the desk uses). Better than DDG for
+    current facts/scores. Uses the REST API over urllib — no extra dependency."""
+    import json as _json
+    import urllib.request
+
+    payload = _json.dumps({
+        "api_key": _TAVILY_KEY,
+        "query": query,
+        "search_depth": "basic",
+        "max_results": 5,
+        "include_answer": True,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.tavily.com/search", data=payload,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        data = _json.loads(resp.read())
+    bits = []
+    if data.get("answer"):
+        bits.append(f"- Summary: {data['answer']}")
+    for r in (data.get("results") or [])[:5]:
+        title = r.get("title", "")
+        content = r.get("content", "")
+        if content:
+            bits.append(f"- {title}: {content}")
+    return "\n".join(bits)
+
+
+def _ddg_lookup(query: str) -> str:
+    from ddgs import DDGS
+
+    bits = []
+    with DDGS() as ddgs:
+        for r in ddgs.text(query, max_results=6):
+            title = r.get("title", "")
+            body = r.get("body", "")
+            if body:
+                bits.append(f"- {title}: {body}")
+    return "\n".join(bits)
+
+
+# Time-sensitive intents benefit from an explicit recency nudge in the query.
+_RECENCY_HINTS = ("score", "match", "news", "latest", "today", "current",
+                  "price", "stock", "weather", "result", "who won", "live")
+
+
 def _web_lookup(query: str) -> str:
-    """Best-effort DuckDuckGo snippets to ground factual questions. Never fatal."""
+    """Best-effort web grounding for factual questions. Prefers Tavily when a key
+    is configured, falls back to DuckDuckGo. Never fatal."""
     if not WEB_LOOKUP:
         return ""
+    q = query.strip()
+    # Nudge time-sensitive queries toward fresh results.
+    if any(h in q.lower() for h in _RECENCY_HINTS):
+        q = f"{q} latest result today"
     try:
-        from ddgs import DDGS
-
-        bits = []
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=4):
-                title = r.get("title", "")
-                body = r.get("body", "")
-                if body:
-                    bits.append(f"- {title}: {body}")
-        return "\n".join(bits)
+        if _TAVILY_KEY:
+            out = _tavily_lookup(q)
+            if out:
+                return out
+            # fall through to DDG if Tavily returned nothing
+        return _ddg_lookup(q)
     except Exception as e:  # noqa: BLE001
         print(f"[CLOUD] web lookup skipped: {e}", flush=True)
+        # Last-ditch: try DDG if Tavily was the one that failed.
+        if _TAVILY_KEY:
+            try:
+                return _ddg_lookup(q)
+            except Exception:
+                pass
         return ""
 
 
@@ -230,7 +301,12 @@ async def think(chat_id: int, text: str, who: str, honorific: str) -> str:
                 + snippets
             )
 
-    system = _PERSONA.format(who=who, honorific=honorific) + grounding
+    # Anchor "today"/"now" so time-sensitive answers (scores, news) aren't guessed
+    # against the model's stale training cutoff.
+    import datetime as _dt
+    now = _dt.datetime.now()
+    date_ctx = f"\n\nCURRENT DATE/TIME (operator's local clock): {now:%A, %d %B %Y, %H:%M}."
+    system = _PERSONA.format(who=who, honorific=honorific) + date_ctx + grounding
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
     messages.append({"role": "user", "content": text})
