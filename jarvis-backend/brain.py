@@ -1309,7 +1309,11 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
         _complexity = "heavy" if classification.get("intent") == "CODER" else "standard"
         response = universal_llm_call(
             messages=messages,
-            temperature=0.0 if is_locked else (0.0 if deterministic_action else 0.7),
+            # Determinism: any turn that even MIGHT carry an action (the action
+            # catalogue is in the prompt) runs at temp 0.0 so the model doesn't
+            # coin-flip between emitting JSON and prose run-to-run. Only clearly
+            # conversational turns (include_actions False) keep the warmer 0.7.
+            temperature=0.0 if (is_locked or deterministic_action or include_actions) else 0.7,
             max_tokens=600,
             stream=False,
             json_mode=_is_json_mode,
@@ -1471,22 +1475,22 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
             except Exception as _ge:
                 print(f"[BRAIN] Code-file guard skipped: {_ge}")
 
-        try:
-            # JSON action response — do NOT store raw JSON in history (it would
-            # pollute future prompts and confuse the model into re-emitting actions).
-            # Instead write a past-tense confirmation stub so every user turn has a
-            # matching assistant turn AND the LLM understands the action is DONE.
-            # CRITICAL: stub must read as completed — "awaiting" wording causes the
-            # model to re-emit the action thinking it is still pending.
-            parsed_actions = json.loads(response)
-            _action_list = parsed_actions.get("actions", [])
-            if _action_list:
-                _atypes = [a.get("action_type", "action") for a in _action_list]
-                _stub = f"[Executed: {', '.join(_atypes)}. Done.]"
-            else:
-                _stub = "[Action executed. Done.]"
+        # JSON action response — do NOT store raw JSON in history (it would
+        # pollute future prompts and confuse the model into re-emitting actions).
+        # Instead write a past-tense confirmation stub so every user turn has a
+        # matching assistant turn AND the LLM understands the action is DONE.
+        # CRITICAL: stub must read as completed — "awaiting" wording causes the
+        # model to re-emit the action thinking it is still pending.
+        # Uses the shared parse spine so the stub matches what dispatch actually
+        # executed (fences/prose/truncation all handled identically).
+        from modules import action_parser
+        _action_list = action_parser.extract_actions(response)
+        if _action_list:
+            _atypes = [a.get("action_type", "action") for a in _action_list]
+            _stub = f"[Executed: {', '.join(_atypes)}. Done.]"
             memory.add_to_working_memory("assistant", _stub)
-        except json.JSONDecodeError:
+        else:
+            # No action detected — a conversational reply; store it verbatim.
             memory.add_to_working_memory("assistant", response)
             
         return response
@@ -1616,7 +1620,11 @@ def process_stream(user_text: str, active_user: str = "KAUSTAV"):
         print(f"[BRAIN] process_stream payload ~{_ps_chars:,} chars (~{_ps_chars//4:,} tokens est)", flush=True)
         completion = universal_llm_call(
             messages=messages,
-            temperature=0.0 if is_locked else (0.0 if deterministic_action else 0.7),
+            # Determinism: any turn that even MIGHT carry an action (the action
+            # catalogue is in the prompt) runs at temp 0.0 so the model doesn't
+            # coin-flip between emitting JSON and prose run-to-run. Only clearly
+            # conversational turns (include_actions False) keep the warmer 0.7.
+            temperature=0.0 if (is_locked or deterministic_action or include_actions) else 0.7,
             max_tokens=1024,
             stream=True,
             json_mode=False,

@@ -173,8 +173,14 @@ unless the operator themselves stated it earlier in THIS conversation. If asked
 about their schedule/calendar/email/files, say plainly you can't see those from the
 cloud and will have them when the desk is online. A truthful "I can't see that from
 here, {honorific}" is always correct; a confident guess is a serious failure.
-When you use the LIVE WEB CONTEXT below, ground answers in it and don't pad with
-invented specifics; if it doesn't cover the question, say so briefly."""
+LIVE WEB ACCESS: You DO have live web access for public facts — scores, news,
+weather, prices, "who won", current events. When a LIVE WEB CONTEXT block is
+present below, ground your answer in it and don't pad with invented specifics.
+You must NEVER tell the operator to "go to the web", "search", "Google it",
+"check online", or "find out" for themselves — you are the one with web access,
+and redirecting them is a failure. If a lookup returns nothing this turn, say
+plainly that you couldn't reach live results at the moment and offer to try
+again — never punt the task back to them, and never guess a score or number."""
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -377,11 +383,24 @@ _ROMANISE_NUDGE = (
 )
 
 
+# Injected as a FRESH system turn when a live-info query's web lookup came back
+# empty. Stops the model from deflecting the task back to the operator.
+_LOOKUP_FAILED_NUDGE = (
+    "LIVE LOOKUP FAILED (highest priority): your web lookup for this question "
+    "returned nothing this turn. Tell {honorific} briefly and plainly that you "
+    "couldn't reach live results at the moment and offer to try again shortly. "
+    "Do NOT tell them to search, Google, or 'find out' themselves. Do NOT guess "
+    "or invent a score, number, price, or result. One or two sentences, in "
+    "persona."
+)
+
+
 async def think(chat_id: int, text: str, who: str, honorific: str) -> str:
     """Run one turn through the cloud brain, with rolling per-chat memory."""
     history = _HISTORY.setdefault(chat_id, [])
 
     grounding = ""
+    lookup_failed = False
     lowered = text.lower()
     if WEB_LOOKUP and any(h in lowered for h in _LOOKUP_HINTS):
         snippets = await asyncio.to_thread(_web_lookup, text)
@@ -390,6 +409,13 @@ async def think(chat_id: int, text: str, who: str, honorific: str) -> str:
                 "\n\n[LIVE WEB CONTEXT — use if relevant, cite naturally, don't dump raw]:\n"
                 + snippets
             )
+        else:
+            # A live-info query (score/news/weather/price) whose lookup returned
+            # nothing — usually Tavily unconfigured on this host and DuckDuckGo
+            # blocked from the datacenter IP. Do NOT let the model punt the task
+            # back to the operator ("go find out"); make it fail honestly.
+            lookup_failed = True
+            print(f"[CLOUD] web lookup empty for live query: {text[:80]!r}", flush=True)
 
     # Anchor "today"/"now" so time-sensitive answers (scores, news) aren't guessed
     # against the model's stale training cutoff. Operator's timezone, NOT the
@@ -402,6 +428,8 @@ async def think(chat_id: int, text: str, who: str, honorific: str) -> str:
     messages.extend(history[-_MAX_TURNS:])
     if _has_indic_script(text):
         messages.append({"role": "system", "content": _ROMANISE_NUDGE})
+    if lookup_failed:
+        messages.append({"role": "system", "content": _LOOKUP_FAILED_NUDGE.format(honorific=honorific)})
     messages.append({"role": "user", "content": text})
 
     reply = await asyncio.to_thread(_groq_complete, messages)

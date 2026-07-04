@@ -157,17 +157,12 @@ _REACT_SYSTEM = (
 
 
 def _extract_json(raw: str) -> Optional[dict]:
-    """Pull the first JSON object out of an LLM reply, tolerating code fences."""
-    if not raw:
-        return None
-    s = raw.replace("```json", "").replace("```", "").strip()
-    start, end = s.find("{"), s.rfind("}")
-    if start == -1 or end <= start:
-        return None
-    try:
-        return json.loads(s[start:end + 1])
-    except json.JSONDecodeError:
-        return None
+    """Pull the first JSON decision object out of a ReAct Think step, via the
+    shared parse spine — tolerant of code fences, prose, trailing commas and
+    truncation, so a recoverable reply no longer aborts the whole plan. Preserves
+    the 'thought' / 'action' / 'final_answer' keys the loop below expects."""
+    from modules import action_parser
+    return action_parser.extract_react_decision(raw)
 
 
 async def _call_llm(messages: list, llm_call, *, json_mode: bool = True) -> str:

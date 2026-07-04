@@ -164,7 +164,13 @@ def universal_llm_call(
     # Every provider failed — degrade gracefully.
     print(f"[ROUTER] FATAL: all providers exhausted (last error: {last_err}).", flush=True)
     if not stream:
-        return '{"actions": []}' if json_mode else "Local AI cortex is offline, Sir."
+        # HONEST FAILURE: do NOT return '{"actions": []}' in json_mode. Downstream
+        # that parses to "zero actions" and gets narrated as "Done, Sir" — a silent
+        # false success on a hard provider outage (the classic "it said it did it
+        # but nothing happened"). Return a plain, honest failure line in BOTH modes;
+        # the parse spine finds no action in it and speaks it verbatim, and any
+        # json.loads() caller falls through its own except to a safe default.
+        return "My reasoning core is unreachable at the moment, Sir — every AI provider is offline."
 
     def _err_gen():
         yield "Local AI cortex is offline, Sir."

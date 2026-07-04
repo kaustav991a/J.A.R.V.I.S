@@ -45,6 +45,7 @@ from modules.session_manager import COMMAND_LOCK, CallbackChannel, SESSIONS  # -
 from modules import telegram_bot  # --- Telegram Remote Gateway ---
 from modules import planner  # --- ReAct Orchestrator (Roadmap §1.2) ---
 from modules import fast_path  # --- Deterministic low-latency lane (Roadmap §3.4) ---
+from modules import action_parser  # --- Unified LLM-reply → action(s) parse spine ---
 # Phase 6 – Governance Engine
 from governance_manager import governance_manager
 from socket_manager import register_client, unregister_client, send_ui_update, set_app_loop
@@ -1104,32 +1105,20 @@ async def run_remote_command(command_text: str, channel) -> None:
         await channel.reply(f"I encountered a fault reaching my reasoning core, {honor}.")
         return
 
-    clean_response = llm_response.replace("```json", "").replace("```", "").strip()
-    if clean_response.startswith('"') and clean_response.endswith('"'):
-        clean_response = clean_response[1:-1].replace('\\"', '"').replace('\\n', '\n')
-
-    json_start = clean_response.find('{')
-    json_end = clean_response.rfind('}')
-    json_match = None
-    if json_start != -1 and json_end > json_start:
-        candidate = clean_response[json_start:json_end + 1]
-        if '"actions"' in candidate:
-            json_match = candidate
-    if json_match is None and '"actions"' in clean_response:
-        json_match = _heal_json(clean_response[clean_response.find('{'):])
+    # Unified parse spine — tolerant of fences, prose, bare/singular/array
+    # shapes, trailing commas and truncation (see modules/action_parser.py).
+    _parsed = action_parser.parse(llm_response)
+    clean_response = _parsed.preamble or action_parser.strip_fences(llm_response).strip()
 
     # Pure conversational reply (no actions).
-    if not json_match:
-        await channel.reply(clean_response or f"Standing by, {honor}.")
+    if not _parsed.is_action:
+        spoken = clean_response
+        if not spoken or spoken.lstrip().startswith(("{", "[")):
+            spoken = f"Standing by, {honor}."
+        await channel.reply(spoken)
         return
 
-    try:
-        parsed_json = json.loads(_heal_json(json_match))
-    except json.JSONDecodeError:
-        await channel.reply(clean_response or f"Standing by, {honor}.")
-        return
-
-    actions = _normalize_os_control_batch(parsed_json.get("actions", []), command_text)
+    actions = _normalize_os_control_batch(_parsed.actions, command_text)
 
     # ── Phase 4.5: tier pre-filter (refuse the WHOLE batch atomically) ───────
     # Before touching the engine, verify every action is in-tier. If a VIP guest
@@ -1254,15 +1243,7 @@ async def remote_queue_goal(goal_text: str, user: str = "KAUSTAV") -> tuple:
     except Exception as e:
         print(f"[REMOTE] queue_goal planning fault: {e}", flush=True)
         return (None, 0)
-    clean = llm_response.replace("```json", "").replace("```", "").strip()
-    js, je = clean.find('{'), clean.rfind('}')
-    actions: list = []
-    if js != -1 and je > js and '"actions"' in clean[js:je + 1]:
-        try:
-            parsed = json.loads(_heal_json(clean[js:je + 1]))
-            actions = _normalize_os_control_batch(parsed.get("actions", []), goal_text)
-        except Exception:
-            actions = []
+    actions = _normalize_os_control_batch(action_parser.extract_actions(llm_response), goal_text)
     if not actions:
         return (None, 0)
     tid = await asyncio.to_thread(task_queue.enqueue, goal_text[:80], actions, user)
@@ -1641,37 +1622,26 @@ async def backdoor_command(req: BackdoorRequest):
                 # Fall through to the standard pipeline on any planner error.
 
         llm_response = await asyncio.to_thread(process_command, command_text, active_user)
-        clean_response = llm_response.replace("```json", "").replace("```", "").strip()
-        
-        # If the LLM wrapped the JSON in string quotes
-        if clean_response.startswith('"') and clean_response.endswith('"'):
-            clean_response = clean_response[1:-1].replace('\\"', '"').replace('\\n', '\n')
-            
-        # --- FIX: Extract JSON by finding first { and last } (regex can't handle nested braces) ---
-        json_start = clean_response.find('{')
-        json_end = clean_response.rfind('}')
-        json_match = None
-        if json_start != -1 and json_end > json_start:
-            json_candidate = clean_response[json_start:json_end + 1]
-            if '"actions"' in json_candidate:
-                json_match = json_candidate
-        # Fallback: LLM truncated before outer closing } — try healing
-        if json_match is None and '"actions"' in clean_response:
-            json_match = _heal_json(clean_response[clean_response.find('{'):])
-        
+
+        # Unified parse spine — one tolerant extractor for every dispatch path
+        # (fences, prose, bare/singular/array shapes, trailing commas, truncation).
+        _parsed = action_parser.parse(llm_response)
+        clean_response = _parsed.preamble or action_parser.strip_fences(llm_response).strip()
+        if not clean_response or clean_response.lstrip().startswith(("{", "[")):
+            # Leftover raw JSON (e.g. empty actions) — never speak it.
+            clean_response = ""
+        json_match = _parsed.is_action
+
         if json_match:
             try:
-                parsed_json = json.loads(_heal_json(json_match))
                 actions = _normalize_os_control_batch(
-                    parsed_json.get("actions", []), command_text
+                    _parsed.actions, command_text
                 )
-                parsed_json["actions"] = actions
 
-                preamble = clean_response[:json_start].strip() if json_start != -1 else ""
-                if preamble and isinstance(parsed_json.get("actions"), list):
+                if _parsed.preamble:
                     print(
                         f"[MAIN] Silence protocol: dropped JSON-adjacent preamble "
-                        f"({len(preamble)} chars)",
+                        f"({len(_parsed.preamble)} chars)",
                         flush=True,
                     )
 
@@ -2453,37 +2423,27 @@ async def websocket_endpoint(websocket: WebSocket):
                                 episodic_memory.log_turn("user", command_text, active_user)
                                 
                                 llm_response = await asyncio.to_thread(process_command, command_text, active_user)
-                                clean_response = llm_response.replace("```json", "").replace("```", "").strip()
-                                
-                                # If the LLM wrapped the JSON in string quotes
-                                if clean_response.startswith('"') and clean_response.endswith('"'):
-                                    clean_response = clean_response[1:-1].replace('\\"', '"').replace('\\n', '\n')
-                                    
-                                # --- FIX: Extract JSON by finding first { and last } (regex can't handle nested braces) ---
-                                json_start = clean_response.find('{')
-                                json_end = clean_response.rfind('}')
-                                json_match = None
-                                if json_start != -1 and json_end > json_start:
-                                    json_candidate = clean_response[json_start:json_end + 1]
-                                    if '"actions"' in json_candidate:
-                                        json_match = json_candidate
-                                # Fallback: LLM truncated before outer closing } — try healing
-                                if json_match is None and '"actions"' in clean_response:
-                                    json_match = _heal_json(clean_response[clean_response.find('{'):])
-                                
+
+                                # Unified parse spine — one tolerant extractor for
+                                # every dispatch path (fences, prose, bare/singular/
+                                # array shapes, trailing commas, truncation).
+                                _parsed = action_parser.parse(llm_response)
+                                clean_response = _parsed.preamble or action_parser.strip_fences(llm_response).strip()
+                                if not clean_response or clean_response.lstrip().startswith(("{", "[")):
+                                    # Leftover raw JSON (e.g. empty actions) — never speak it.
+                                    clean_response = ""
+                                json_match = _parsed.is_action
+
                                 if json_match:
                                     try:
-                                        parsed_json = json.loads(_heal_json(json_match))
                                         actions = _normalize_os_control_batch(
-                                            parsed_json.get("actions", []), command_text
+                                            _parsed.actions, command_text
                                         )
-                                        parsed_json["actions"] = actions
-                                        
-                                        preamble = clean_response[:json_start].strip() if json_start != -1 else ""
-                                        if preamble and isinstance(parsed_json.get("actions"), list):
+
+                                        if _parsed.preamble:
                                             print(
                                                 f"[MAIN] Silence protocol: dropped JSON-adjacent preamble "
-                                                f"({len(preamble)} chars)",
+                                                f"({len(_parsed.preamble)} chars)",
                                                 flush=True,
                                             )
 

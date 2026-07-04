@@ -65,34 +65,38 @@ class StreamingDaemon:
                     llm_stream = process_stream(text, self.active_user)
                     
                     def action_interceptor(stream):
-                        full_text = ""
-                        is_json = False
-                        for i, chunk in enumerate(stream):
-                            if i == 0 and "{" in chunk:
-                                is_json = True
-                            
-                            full_text += chunk
-                            
-                            if not is_json:
-                                print(chunk, end="", flush=True)
-                                yield chunk
-                                
-                        if is_json:
+                        # Buffer the whole reply, THEN decide: an action turn is
+                        # detected on the accumulated text (never on chunk 0 alone,
+                        # which fails whenever the model leads with a space/fence/
+                        # word). Uses the shared parse spine so this path behaves
+                        # identically to the HUD/remote paths.
+                        from modules import action_parser
+
+                        full_text = "".join(stream)
+                        parsed = action_parser.parse(full_text)
+
+                        if not parsed.is_action:
+                            # Conversational — stream the prose out for TTS.
+                            print(parsed.preamble or full_text, end="", flush=True)
+                            yield parsed.preamble or full_text
+                            return
+
+                        for act in parsed.actions:
+                            atype = act.get("action_type", "action")
                             try:
-                                start = full_text.find("{")
-                                end = full_text.rfind("}") + 1
-                                json_str = full_text[start:end]
-                                payload = json.loads(json_str)
-                                
-                                print(f"\n[ACTION ENGINE] Executing: {payload.get('action_type')}")
-                                self.update_ui("processing", f"EXECUTING: {payload.get('action_type').upper()}")
-                                result = self.action_engine.dispatch(payload)
-                                
+                                print(f"\n[ACTION ENGINE] Executing: {atype}")
+                                self.update_ui("processing", f"EXECUTING: {atype.upper()}")
+                                result = self.action_engine.dispatch(act)
+                                result = "" if result is None else str(result)
                                 print(f"[JARVIS] {result}")
                                 self.update_ui("speaking", result.upper()[:50] + "...")
-                                yield result
+                                if result:
+                                    yield result
                             except Exception as e:
-                                pass
+                                # Never silently swallow — surface the fault.
+                                err = f"Action '{atype}' failed: {e}"
+                                print(f"[DAEMON] {err}")
+                                yield f"I couldn't complete that, Sir."
 
                     self.tts.stream_tts(action_interceptor(llm_stream))
                     print()
