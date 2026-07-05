@@ -18,8 +18,26 @@ class FileAgent:
             home / "Documents",
             home / "Downloads",
             home / "Pictures",
-            Path("G:/work"),  # Projects directory
         ]
+
+        # Derive the project root dynamically instead of hardcoding a drive letter.
+        # __file__ = .../jarvis-backend/modules/file_agent.py
+        # parents[2] = .../JARVIS-Project  (the repo root)
+        # parents[3] = .../work            (the workspace directory)
+        _this = Path(__file__).resolve()
+        _project_root = _this.parents[2]   # e.g. F:\work\JARVIS-Project
+        _work_dir     = _this.parents[3]   # e.g. F:\work
+
+        for candidate in [_work_dir, _project_root]:
+            if candidate.exists() and candidate not in self.search_dirs:
+                self.search_dirs.append(candidate)
+
+        # Optional override via environment variable
+        _extra = os.getenv("JARVIS_PROJECTS_DIR", "")
+        if _extra.strip():
+            _extra_path = Path(_extra.strip()).resolve()
+            if _extra_path.exists() and _extra_path not in self.search_dirs:
+                self.search_dirs.append(_extra_path)
         
         # Notes directory
         self.notes_dir = home / "Documents" / "JarvisNotes"

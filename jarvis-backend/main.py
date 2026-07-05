@@ -1,3 +1,16 @@
+# ── UTF-8 stdout hardening (MUST run before any print) ───────────────────────
+# JARVIS log lines contain Unicode (→, —, emojis). When stdout is redirected to a
+# pipe/file/Windows-service (e.g. watchdog under a service, or the Electron shell
+# capturing backend output), Python falls back to cp1252 and a single such print
+# raises UnicodeEncodeError — killing the in-flight operation. Force UTF-8 so a log
+# character can never abort a command.
+import sys as _sys
+for _stream in (_sys.stdout, _sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware

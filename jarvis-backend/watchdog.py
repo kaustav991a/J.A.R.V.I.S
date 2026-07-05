@@ -53,6 +53,14 @@ import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
+# Force UTF-8 on stdout/stderr so the emoji log lines below can't raise
+# UnicodeEncodeError when stdout is redirected (service/pipe/Electron shell → cp1252).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Load .env so token/ports can live alongside the rest of J.A.R.V.I.S.'s config.
 try:
     from dotenv import load_dotenv

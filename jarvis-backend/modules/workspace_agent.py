@@ -9,8 +9,9 @@ Security model
 - Binary files are detected and refused for read/write operations.
 - File size caps prevent flooding the LLM context or writing runaway files.
 - The roots are configured via the JARVIS_WORKSPACE_ROOTS environment variable
-  (comma-separated absolute paths). If unset, the G:\\work directory and the
-  user's Documents folder are used as sane defaults.
+  (comma-separated absolute paths). If unset, the project's work directory (derived
+  from the location of this file) and the user's Documents folder are used as
+  sane defaults.
 
 All public methods return clean, LLM-readable strings.
 """
@@ -27,16 +28,25 @@ from typing import Optional
 def _build_workspace_roots() -> list[Path]:
     """
     Read roots from JARVIS_WORKSPACE_ROOTS env var, falling back to
-    sensible defaults: the G:\\work directory and Documents.
+    dynamically derived defaults: the repo's work directory, Documents, Desktop.
     """
     raw = os.getenv("JARVIS_WORKSPACE_ROOTS", "")
     if raw.strip():
         roots = [Path(p.strip()).resolve() for p in raw.split(",") if p.strip()]
     else:
+        # Derive the project's work directory dynamically instead of hardcoding
+        # a drive letter. __file__ = .../jarvis-backend/modules/workspace_agent.py
+        # parents[2] = .../JARVIS-Project  (repo root)
+        # parents[3] = .../work            (the workspace directory)
+        _this = Path(__file__).resolve()
+        _project_root = _this.parents[2]   # e.g. F:\work\JARVIS-Project
+        _work_dir     = _this.parents[3]   # e.g. F:\work
+
         # Default roots — covers the JARVIS project tree and user documents
         roots = []
         for candidate in [
-            Path("G:/work"),
+            _work_dir,
+            _project_root,
             Path.home() / "Documents",
             Path.home() / "Desktop",
         ]:
@@ -46,6 +56,16 @@ def _build_workspace_roots() -> list[Path]:
                     roots.append(resolved)
             except Exception:
                 continue
+
+        # Optional extra directory via environment variable
+        _extra = os.getenv("JARVIS_PROJECTS_DIR", "")
+        if _extra.strip():
+            try:
+                _extra_path = Path(_extra.strip()).resolve()
+                if _extra_path.exists():
+                    roots.append(_extra_path)
+            except Exception:
+                pass
     return roots
 
 

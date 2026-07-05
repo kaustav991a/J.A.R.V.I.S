@@ -409,9 +409,9 @@ class ActionEngine:
 
         # --- ROUTING TABLE ---
         if action == "launch_app":
-            return self._launch_app(target)
+            return await asyncio.to_thread(self._launch_app, target)
         elif action == "close_app":
-            return self._close_app(target)
+            return await asyncio.to_thread(self._close_app, target)
         elif action == "hud_open_widget":
             return self._hud_open_widget(target)
         elif action == "hud_close_widget":
@@ -456,26 +456,28 @@ class ActionEngine:
         elif action == "close_display": 
             return "Display clear command received."
         elif action == "tv_control":
-            return self._control_tv(target)
+            # ADB connect + zeroconf can block 5s+; offload.
+            return await asyncio.to_thread(self._control_tv, target)
         elif action == "tv_type":
-            return self._tv_type(target)
+            return await asyncio.to_thread(self._tv_type, target)
         elif action == "tv_search":
-            return self._tv_search(target)
+            return await asyncio.to_thread(self._tv_search, target)
         elif action == "tv_play_media":
-            return self._tv_play_media(target)
+            return await asyncio.to_thread(self._tv_play_media, target)
         # ── Phase 6: Android TV ADB Skill Pack ──────────────────────────────
         elif action == "tv_power":
-            return self._tv_power()
+            return await asyncio.to_thread(self._tv_power)
         elif action == "tv_volume":
-            return self._tv_volume(target)
+            return await asyncio.to_thread(self._tv_volume, target)
         elif action == "tv_launch_app":
-            return self._tv_launch_app(target)
+            return await asyncio.to_thread(self._tv_launch_app, target)
         elif action == "morning_briefing":
-            return self._morning_briefing()
+            return await asyncio.to_thread(self._morning_briefing)
         elif action == "movie_protocol":
-            return self._movie_protocol()
+            # ADB + zeroconf + 5s+ blocking; offload.
+            return await asyncio.to_thread(self._movie_protocol)
         elif action == "sleep_protocol":
-            return self._sleep_protocol()
+            return await asyncio.to_thread(self._sleep_protocol)
         elif action == "os_control":
             if target == "lock_screen":
                 return self.os_agent.lock_workstation()
@@ -490,9 +492,9 @@ class ActionEngine:
             else:
                 gui_type  = target
                 gui_query = payload.get("query", "")
-            return self.human_gui_agent.execute_gui_action(gui_type, gui_query)
+            return await asyncio.to_thread(self.human_gui_agent.execute_gui_action, gui_type, gui_query)
         elif action == "native_app_launcher":
-            return self._native_app_launcher(target)
+            return await asyncio.to_thread(self._native_app_launcher, target)
         elif action == "enable_focus_mode":
             return "Focus mode enabled. Notifications silenced."
         elif action == "disable_focus_mode":
@@ -513,7 +515,8 @@ class ActionEngine:
                 # Default behaviour: do NOT force-overwrite. Let the agent's pre-check
                 # detect existing files and bubble FILE_EXISTS back so we can ask.
                 self._refresh_launch_session_target()
-                res = self.human_gui_agent.ghost_save_file(
+                res = await asyncio.to_thread(
+                    self.human_gui_agent.ghost_save_file,
                     target_dir_clean, filename_clean, force_overwrite=False,
                     app_hint=self._last_launched_app, app_pid=self._last_launched_pid,
                     app_hwnd=self._last_launched_hwnd,
@@ -623,7 +626,8 @@ class ActionEngine:
                     # else: treat the entire target as plain text, no shortcut
 
                 self._refresh_launch_session_target()
-                res = self.human_gui_agent.ghost_type(
+                res = await asyncio.to_thread(
+                    self.human_gui_agent.ghost_type,
                     text_to_type, shortcut,
                     app_hint=self._last_launched_app, app_pid=self._last_launched_pid,
                     app_hwnd=self._last_launched_hwnd,
@@ -649,7 +653,11 @@ class ActionEngine:
                 return "Ghost Type encountered an issue, sir."
         elif action == "agentic_gui_task":
             print(f"[ACTION ENGINE] Dispatching to HumanGUIAgent (Internal-First → Vision fallback): '{target}'")
-            result = self.human_gui_agent.execute_autonomous_task(target, self.human_gui_agent.call_vision_api)
+            # execute_autonomous_task runs a 30s+ vision loop — MUST be offloaded.
+            result = await asyncio.to_thread(
+                self.human_gui_agent.execute_autonomous_task,
+                target, self.human_gui_agent.call_vision_api,
+            )
             print(f"[ACTION ENGINE] HumanGUIAgent result: {result[:120]}")
             return result
         elif action == "read_screen":
@@ -717,7 +725,7 @@ class ActionEngine:
             return self._github_diff(target)
         # ── Phase 8.2: OS Macro Engine ────────────────────────────────────────
         elif action == "os_macro":
-            return self._os_macro(target)
+            return await asyncio.to_thread(self._os_macro, target)
         # ── Generative HUD: render structured data as a chart on the HUD ─────
         elif action == "render_chart":
             return self._render_chart(target)
@@ -1995,18 +2003,68 @@ class ActionEngine:
     # --- OS ACTIONS ---
     def _native_app_launcher(self, app_name: str) -> str:
         """
-        Phase 8.6.10 Smart Launcher — fire-and-forget.
+        Phase 8.6.10 Smart Launcher — with post-launch window tracking.
         Delegates resolution + execution to OSAgent.launch_application():
           1. Queries the startup AppIndexer (Start Menu .lnk + Registry App Paths).
           2. Fuzzy-matches the spoken name via difflib (typo-tolerant).
           3. Launches via os.startfile() — ShellExecute — handles UWP, exe, lnk.
 
-        NO post-launch GUI assertions. os.startfile() is fire-and-forget; we
-        do NOT attempt to capture hwnd/pid or click the screen after launch.
-        This eliminates UAC focus races and GUI interference on every launch.
+        After launch, captures the new window's hwnd/pid via post_launch_focus
+        so that subsequent ghost_type / ghost_save_file calls can target the
+        correct window, preventing the 'open X and write Y into random window' bug.
         """
+        import psutil as _psutil
+
         print(f"[ACTION ENGINE] Native App Launcher for: {app_name}")
+
+        # Snapshot PIDs before launch to detect the new process
+        pids_before = {p.pid for p in _psutil.process_iter()}
+
         result_str = self.os_agent.launch_application(app_name)
+
+        # If the launch itself reported failure, don't bother tracking
+        if self._is_failure(result_str, "native_app_launcher"):
+            return result_str
+
+        # Record the app name for session tracking (even before window resolves)
+        self._last_launched_app = app_name
+        self._last_launched_started_at = time.time()
+
+        # Try to identify the new PID
+        time.sleep(0.6)
+        pids_after = {p.pid for p in _psutil.process_iter()}
+        new_pids = pids_after - pids_before
+
+        launched_pid = None
+        if new_pids:
+            # Prefer the new PID whose process name resembles the app
+            app_lower = app_name.lower().replace(" ", "")
+            for pid in new_pids:
+                try:
+                    proc = _psutil.Process(pid)
+                    pname = proc.name().lower().replace(" ", "")
+                    if app_lower in pname or pname.replace(".exe", "") in app_lower:
+                        launched_pid = pid
+                        break
+                except (_psutil.NoSuchProcess, _psutil.AccessDenied):
+                    continue
+            if not launched_pid:
+                # Take the first new PID as best guess
+                launched_pid = next(iter(new_pids))
+
+        # Use post_launch_focus to resolve hwnd and assert focus
+        if launched_pid:
+            self._last_launched_pid = launched_pid
+        focus_result = self.human_gui_agent.post_launch_focus(app_name, pid=launched_pid)
+        self._last_launched_hwnd = focus_result.get("hwnd")
+        if focus_result.get("pid"):
+            self._last_launched_pid = focus_result["pid"]
+
+        print(
+            f"[ACTION ENGINE] Post-launch tracking: app='{app_name}', "
+            f"pid={self._last_launched_pid}, hwnd={self._last_launched_hwnd}"
+        )
+
         return result_str
 
 
@@ -2015,19 +2073,30 @@ class ActionEngine:
         """Translates app names to Windows executables and launches them safely via GUI Search Fallback."""
         print(f"[ACTION ENGINE] Launching app: {app_name}")
         app_name_lower = app_name.lower().strip()
-        
-        # --- FIX: Web-based apps that don't have .exe files ---
-        web_apps = {
-            "youtube": "https://www.youtube.com",
-            "spotify": "https://open.spotify.com",
-            "gmail": "https://mail.google.com",
-            "google": "https://www.google.com",
-        }
-        for key, url in web_apps.items():
-            if key in app_name_lower:
+
+        # --- Known desktop apps — short-circuit past web gate ---
+        # Prevents "open google chrome" from matching the "google" web entry.
+        _KNOWN_DESKTOP_APPS = frozenset({
+            "google chrome", "chrome",
+            "microsoft edge", "edge",
+            "firefox", "mozilla firefox",
+            "spotify", "discord", "slack",
+            "telegram", "telegram desktop",
+        })
+        if app_name_lower not in _KNOWN_DESKTOP_APPS:
+            # --- FIX: Web-based apps that don't have .exe files ---
+            # EXACT match only — no substring matching.
+            web_apps = {
+                "youtube": "https://www.youtube.com",
+                "spotify": "https://open.spotify.com",
+                "gmail": "https://mail.google.com",
+                "google": "https://www.google.com",
+            }
+            if app_name_lower in web_apps:
+                url = web_apps[app_name_lower]
                 webbrowser.open(url)
-                return f"Opening {key.title()} in your browser, sir."
-                
+                return f"Opening {app_name_lower.title()} in your browser, sir."
+
         # Route to Human GUI Agent for physical OS automation
         return self.human_gui_agent.execute_gui_action("smart_open_app", app_name)
 
@@ -2112,18 +2181,14 @@ class ActionEngine:
         # no dedicated process to kill; attempting to do so would risk terminating
         # the user's entire Chrome/Edge session.
         _WEB_ONLY_SERVICES: frozenset[str] = frozenset({
-            "youtube", "spotify web", "spotify", "gmail", "google drive",
-            "google docs", "google sheets", "google slides", "netflix",
-            "prime video", "hotstar", "github", "chatgpt", "claude",
+            "youtube", "spotify web", "spotify", "gmail", "google",
+            "google drive", "google docs", "google sheets", "google slides",
+            "netflix", "prime video", "hotstar", "github", "chatgpt", "claude",
         })
-        # Match: spoken name IS a web service, but user does NOT have a desktop
-        # executable installed (i.e. it was opened via webbrowser.open fallback).
-        # We check whether the alias table maps it to a real .exe — if not, it's
-        # a pure web app and we refuse gracefully.
-        _is_web_launch = any(
-            svc in app_lower or app_lower in svc
-            for svc in _WEB_ONLY_SERVICES
-        )
+        # Match: spoken name IS a web service — EXACT match only.
+        # "google chrome" must NOT match "google" via substring; it's a real
+        # desktop app with a killable process.
+        _is_web_launch = app_lower in _WEB_ONLY_SERVICES
         if _is_web_launch:
             # Extra check: if the alias table has a local .exe for this name
             # (e.g. "spotify" → "Spotify.exe" desktop app), allow the kill.

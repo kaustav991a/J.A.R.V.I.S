@@ -47,7 +47,7 @@ Two processes, connected over WebSockets:
 | Vision | Ultralytics YOLOv8 + DeepFace + OpenCV |
 | Vector DB | ChromaDB |
 | Backend | FastAPI + Uvicorn + WebSockets |
-| Automation | pyautogui, pytesseract, psutil, ADB |
+| Automation | pyautogui, pywinauto (UIA), pytesseract, psutil, Playwright, ADB |
 | Frontend | React 18 + Vite + SCSS + GSAP (+ Electron shell) |
 
 ---

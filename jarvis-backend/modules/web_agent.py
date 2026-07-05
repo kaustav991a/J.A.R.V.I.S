@@ -150,8 +150,21 @@ class WebAgent:
         try:
             await self._init_browser()
             selector = f"[data-jarvis-id='{element_id}']"
-            # Wait a tiny bit just in case
-            await self._page.wait_for_selector(selector, state="attached", timeout=5000)
+            # Wait for element to be VISIBLE, not just attached — prevents clicking
+            # hidden or overlaid elements that exist in the DOM but can't be interacted with.
+            try:
+                await self._page.wait_for_selector(selector, state="visible", timeout=5000)
+            except Exception:
+                # Stale-ID recovery: the DOM likely re-rendered since the IDs were handed
+                # out. Re-marking renumbers every data-jarvis-id from 1, so the OLD id can
+                # now point at a different element (or nothing) — blindly retrying the same
+                # selector would risk clicking the wrong thing. Instead, hand back a fresh
+                # element map and require the agent to re-issue with a current ID.
+                print(f"[WEB AGENT] Element {element_id} not visible — DOM changed; returning refreshed elements.", flush=True)
+                fresh_state = await self._get_page_state()
+                return (f"Element ID {element_id} is no longer valid — the page changed since "
+                        f"the IDs were listed. The element IDs below are current; re-issue the "
+                        f"click with a matching ID.\n\n{fresh_state}")
             await self._page.click(selector, timeout=5000)
             return await self._get_page_state()
         except Exception as e:
@@ -162,10 +175,29 @@ class WebAgent:
         try:
             await self._init_browser()
             selector = f"[data-jarvis-id='{element_id}']"
-            await self._page.wait_for_selector(selector, state="attached", timeout=5000)
+            # Wait for element to be VISIBLE (not just attached).
+            try:
+                await self._page.wait_for_selector(selector, state="visible", timeout=5000)
+            except Exception:
+                # Stale-ID recovery: re-marking renumbers every data-jarvis-id from 1, so
+                # the old id can now point at a different element — don't blind-retry the
+                # dead selector (risks typing into the wrong field). Return a fresh element
+                # map and require the agent to re-issue with a current ID.
+                print(f"[WEB AGENT] Element {element_id} not visible — DOM changed; returning refreshed elements.", flush=True)
+                fresh_state = await self._get_page_state()
+                return (f"Element ID {element_id} is no longer valid — the page changed since "
+                        f"the IDs were listed. The element IDs below are current; re-issue the "
+                        f"type with a matching ID.\n\n{fresh_state}")
             await self._page.fill(selector, text, timeout=5000)
-            # Send Enter just in case it's a search box
-            await self._page.keyboard.press("Enter")
+            # Only press Enter for search-type inputs — unconditional Enter caused
+            # unintended form submissions when the user just wanted to fill a field.
+            try:
+                el_type = await self._page.get_attribute(selector, "type") or ""
+                el_role = await self._page.get_attribute(selector, "role") or ""
+                if el_type.lower() == "search" or el_role.lower() == "searchbox":
+                    await self._page.keyboard.press("Enter")
+            except Exception:
+                pass  # non-critical; skip Enter if attribute read fails
             return await self._get_page_state()
         except Exception as e:
             return f"Error typing into element ID {element_id}: {e}"

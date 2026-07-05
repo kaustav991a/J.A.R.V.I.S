@@ -321,21 +321,145 @@ class OSAgent:
             return "Returning to the previous track."
         return f"Unknown media command: {command}"
 
+    # ── Private: Core Audio mute-state reader (no external deps) ──────────────
+
+    @staticmethod
+    def _get_mute_state() -> "bool | None":
+        """
+        Read the current system mute state via the Windows Core Audio
+        IAudioEndpointVolume COM interface, using only ctypes (no pycaw /
+        comtypes). Returns True if muted, False if unmuted, or None if the
+        API is unavailable (e.g. headless / Wine).
+        """
+        try:
+            import ctypes
+            import ctypes.wintypes
+
+            # ── GUID structure ────────────────────────────────────────────
+            class GUID(ctypes.Structure):
+                _fields_ = [
+                    ("Data1", ctypes.c_ulong),
+                    ("Data2", ctypes.c_ushort),
+                    ("Data3", ctypes.c_ushort),
+                    ("Data4", ctypes.c_ubyte * 8),
+                ]
+
+            def _guid(d1, d2, d3, *d4):
+                return GUID(d1, d2, d3, (ctypes.c_ubyte * 8)(*d4))
+
+            CLSID_MMDeviceEnumerator = _guid(
+                0xBCDE0395, 0xE52F, 0x467C, 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E)
+            IID_IMMDeviceEnumerator = _guid(
+                0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6)
+            IID_IAudioEndpointVolume = _guid(
+                0x5CDF2C82, 0x841E, 0x4546, 0x97, 0x22, 0x0C, 0xF7, 0x40, 0x78, 0x22, 0x9A)
+
+            ole32 = ctypes.windll.ole32
+            ole32.CoInitialize(None)
+
+            enumerator = ctypes.c_void_p()
+            hr = ole32.CoCreateInstance(
+                ctypes.byref(CLSID_MMDeviceEnumerator),
+                None, 1,  # CLSCTX_INPROC_SERVER
+                ctypes.byref(IID_IMMDeviceEnumerator),
+                ctypes.byref(enumerator),
+            )
+            if hr != 0:
+                return None
+
+            # IMMDeviceEnumerator::GetDefaultAudioEndpoint(eRender=0, eConsole=0, ...)
+            vtbl = ctypes.cast(
+                ctypes.cast(enumerator, ctypes.POINTER(ctypes.c_void_p))[0],
+                ctypes.POINTER(ctypes.c_void_p * 20),
+            ).contents
+            GetDefaultAudioEndpoint = ctypes.CFUNCTYPE(
+                ctypes.HRESULT, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
+                ctypes.POINTER(ctypes.c_void_p),
+            )(vtbl[4])
+            device = ctypes.c_void_p()
+            hr = GetDefaultAudioEndpoint(enumerator, 0, 0, ctypes.byref(device))
+            if hr != 0:
+                return None
+
+            # IMMDevice::Activate(IID_IAudioEndpointVolume, CLSCTX_ALL=23, ...)
+            vtbl_dev = ctypes.cast(
+                ctypes.cast(device, ctypes.POINTER(ctypes.c_void_p))[0],
+                ctypes.POINTER(ctypes.c_void_p * 20),
+            ).contents
+            Activate = ctypes.CFUNCTYPE(
+                ctypes.HRESULT, ctypes.c_void_p,
+                ctypes.POINTER(GUID),  # REFIID
+                ctypes.c_uint,         # CLSCTX
+                ctypes.c_void_p,       # activation params
+                ctypes.POINTER(ctypes.c_void_p),
+            )(vtbl_dev[3])
+            endpoint_vol = ctypes.c_void_p()
+            hr = Activate(
+                device,
+                ctypes.byref(IID_IAudioEndpointVolume),
+                23, None, ctypes.byref(endpoint_vol),
+            )
+            if hr != 0:
+                return None
+
+            # IAudioEndpointVolume::GetMute(pbMute)
+            # IAudioEndpointVolume vtable layout (0-based):
+            #   0-2: IUnknown (QueryInterface, AddRef, Release)
+            #   3: RegisterControlChangeNotify
+            #   4: UnregisterControlChangeNotify
+            #   5: GetChannelCount
+            #   6: SetMasterVolumeLevel
+            #   7: SetMasterVolumeLevelScalar
+            #   8: GetMasterVolumeLevel
+            #   9: GetMasterVolumeLevelScalar
+            #  10: SetChannelVolumeLevel
+            #  11: SetChannelVolumeLevelScalar
+            #  12: GetChannelVolumeLevel
+            #  13: GetChannelVolumeLevelScalar
+            #  14: SetMute
+            #  15: GetMute
+            vtbl_vol = ctypes.cast(
+                ctypes.cast(endpoint_vol, ctypes.POINTER(ctypes.c_void_p))[0],
+                ctypes.POINTER(ctypes.c_void_p * 20),
+            ).contents
+            GetMute = ctypes.CFUNCTYPE(
+                ctypes.HRESULT, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+            )(vtbl_vol[15])
+            muted = ctypes.c_int()
+            hr = GetMute(endpoint_vol, ctypes.byref(muted))
+            if hr != 0:
+                return None
+
+            return bool(muted.value)
+
+        except Exception as e:
+            print(f"[OS_AGENT] Core Audio mute-state read failed (non-fatal): {e}", flush=True)
+            return None
+
     # ── Media control ────────────────────────────────────────────────────────
 
     def control_media(self, command: str) -> str:
         """
         Controls system volume and media playback.
         Volume → ctypes keybd_event (SMTC has no volume API).
+        Mute/Unmute → state-aware via Core Audio API; falls back to blind toggle.
         Playback → SMTC API (winrt) with legacy keybd_event fallback.
         """
         command = command.lower().strip()
 
         try:
             if command == "mute":
+                # Read actual state — only toggle if currently unmuted
+                state = self._get_mute_state()
+                if state is True:
+                    return "System audio is already muted."
                 self._keypress(self.VK_VOLUME_MUTE)
                 return "System audio muted."
             elif command == "unmute":
+                # Read actual state — only toggle if currently muted
+                state = self._get_mute_state()
+                if state is False:
+                    return "System audio is already unmuted."
                 self._keypress(self.VK_VOLUME_MUTE)
                 return "System audio unmuted."
             elif command == "volume_up":
@@ -413,14 +537,14 @@ class OSAgent:
         if q_clean in _BLOCKED_APPS:
             return "Security Protocol: Access to command line interfaces is restricted, Sir."
 
-        # ── 2. Web-first gate (Bug 3 fix) ────────────────────────────────────
-        # These are pure web services. Even if a pinned .lnk exists in Start
-        # Menu, we MUST use the OS default browser so the correct user profile
-        # is used. webbrowser.open() always respects the OS default browser.
-        _WEB_ONLY: dict[str, str] = {
+        # ── 2. Web service URL map ───────────────────────────────────────────
+        # Used in two places: (a) the web-first gate below for pure web services,
+        # and (b) the desktop-not-found fallback at the end for dual-listed apps.
+        _WEB_URLS: dict[str, str] = {
+            # Pure web services (no desktop app) — caught by the web-first gate.
             "youtube":       "https://www.youtube.com",
-            "spotify":       "https://open.spotify.com",
             "gmail":         "https://mail.google.com",
+            "google":        "https://www.google.com",
             "google drive":  "https://drive.google.com",
             "google docs":   "https://docs.google.com",
             "google sheets": "https://sheets.google.com",
@@ -431,18 +555,50 @@ class OSAgent:
             "github":        "https://github.com",
             "chatgpt":       "https://chat.openai.com",
             "claude":        "https://claude.ai",
+            # Dual-listed apps (desktop-preferred). These are ALSO in
+            # _KNOWN_DESKTOP_APPS so the web-first gate is skipped and the desktop
+            # app is tried first; if it isn't installed we fall back to the web
+            # version at the end instead of failing with "couldn't locate".
+            "spotify":         "https://open.spotify.com",
+            "telegram":        "https://web.telegram.org",
+            "telegram desktop":"https://web.telegram.org",
+            "whatsapp":        "https://web.whatsapp.com",
+            "whatsapp desktop":"https://web.whatsapp.com",
+            "discord":         "https://discord.com/app",
+            "slack":           "https://app.slack.com",
         }
-        for web_key, url in _WEB_ONLY.items():
-            if web_key in q_clean or q_clean in web_key:
-                print(
-                    f"[OS_AGENT] Web-first gate: '{app_name}' -> {url} "
-                    f"(bypassing AppIndexer to preserve browser profile)",
-                    flush=True,
-                )
-                webbrowser.open(url)
-                return f"Opening {app_name.title()} in your browser, Sir."
 
-        # ── 3. AppIndexer — installed desktop apps ───────────────────────────
+        # ── 3. Web-first gate (Bug 3 fix, substring-hijack hardened) ────────
+        # Pure web services go straight to the OS default browser so the correct
+        # user profile is used, even if a pinned .lnk exists in Start Menu.
+        #
+        # IMPORTANT: Known desktop apps whose names CONTAIN a web-service
+        # substring (e.g. "google chrome" contains "google") — and dual-listed
+        # apps we prefer to launch natively (Spotify, Telegram, …) — must be
+        # checked FIRST so they short-circuit past the web gate into AppIndexer.
+        _KNOWN_DESKTOP_APPS: frozenset[str] = frozenset({
+            "google chrome", "chrome",
+            "microsoft edge", "edge",
+            "firefox", "mozilla firefox",
+            "spotify",              # Spotify desktop app (if installed)
+            "discord",
+            "slack",
+            "telegram", "telegram desktop",
+            "whatsapp", "whatsapp desktop",
+        })
+        # EXACT match on the full cleaned name — NOT substring.
+        # "google chrome" must NOT match the "google" key.
+        if q_clean not in _KNOWN_DESKTOP_APPS and q_clean in _WEB_URLS:
+            url = _WEB_URLS[q_clean]
+            print(
+                f"[OS_AGENT] Web-first gate: '{app_name}' -> {url} "
+                f"(bypassing AppIndexer to preserve browser profile)",
+                flush=True,
+            )
+            webbrowser.open(url)
+            return f"Opening {app_name.title()} in your browser, Sir."
+
+        # ── 4. AppIndexer — installed desktop apps ───────────────────────────
         indexer = AppIndexer.get()
         matched_key, resolved_path = indexer.resolve(app_name)
 
@@ -458,6 +614,22 @@ class OSAgent:
             except Exception as e:
                 print(f"[OS_AGENT] os.startfile failed for '{resolved_path}': {e}", flush=True)
                 return f"I found '{app_name}' but couldn't open it: {e}"
+
+        # ── 5. Web fallback for dual-listed apps not installed as desktop ─────
+        # e.g. "open spotify" with no Spotify desktop app → open.spotify.com,
+        # rather than failing outright. Honest about the fallback.
+        if q_clean in _WEB_URLS:
+            url = _WEB_URLS[q_clean]
+            print(
+                f"[OS_AGENT] '{app_name}' not installed as desktop app; "
+                f"falling back to web -> {url}",
+                flush=True,
+            )
+            webbrowser.open(url)
+            return (
+                f"{app_name.title()} isn't installed as a desktop app, "
+                f"so I opened it in your browser, Sir."
+            )
 
         print(f"[OS_AGENT] '{app_name}' not found in index (query='{q_clean}').", flush=True)
         return f"I couldn't locate '{app_name}' on your system, Sir."

@@ -25,6 +25,21 @@ from modules.groq_key_manager import (
 
 pyautogui.FAILSAFE = True
 
+# ── DPI awareness: ensure pyautogui/ImageGrab coords match physical pixels ────
+# Without this, on high-DPI displays (125%/150% scaling), ImageGrab captures
+# at the virtualized resolution but pyautogui clicks at physical resolution,
+# causing coordinates to drift. PROCESS_PER_MONITOR_DPI_AWARE (2) gives us
+# the real pixel grid on every monitor.
+try:
+    import ctypes as _ctypes_dpi
+    _ctypes_dpi.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+except Exception:
+    try:
+        import ctypes as _ctypes_dpi
+        _ctypes_dpi.windll.user32.SetProcessDPIAware()  # fallback for Win8.0
+    except Exception:
+        pass
+
 load_dotenv(override=True)
 
 if has_groq_keys():
@@ -260,6 +275,89 @@ class HumanGUIAgent:
             return resolved
         return {"focused": focused, "hwnd": None, "pid": None, "title": ""}
 
+    def _uia_set_control_text(self, text: str, app_hint: str = None,
+                              app_pid: int = None, app_hwnd: int = None) -> bool:
+        """
+        Deterministic, focus-independent text injection via UI Automation.
+
+        Connects to the target window by HWND (preferred) or PID, locates the
+        primary editable control (Edit / Document), and sets its value directly
+        through the UIA ValuePattern — no screen coordinates, no keystroke focus
+        race, no char-by-char timing. This is the most accurate path and is tried
+        FIRST; on any failure (control not found, read-only ValuePattern on some
+        Win11 Notepad builds, COM error) it returns False so ghost_type falls back
+        to keyboard.send_keys.
+
+        Returns True only when the control's value was actually set.
+        """
+        try:
+            from pywinauto.application import Application
+        except ImportError:
+            return False
+
+        app = None
+        try:
+            if app_hwnd:
+                try:
+                    app = Application(backend="uia").connect(handle=app_hwnd, timeout=2)
+                except Exception:
+                    app = None
+            if app is None and app_pid:
+                app = Application(backend="uia").connect(process=app_pid, timeout=2)
+            if app is None:
+                return False
+
+            win = app.window(handle=app_hwnd) if app_hwnd else app.top_window()
+
+            # Win11 Notepad exposes its editor as a "Document" control (not "Edit"),
+            # and neither exposes a set_text() wrapper method — but both support the
+            # UIA ValuePattern. Classic Win32 edits expose "Edit". Try both.
+            wrapper = None
+            for ctype in ("Edit", "Document"):
+                try:
+                    cand = win.child_window(control_type=ctype, found_index=0)
+                    if cand.exists(timeout=1):
+                        wrapper = cand.wrapper_object()
+                        break
+                except Exception:
+                    continue
+            if wrapper is None:
+                return False
+
+            try:
+                wrapper.set_focus()
+            except Exception:
+                pass  # value-set does not require focus; best-effort only
+
+            # Drive the ValuePattern directly. This writes the string VERBATIM —
+            # no send_keys escaping artifacts (e.g. '&' → '&&', '+^%~(){}' mangling).
+            iface = getattr(wrapper, "iface_value", None)
+            if iface is None:
+                return False
+            try:
+                if iface.CurrentIsReadOnly:
+                    return False  # read-only control (e.g. TextPattern-only editors)
+            except Exception:
+                pass
+            iface.SetValue(text)
+
+            # Verify the value actually took (newline-agnostic: SetValue may store
+            # '\n' as '\r'). Compare a newline-stripped prefix.
+            try:
+                current = iface.CurrentValue or ""
+                probe = text[:32].replace("\n", "").replace("\r", "")
+                seen = current.replace("\n", "").replace("\r", "")
+                if probe and probe not in seen:
+                    return False
+            except Exception:
+                pass  # no readable value — trust SetValue's own error signalling
+
+            print("[HUMAN GUI AGENT] Text injected via UIA ValuePattern (deterministic path).")
+            return True
+        except Exception as e:
+            print(f"[HUMAN GUI AGENT] UIA set_text failed (falling back to keyboard): {e}")
+            return False
+
     def ghost_type(self, text_to_type: str, shortcut_keys: str = None, app_hint: str = None,
                    app_pid: int = None, app_hwnd: int = None) -> str:
         """
@@ -346,17 +444,27 @@ class HumanGUIAgent:
 
             print(f"[HUMAN GUI AGENT] Ghost Type initiated. Text length: {len(text_to_type)}")
 
-            # Sanitize text for pywinauto special characters and newlines
-            sanitized_text = ""
-            for char in text_to_type:
-                if char in "+^%~{}()":
-                    sanitized_text += f"{{{char}}}"
-                elif char == '\n':
-                    sanitized_text += "{ENTER}"
-                else:
-                    sanitized_text += char
+            # --- Primary path: deterministic UIA ValuePattern injection ---
+            # Focus-independent and coordinate-free; targets the exact control in
+            # the exact (pid/hwnd) window. Falls back to keyboard on any failure.
+            injected = self._uia_set_control_text(
+                text_to_type, app_hint=app_hint, app_pid=app_pid, app_hwnd=app_hwnd
+            )
 
-            keyboard.send_keys(sanitized_text, with_spaces=True)
+            if not injected:
+                # --- Fallback: keyboard.send_keys into the focused window ---
+                print("[HUMAN GUI AGENT] UIA path unavailable — using keyboard.send_keys fallback.")
+                # Sanitize text for pywinauto special characters and newlines
+                sanitized_text = ""
+                for char in text_to_type:
+                    if char in "+^%~{}()":
+                        sanitized_text += f"{{{char}}}"
+                    elif char == '\n':
+                        sanitized_text += "{ENTER}"
+                    else:
+                        sanitized_text += char
+
+                keyboard.send_keys(sanitized_text, with_spaces=True)
 
             # Fire shortcut if provided
             if shortcut_keys:
@@ -498,7 +606,13 @@ class HumanGUIAgent:
             # First check if a Save dialog is already up; if not, focus the target
             # app and send Ctrl+S to summon it.
             fg_title_now = win32gui.GetWindowText(win32gui.GetForegroundWindow())
-            if not re.match(r"^Save(\s|$)", fg_title_now, re.IGNORECASE):
+            fg_class_now = win32gui.GetClassName(win32gui.GetForegroundWindow())
+            # Detect Save dialog by title (English) OR window class #32770 (common dialog — locale-independent)
+            _is_save_dialog = (
+                re.match(r"^Save(\s|$)", fg_title_now, re.IGNORECASE)
+                or (fg_class_now == "#32770" and any(kw in fg_title_now.lower() for kw in ("save", "speichern", "enregistrer", "guardar")))
+            )
+            if not _is_save_dialog:
                 # Bring the app back to focus so Ctrl+S goes to the right window.
                 if app_hint:
                     print(
@@ -525,8 +639,14 @@ class HumanGUIAgent:
             for _ in range(25):
                 hwnd = win32gui.GetForegroundWindow()
                 title = win32gui.GetWindowText(hwnd)
-                # Match "Save As", "Save as", or just "Save"
-                if re.match(r"^Save(\s|$)", title, re.IGNORECASE):
+                wclass = win32gui.GetClassName(hwnd)
+                # Match by title (English "Save As"/"Save") OR by window class #32770
+                # (the standard common dialog class — works on any locale)
+                is_save = (
+                    re.match(r"^Save(\s|$)", title, re.IGNORECASE)
+                    or (wclass == "#32770" and any(kw in title.lower() for kw in ("save", "speichern", "enregistrer", "guardar")))
+                )
+                if is_save:
                     dialog_hwnd = hwnd
                     dialog_title = title
                     break
@@ -546,28 +666,40 @@ class HumanGUIAgent:
                 print(f"[HUMAN GUI AGENT] Could not raise dialog (non-fatal): {e}")
 
             # ── Step 2: Put full path into the File name field ─────────────────────
+            # NOTE: UIA ValuePattern is NOT used here. The Save-As dialog's file-name
+            # control rejects ValuePattern.SetValue ("operation canceled by the user")
+            # on Win11, and a failed attempt disturbs the working clipboard path. So
+            # this dialog stays clipboard-first; UIA is used only for the app's own
+            # editor surface in ghost_type (where it is reliable).
+            #
             # Prefer clipboard paste: pywinauto send_keys can corrupt '\\' in Windows
             # paths (Notepad then validates a bogus path like C:\\Kaustav\\Desktop\\...).
             prev_clip = None
             used_clipboard = False
-            try:
-                win32clipboard.OpenClipboard()
+            # Retry OpenClipboard up to 5 times — another app may hold the lock briefly
+            for _clip_attempt in range(5):
                 try:
-                    if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-                        prev_clip = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-                except Exception:
-                    prev_clip = None
-                win32clipboard.EmptyClipboard()
-                win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, absolute_path)
-                used_clipboard = True
-                print("[HUMAN GUI AGENT] Ghost Save using clipboard paste for path.")
-            except Exception as e:
-                print(f"[HUMAN GUI AGENT] Clipboard failed, using key fallback: {e}")
-            finally:
-                try:
-                    win32clipboard.CloseClipboard()
-                except Exception:
-                    pass
+                    win32clipboard.OpenClipboard()
+                    try:
+                        if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                            prev_clip = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                    except Exception:
+                        prev_clip = None
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, absolute_path)
+                    used_clipboard = True
+                    print("[HUMAN GUI AGENT] Ghost Save using clipboard paste for path.")
+                    break
+                except Exception as e:
+                    if _clip_attempt < 4:
+                        time.sleep(0.1)  # short retry delay
+                    else:
+                        print(f"[HUMAN GUI AGENT] Clipboard failed after 5 attempts, using key fallback: {e}")
+                finally:
+                    try:
+                        win32clipboard.CloseClipboard()
+                    except Exception:
+                        pass
 
             try:
                 keyboard.send_keys("^a", pause=0.05)
@@ -639,13 +771,20 @@ class HumanGUIAgent:
                         if os.path.isdir(target_dir):
                             now = time.time()
                             for entry in os.listdir(target_dir):
-                                if not entry.lower().startswith(base_name.lower()):
-                                    continue
                                 full = os.path.join(target_dir, entry)
-                                if os.path.isfile(full):
+                                if not os.path.isfile(full):
+                                    continue
+                                entry_stem, entry_ext = os.path.splitext(entry)
+                                # EXACT filename match (case-insensitive) — high confidence
+                                if entry.lower() == filename.lower():
                                     if now - os.path.getmtime(full) <= 30:
-                                        print(f"[HUMAN GUI AGENT] File verified by recent stem match → {full}")
+                                        print(f"[HUMAN GUI AGENT] File verified by exact name match → {full}")
                                         return "SUCCESS"
+                                # Same stem, different extension (e.g. Notepad appended .txt)
+                                # — only within 5s to reduce false-positive window
+                                elif entry_stem.lower() == base_name.lower() and now - os.path.getmtime(full) <= 5:
+                                    print(f"[HUMAN GUI AGENT] File verified by stem+ext match → {full}")
+                                    return "SUCCESS"
                     except Exception:
                         pass
 
@@ -1042,8 +1181,8 @@ Estimate X/Y coordinates from the red coordinate grid overlaid on the screenshot
             except Exception as e:
                 print(f"[HUMAN GUI AGENT] Fail-Safe Error: {e}")
             
-            # a. Take screenshot
-            screenshot = ImageGrab.grab()
+            # a. Take screenshot (all monitors — apps may be on secondary displays)
+            screenshot = ImageGrab.grab(all_screens=True)
             
             # Draw grid, resize, compress, and get scale factors
             base64_img, scale_x, scale_y = self.process_screenshot(screenshot)
@@ -1165,7 +1304,7 @@ Estimate X/Y coordinates from the red coordinate grid overlaid on the screenshot
         print(f"\n--- STAGE 3: ONE-SHOT VISION TEST ---")
         print(f"Task: {task_description}")
         
-        screenshot = ImageGrab.grab()
+        screenshot = ImageGrab.grab(all_screens=True)
         base64_img, scale_x, scale_y = self.process_screenshot(screenshot)
         
         prompt = self.get_system_prompt(task_description)
