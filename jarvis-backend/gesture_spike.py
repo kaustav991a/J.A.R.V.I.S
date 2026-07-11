@@ -28,7 +28,12 @@ import mediapipe as mp
 from mediapipe.tasks.python import vision, BaseOptions
 
 MODEL_PATH = "models/hand_landmarker.task"
-CAM_INDEX = 0
+# Camera source: USB index ("0", "1", …) or an IP-camera URL
+# (e.g. phone running IP Webcam: http://192.0.0.8:8080/video).
+# Pick with:  python gesture_spike.py <source>   or env JARVIS_CAM.
+import os
+_src = (sys.argv[1] if len(sys.argv) > 1 else os.getenv("JARVIS_CAM", "0")).strip()
+CAM_SOURCE = int(_src) if _src.isdigit() else _src
 FRAME_W, FRAME_H = 640, 480
 
 # Map only the middle of the camera frame to the whole screen so you don't
@@ -60,13 +65,19 @@ def map_to_screen(nx: float, ny: float) -> tuple[int, int]:
 
 
 def main() -> int:
-    cap = cv2.VideoCapture(CAM_INDEX, cv2.CAP_DSHOW)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+    if isinstance(CAM_SOURCE, int):
+        cap = cv2.VideoCapture(CAM_SOURCE, cv2.CAP_DSHOW)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+    else:
+        cap = cv2.VideoCapture(CAM_SOURCE)  # IP-camera / stream URL
     if not cap.isOpened():
-        print("FAIL: camera not available (is ambient_vision holding it? "
-              "stop the JARVIS backend first).")
+        print(f"FAIL: camera source not available: {CAM_SOURCE!r}\n"
+              "  - USB index: is a webcam plugged in? is another app holding it?\n"
+              "  - URL: is the phone camera app running and on the same network?\n"
+              "  usage: python gesture_spike.py [index | http://ip:port/video]")
         return 1
+    print(f"camera source: {CAM_SOURCE!r}")
 
     landmarker = vision.HandLandmarker.create_from_options(
         vision.HandLandmarkerOptions(

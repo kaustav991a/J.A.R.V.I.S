@@ -100,10 +100,18 @@ JARVIS-action bindings (e.g. thumbs-up = confirm a pending CONFIRM action).
   DPI-aware SetCursorPos). Move-only, no clicks. ESC quits. FPS overlay.
 - **Benchmark (headless, no camera):** 30 synthetic 640×480 frames → **~90 fps**
   on this CPU — G1 gate (≥20 fps) passed with 4× headroom.
-- **REMAINING (Kaustav, human-only):** stop the JARVIS backend (frees the
-  camera), run `venv\Scripts\python.exe gesture_spike.py`, check: FPS ≥ 20 with
-  a real hand, cursor lag feels ≤ ~100 ms, CPU < ~35 % of a core. Write the
-  numbers here. Then G2 starts.
+- ✅ **LIVE RUN PASSED (Kaustav, 2026-07-11 night):** camera = phone running
+  **IP Webcam** at `http://192.168.0.105:8080/video` (no USB webcam on this PC —
+  spike gained URL-source support: `gesture_spike.py <index|url>` or env
+  `JARVIS_CAM`). Results: **30–40 fps** (gate: ≥20 ✅), **CPU ~10 % max**
+  (gate: <35 % ✅), cursor tracks with **light lag** — attributed to the WiFi
+  MJPEG stream, not the tracking. **G1 GATE: PASSED → G2 is a go.**
+- G2 notes carried forward: (a) mitigate stream lag — request lower-res stream
+  (`/video?640x480`), drop stale frames (read-latest thread), consider phone on
+  5 GHz or USB tethering; (b) network gotcha hit during setup: the phone showed
+  its MOBILE-DATA ip (192.0.0.x) first — IP Webcam must be on the SAME Wi-Fi as
+  the PC (PC subnet 192.168.0.x); (c) improve the no-camera error message to
+  distinguish "no device present" from "device busy".
 
 ### Phase G2 — gesture engine + pointer backend (1–2 days)
 - `modules/gesture_engine.py`: state machine above; One-Euro filter; pinch
