@@ -1,4 +1,4 @@
-absl-py==2.4.0
+﻿absl-py==2.4.0
 adb_shell==0.4.4
 aiofiles==25.1.0
 aiogram==3.29.0
@@ -136,7 +136,7 @@ polars==1.41.2
 polars-runtime-32==1.41.2
 primp==1.3.1
 propcache==0.5.2
-protobuf==7.35.0
+protobuf==6.33.6
 proto-plus==1.28.0
 psutil==7.2.2
 pyasn1_modules==0.4.2
@@ -230,3 +230,11 @@ xxhash==3.7.1
 yarl==1.24.2
 zeroconf==0.149.16
 zstandard==0.25.0
+
+# Phase G1 (hand-gesture control, 2026-07-11) — Kaustav-approved installs.
+# protobuf pinned 6.33.6: the ONE version tensorflow(>=6.31), mediapipe and
+# the Gemini SDK all actually work with (empirically verified; 5.x breaks tf,
+# 7.x breaks nothing at runtime but conflicts on paper with the Gemini SDK).
+mediapipe==0.10.35
+opencv-contrib-python==5.0.0.93
+sounddevice==0.5.5

@@ -85,12 +85,25 @@ JARVIS-action bindings (e.g. thumbs-up = confirm a pending CONFIRM action).
 
 ## 4. Phased build
 
-### Phase G1 — feasibility spike (½ day)
-- Install approved deps; standalone script: camera → MediaPipe → draw landmarks +
-  move cursor with index finger. No clicks, no integration.
-- **Gate: measure** fps, end-to-end latency, and CPU % on THIS machine
-  (`model_complexity=0` vs `1`, 480p vs 720p). Proceed only if ≥ 20 fps at < 35 %
-  of one core. Record numbers in this file.
+### Phase G1 — feasibility spike (½ day) — ✅ BUILT 2026-07-11, awaiting Kaustav's live run
+- **DONE:** deps installed with Kaustav's approval and pinned in requirements.txt:
+  `mediapipe==0.10.35`, `opencv-contrib-python==5.0.0.93`, `sounddevice==0.5.5`,
+  and **protobuf re-pinned 7.35.0 → 6.33.6** — the ONE version where tensorflow
+  (DeepFace), mediapipe AND the Gemini SDK all work (5.x breaks tf/mediapipe
+  gencode; verified empirically: tf 2.21 imports, Gemini live call OK,
+  HandLandmarker initialises).
+- **NOTE: mediapipe 0.10.35 removed the legacy `solutions` API** — this plan's
+  code uses the Tasks API (`mediapipe.tasks.python.vision.HandLandmarker`).
+  Model downloaded to `jarvis-backend/models/hand_landmarker.task` (7.8 MB).
+- **DONE:** `jarvis-backend/gesture_spike.py` — camera → landmarker → cursor
+  follows index fingertip (mirror-corrected, margin-mapped, EMA-smoothed,
+  DPI-aware SetCursorPos). Move-only, no clicks. ESC quits. FPS overlay.
+- **Benchmark (headless, no camera):** 30 synthetic 640×480 frames → **~90 fps**
+  on this CPU — G1 gate (≥20 fps) passed with 4× headroom.
+- **REMAINING (Kaustav, human-only):** stop the JARVIS backend (frees the
+  camera), run `venv\Scripts\python.exe gesture_spike.py`, check: FPS ≥ 20 with
+  a real hand, cursor lag feels ≤ ~100 ms, CPU < ~35 % of a core. Write the
+  numbers here. Then G2 starts.
 
 ### Phase G2 — gesture engine + pointer backend (1–2 days)
 - `modules/gesture_engine.py`: state machine above; One-Euro filter; pinch
