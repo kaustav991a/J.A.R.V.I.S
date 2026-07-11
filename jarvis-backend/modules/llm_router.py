@@ -32,7 +32,9 @@ GROQ_MODEL        = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 # Gemini cloud fallback — separate org/quota from Groq, so a drained Groq daily
 # bucket escalates here instead of dying. Skipped automatically if GEMINI_API_KEY
 # is unset. Uses the legacy google-generativeai SDK (already a dependency).
-GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# "gemini-flash-latest" is Google's evergreen alias for the current flash model
+# — pinned ids (gemini-2.5-flash) get retired for new accounts and start 404ing.
+GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 # Lowered from 30s: a healthy local 8B returns its first token well under 15s.
 # If the local cortex can't meet this, the circuit breaker (below) routes to the
 # cloud instead of making every single call wait out a long timeout.
@@ -78,37 +80,57 @@ def _reset_ollama_breaker() -> None:
 # ===========================================================================
 # Routing decision
 # ===========================================================================
+def _gemini_keys() -> list[str]:
+    """All configured Gemini keys, rotation-ready. Merges GEMINI_API_KEYS
+    (comma-separated, one key per Google project/account — the free-tier quota
+    is per-PROJECT, so separate projects multiply headroom) with the legacy
+    single GEMINI_API_KEY. Order preserved, duplicates dropped."""
+    raw = (os.getenv("GEMINI_API_KEYS", "") + "," + os.getenv("GEMINI_API_KEY", ""))
+    seen: list[str] = []
+    for k in raw.split(","):
+        k = k.strip()
+        if k and k not in seen:
+            seen.append(k)
+    return seen
+
+
 def _gemini_configured() -> bool:
-    return bool(os.getenv("GEMINI_API_KEY", "").strip())
+    return bool(_gemini_keys())
+
+
+def _openrouter_configured() -> bool:
+    return bool(os.getenv("OPENROUTER_API_KEY", "").strip())
 
 
 def _route_order(complexity: str, model: str | None) -> list[str]:
     """
     Returns the ordered list of providers to attempt.
-    - A llava/vision model is pinned local-only (privacy + the cloud has no llava).
-    - 'heavy' tasks go cloud-first (extreme reasoning), local as a safety net.
-    - Otherwise local-first (default) unless JARVIS_LLM_MODE=cloud_first.
-    - Gemini sits between Groq and the local route as a separate-quota cloud fallback:
-      when Groq's daily bucket is drained it escalates to Gemini before the (slow,
-      CPU-bound) local model. Dropped entirely if GEMINI_API_KEY is unset.
-    - If the local circuit breaker is OPEN, the local route is dropped from text
-      routes entirely (vision still tries local — there's no cloud llava).
+
+    Phase 5 (2026-07-11, Kaustav-approved — reverses the earlier Groq-only
+    request now that the Gemini/OpenRouter keys are in hand): full free-tier
+    cascade so J.A.R.V.I.S. never goes dead when one provider's quota drains.
+
+    - A llava/vision model is pinned local-only (there's no cloud llava; the
+      Gemini-first VISION cascade lives in universal_vision_call instead).
+    - 'heavy' / cloud_first: groq → gemini → openrouter, local as last resort.
+      Groq stays PRIMARY (unbeatable latency for real-time voice); Gemini is
+      the best free reasoning fallback; OpenRouter :free is the aggregator
+      safety net (daily-capped, variable quality → last cloud stop).
+    - local_first (privacy default): ollama first, then the same cloud chain.
+    - Unconfigured providers are dropped; an OPEN local breaker drops ollama
+      from text routes.
     """
     if model and "llava" in model.lower():
         return ["ollama"]
-    # --- TEMPORARY (user request): Groq-only for all text reasoning ---
-    # "no gemini no local AI for now" — the local CPU model was slow and Gemini was
-    # an extra dependency the user wanted out of the path. Text routes to Groq only;
-    # vision (llava) still pins local above since there's no cloud llava.
-    # To restore the full Groq → Gemini → Ollama chain, delete this line.
-    return ["groq"]
     if complexity == "heavy" or LLM_MODE == "cloud_first":
-        order = ["groq", "gemini", "ollama"]
+        order = ["groq", "gemini", "openrouter", "ollama"]
     else:
-        order = ["ollama", "groq", "gemini"]  # local-first default
+        order = ["ollama", "groq", "gemini", "openrouter"]  # local-first default
 
     if not _gemini_configured():
         order = [p for p in order if p != "gemini"]
+    if not _openrouter_configured():
+        order = [p for p in order if p != "openrouter"]
     if _ollama_breaker_open():
         order = [p for p in order if p != "ollama"] or ["groq"]
     return order
@@ -147,6 +169,8 @@ def universal_llm_call(
                 return result
             elif name == "gemini":
                 return _call_gemini(messages, temperature, max_tokens, stream, json_mode, timeout)
+            elif name == "openrouter":
+                return _call_openrouter(messages, temperature, max_tokens, stream, json_mode, timeout)
             else:  # groq
                 return _call_groq(messages, temperature, max_tokens, stream, json_mode, timeout)
         except Exception as e:
@@ -268,25 +292,42 @@ def _call_groq(messages, temperature, max_tokens, stream, json_mode, timeout):
 
 
 # ===========================================================================
-# Provider: GEMINI CLOUD (separate-quota fallback)
+# Provider: GEMINI CLOUD (separate-quota fallback, key rotation)
 # ===========================================================================
-_gemini_ready = False
+# Phase 5: keys live in separate Google projects, so rotating on quota/auth
+# errors multiplies free-tier headroom (mirrors groq_key_manager's approach).
+_gemini_key_idx = 0
 
 
-def _ensure_gemini():
-    """Configure the Gemini SDK once; raise if no key so the router escalates onward."""
-    global _gemini_ready
+def _import_genai():
     import warnings
     warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
     import google.generativeai as genai
-
-    if not _gemini_ready:
-        key = os.getenv("GEMINI_API_KEY", "").strip()
-        if not key:
-            raise RuntimeError("GEMINI_API_KEY not set")
-        genai.configure(api_key=key)
-        _gemini_ready = True
     return genai
+
+
+def _run_with_gemini_rotation(fn):
+    """Run fn(genai) trying each configured Gemini key, starting from the last
+    one that worked. Rotates on ANY provider error (quota, auth, transient);
+    raises the last error only when every key failed so the router escalates."""
+    global _gemini_key_idx
+    keys = _gemini_keys()
+    if not keys:
+        raise RuntimeError("No Gemini keys configured (GEMINI_API_KEYS / GEMINI_API_KEY)")
+    genai = _import_genai()
+    last_err: Exception | None = None
+    for offset in range(len(keys)):
+        idx = (_gemini_key_idx + offset) % len(keys)
+        genai.configure(api_key=keys[idx])
+        try:
+            result = fn(genai)
+            _gemini_key_idx = idx  # sticky: keep using the key that worked
+            return result
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print(f"[ROUTER] Gemini key #{idx + 1}/{len(keys)} failed "
+                  f"({type(e).__name__}) — rotating.", flush=True)
+    raise last_err  # type: ignore[misc]
 
 
 def _split_messages_for_gemini(messages):
@@ -309,31 +350,188 @@ def _split_messages_for_gemini(messages):
 
 
 def _call_gemini(messages, temperature, max_tokens, stream, json_mode, timeout):
-    genai = _ensure_gemini()
     system_instruction, contents = _split_messages_for_gemini(messages)
 
     gen_cfg = {"temperature": temperature, "max_output_tokens": max_tokens}
     if json_mode:
         gen_cfg["response_mime_type"] = "application/json"
 
-    model_obj = genai.GenerativeModel(
-        GEMINI_MODEL, system_instruction=system_instruction, generation_config=gen_cfg
-    )
     req_opts = {"timeout": timeout}
 
     if not stream:
-        resp = model_obj.generate_content(contents, request_options=req_opts)
-        return (resp.text or "").strip()
+        def _once(genai):
+            model_obj = genai.GenerativeModel(
+                GEMINI_MODEL, system_instruction=system_instruction, generation_config=gen_cfg
+            )
+            resp = model_obj.generate_content(contents, request_options=req_opts)
+            return (resp.text or "").strip()
+        return _run_with_gemini_rotation(_once)
+
+    def _start(genai):
+        model_obj = genai.GenerativeModel(
+            GEMINI_MODEL, system_instruction=system_instruction, generation_config=gen_cfg
+        )
+        it = iter(model_obj.generate_content(contents, stream=True, request_options=req_opts))
+        # Pull the first chunk INSIDE the rotation so auth/quota errors rotate keys.
+        first = next(it, None)
+        return first, it
+
+    first_chunk, rest = _run_with_gemini_rotation(_start)
+
+    def _safe():
+        if first_chunk is not None:
+            yield getattr(first_chunk, "text", "") or ""
+        for chunk in rest:
+            yield getattr(chunk, "text", "") or ""
+    return _safe()
+
+
+# ===========================================================================
+# Provider: OPENROUTER (aggregator safety net — :free models, daily cap)
+# ===========================================================================
+OPENROUTER_URL = os.getenv("OPENROUTER_URL", "https://openrouter.ai/api/v1/chat/completions")
+# Individual :free models get rate-limited upstream or retired without notice,
+# so the provider walks this list (comma-separated, env-overridable) in order.
+# Verified available 2026-07-11.
+OPENROUTER_MODELS = [m.strip() for m in os.getenv(
+    "OPENROUTER_MODELS",
+    "openai/gpt-oss-120b:free,"
+    "qwen/qwen3-next-80b-a3b-instruct:free,"
+    "meta-llama/llama-3.3-70b-instruct:free,"
+    "nvidia/nemotron-nano-9b-v2:free",  # small but reliably uncongested tail
+).split(",") if m.strip()]
+
+
+def _call_openrouter(messages, temperature, max_tokens, stream, json_mode, timeout):
+    """OpenAI-compatible HTTP call to OpenRouter (no SDK dependency), trying
+    each configured :free model until one answers."""
+    last_err: Exception | None = None
+    for m in OPENROUTER_MODELS:
+        try:
+            return _call_openrouter_model(m, messages, temperature, max_tokens,
+                                          stream, json_mode, timeout)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print(f"[ROUTER] OpenRouter model '{m}' failed "
+                  f"({type(e).__name__}) — trying next free model.", flush=True)
+    raise last_err or RuntimeError("no OpenRouter models configured")
+
+
+def _call_openrouter_model(model, messages, temperature, max_tokens, stream, json_mode, timeout):
+    key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    msgs = messages
+    if json_mode and msgs and msgs[-1].get("role") == "user":
+        # Not every :free model honours response_format — belt and braces.
+        msgs = msgs[:-1] + [{
+            "role": "user",
+            "content": msgs[-1].get("content", "") + "\n\nRespond ONLY with valid JSON. No other text.",
+        }]
+
+    payload = {
+        "model": model,
+        "messages": msgs,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": stream,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        # Optional attribution headers OpenRouter recommends.
+        "X-Title": "JARVIS",
+    }
+
+    if not stream:
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        if "error" in data:
+            raise RuntimeError(f"OpenRouter error: {data['error']}")
+        return (data["choices"][0]["message"]["content"] or "").strip()
 
     def _gen():
-        for chunk in model_obj.generate_content(contents, stream=True, request_options=req_opts):
-            yield getattr(chunk, "text", "") or ""
+        with requests.post(OPENROUTER_URL, json=payload, headers=headers,
+                           stream=True, timeout=timeout) as r:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                text = line.decode("utf-8", errors="replace")
+                if not text.startswith("data: "):
+                    continue
+                chunk = text[6:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(chunk)["choices"][0]["delta"].get("content") or ""
+                except Exception:
+                    continue
+                if delta:
+                    yield delta
 
     g = _gen()
-    first = next(g, "")  # triggers the request; raises on auth/quota errors → escalate
+    first = next(g, "")  # triggers the request; raises on auth/limit errors → escalate
 
     def _safe():
         if first:
             yield first
         yield from g
     return _safe()
+
+
+# ===========================================================================
+# Vision cascade (Phase 5): Gemini flash first, local llava as offline fallback
+# ===========================================================================
+def universal_vision_call(prompt: str, img_b64: str,
+                          temperature: float = 0.2, max_tokens: int = 1024,
+                          timeout: float = 60.0) -> str:
+    """Describe/reason over one JPEG (base64) with the free-vision cascade.
+
+    Gemini flash is a big quality upgrade over local llava on this CPU-only
+    box, so it goes first; llava stays as the offline/no-key fallback. Returns
+    the model text, or raises if EVERY vision provider failed (callers keep
+    their own honest-failure handling).
+    """
+    last_err: Exception | None = None
+
+    if _gemini_configured():
+        try:
+            def _once(genai):
+                model_obj = genai.GenerativeModel(
+                    GEMINI_MODEL,
+                    generation_config={"temperature": temperature,
+                                       "max_output_tokens": max_tokens},
+                )
+                resp = model_obj.generate_content(
+                    [{"mime_type": "image/jpeg", "data": img_b64}, prompt],
+                    request_options={"timeout": timeout},
+                )
+                return (resp.text or "").strip()
+            out = _run_with_gemini_rotation(_once)
+            if out:
+                return out
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print(f"[ROUTER] Gemini vision failed ({type(e).__name__}: {e}) — "
+                  f"falling back to local llava.", flush=True)
+
+    # Offline fallback: local llava via Ollama /api/generate.
+    try:
+        resp = requests.post(
+            OLLAMA_URL.replace("/api/chat", "/api/generate"),
+            json={"model": VISION_MODEL, "prompt": prompt,
+                  "images": [img_b64], "stream": False},
+            timeout=max(timeout, 120.0),
+        )
+        resp.raise_for_status()
+        out = (resp.json().get("response") or "").strip()
+        if out:
+            return out
+        raise RuntimeError("llava returned empty response")
+    except Exception as e:  # noqa: BLE001
+        raise last_err or e

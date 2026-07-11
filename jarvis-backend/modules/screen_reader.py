@@ -2,10 +2,18 @@ import os
 import base64
 from io import BytesIO
 
-# Configuration toggle: Set to "ollama" down the line to use local VLM.
-# Currently set to "groq" for high-speed ephemeral contextual logic.
-VLM_PROVIDER = os.getenv("JARVIS_VLM_PROVIDER", "ollama").lower()
+# Configuration toggle. "auto" (Phase 5 default) = the router's free-vision
+# cascade: Gemini flash first (big quality upgrade over CPU llava), local llava
+# as the offline fallback. "ollama"/"groq" force a single provider.
+VLM_PROVIDER = os.getenv("JARVIS_VLM_PROVIDER", "auto").lower()
 OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava")
+
+_SCREEN_PROMPT = (
+    "Analyze this screenshot of my computer screen. Describe the active "
+    "applications, any visible text, the overall context, and what I am "
+    "currently doing. Be concise, highly descriptive, and focus on the most "
+    "important elements."
+)
 
 def _call_groq_vision(img_b64: str) -> str:
     """Sends the base64 image to Groq's Llama 3.2 Vision model."""
@@ -70,8 +78,11 @@ def read_active_screen() -> str:
         # 3. Route to the configured VLM provider
         if VLM_PROVIDER == "ollama":
             description = _call_ollama_vision(img_b64)
-        else:
+        elif VLM_PROVIDER == "groq":
             description = _call_groq_vision(img_b64)
+        else:  # "auto" — Phase 5 cascade: Gemini flash → local llava
+            from modules.llm_router import universal_vision_call
+            description = universal_vision_call(_SCREEN_PROMPT, img_b64)
         
         if not description or not description.strip():
             return "No description could be generated from the screen."

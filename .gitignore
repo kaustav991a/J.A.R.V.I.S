@@ -32,3 +32,4 @@ jarvis-frontend/dist/
 # OS Files
 .DS_Store
 .env
+KEys.txt
