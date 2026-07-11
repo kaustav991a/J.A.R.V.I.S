@@ -1043,18 +1043,35 @@ def build_dynamic_prompt(
         else ""
     )
 
-    state_block = (
-        f"\nCURRENT SYSTEM TIME: {current_time_str} (Colloquially: {time_of_day})"
-        f"\nSYSTEM SECURITY STATE: {security_state}"
-        f"{_ltm_section}"  # ← Phase 5: structured [LONG-TERM MEMORY] block
-        f"\n\n--- RELEVANT PAST CONVERSATIONS ---\n{semantic_context}"
-        f"\n\n--- PAST SESSION CONTEXT ---\n{episodic_context}"
-        f"\n\n--- AMBIENT VISUAL CONTEXT ---"
-        f"\nYour optical sensors are continuously monitoring the environment. Current feed:\n{visual_ctx}"
-        f"\nIf asked 'what do you see?', 'who is here?', or 'what am I holding?' — use this data directly."
-        f" If the camera is offline, acknowledge it.\n"
+    # Token-trim: only ship context sections that actually carry data. Empty
+    # recalls ("No relevant past memories found.") and an offline camera used to
+    # ship their full labels + instruction boilerplate every turn for nothing.
+    _EMPTY_SENTINELS = (
+        "No relevant past memories found.", "Memory retrieval offline.",
+        "No past session context.", "No past sessions found.", "",
     )
-    prompt_parts.append(state_block)
+
+    def _has(ctx: str) -> bool:
+        return bool(ctx) and ctx.strip() not in _EMPTY_SENTINELS
+
+    state_parts = [
+        f"\nCURRENT SYSTEM TIME: {current_time_str} (Colloquially: {time_of_day})",
+        f"\nSYSTEM SECURITY STATE: {security_state}",
+        _ltm_section,  # ← Phase 5: structured [LONG-TERM MEMORY] block (already blank when empty)
+    ]
+    if _has(semantic_context):
+        state_parts.append(f"\n\n--- RELEVANT PAST CONVERSATIONS ---\n{semantic_context}")
+    if _has(episodic_context):
+        state_parts.append(f"\n\n--- PAST SESSION CONTEXT ---\n{episodic_context}")
+    # Ambient vision: only inject the block (and its usage instructions) when the
+    # camera is actually feeding something. Offline = drop it entirely.
+    if _has(visual_ctx) and "offline" not in visual_ctx.lower():
+        state_parts.append(
+            f"\n\n--- AMBIENT VISUAL CONTEXT ---"
+            f"\nYour optical sensors are continuously monitoring the environment. Current feed:\n{visual_ctx}"
+            f"\nIf asked 'what do you see?', 'who is here?', or 'what am I holding?' — use this data directly.\n"
+        )
+    prompt_parts.append("".join(state_parts))
 
     # --- Layer 5: Brevity override — appended last so it dominates ---
     if brevity_mode:
@@ -1281,7 +1298,8 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
         print(f"[BRAIN] Personal-doc RAG skipped: {_prag_e}", flush=True)
 
     messages = [{"role": "system", "content": dynamic_system_prompt}]
-    for msg in memory.get_working_memory():
+    # Token-trim: ship only the recent context window, not the whole 30-msg buffer.
+    for msg in memory.get_context_window():
         messages.append(msg)
     messages.append({"role": "user", "content": user_text})
 
@@ -1607,12 +1625,13 @@ def process_stream(user_text: str, active_user: str = "KAUSTAV"):
         )
 
     messages = [{"role": "system", "content": dynamic_system_prompt}]
-    for msg in memory.get_working_memory():
+    # Token-trim: ship only the recent context window, not the whole 30-msg buffer.
+    for msg in memory.get_context_window():
         messages.append(msg)
     messages.append({"role": "user", "content": user_text})
-    
+
     memory.add_to_working_memory("user", user_text)
-    
+
     try:
         # For streaming we cannot use JSON mode — stream=True and json_object are
         # mutually exclusive on Groq. Use temperature=0.0 as the reliability lever.

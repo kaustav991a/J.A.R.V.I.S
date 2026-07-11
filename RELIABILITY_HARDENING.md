@@ -87,8 +87,9 @@ total provider outage (was narrated as false "Done, Sir") — returns an honest 
 - `cloud_gateway.py`: added persona rule "never tell operator to search themselves";
 `think()` injects `_LOOKUP_FAILED_NUDGE` when a live-info lookup returns empty so it
 fails honestly instead of punting.
-- **PENDING USER ACTION:** set `TAVILY_API_KEY` in the **Render dashboard** env (it's
-set on the desk `.env` but NOT on Render → cloud fell back to DuckDuckGo, blocked
+- ~~PENDING USER ACTION~~ ✅ RESOLVED 2026-07-11: Kaustav set `TAVILY_API_KEY` in the
+**Render dashboard** env. (History: it was on the desk `.env` but NOT on Render →
+cloud fell back to DuckDuckGo, blocked
 from datacenter IPs → "go find out"). Deploying the code needs a push (Render auto-
 deploys on push to the tracked branch).
 
@@ -585,6 +586,22 @@ are IN but NOT yet runtime-tested end-to-end.
 4. **Manual smoke-test for Phase 5:** normal voice command with Groq keys pulled from
    .env (or a forced Groq failure) → reply should still arrive via Gemini; check
    `[ROUTER]` log lines for the escalation.
-5. **(PENDING USER ACTION, still open) `TAVILY_API_KEY` on Render** — set it in the
-   Render dashboard env so the cloud stops falling back to DuckDuckGo.
+5. ~~`TAVILY_API_KEY` on Render~~ — ✅ **DONE (Kaustav, 2026-07-11): keys added in the
+   Render dashboard, mirroring the desk .env.** Verify on next cloud lookup.
 6. **Electron packaging** (single exe, notch → takeover overlay) — after gestures.
+
+### 9.1 Token-trim (input-side, 2026-07-11 evening — DONE, see commit)
+
+Kaustav asked to cut LLM input tokens (the real cost — output was already capped).
+Two cuts in `brain.py` + `memory.py`, both harness-verified:
+- **History cap:** the LLM now sees only the last `JARVIS_HISTORY_TURNS` (default 12)
+  working-memory messages per turn instead of the full 30-message buffer. NEW
+  `memory.get_context_window()` — always preserves a leading `[CONTEXT SUMMARY]`
+  message; the full buffer is untouched for compression/consolidation. Both
+  `process_command` and `process_stream` use it. Set `JARVIS_HISTORY_TURNS=30`
+  to restore old behaviour.
+- **Empty-block cut:** `build_dynamic_prompt` state block now skips sections with
+  no data (empty semantic/episodic recall, offline camera) instead of shipping
+  "none found" labels + instruction boilerplate every turn (~85 tokens/turn).
+Verified: py_compile OK; window cap 30→12 with summary preserved; empty vs full
+prompt comparison (filler dropped when empty, sections kept when present).

@@ -69,8 +69,35 @@ def _compress_oldest_memories():
         working_memory[:15] = []
 
 def get_working_memory():
-    """Returns the current conversational context."""
+    """Returns the FULL short-term buffer (used for consolidation/compression)."""
     return working_memory
+
+
+# Token-trim: how many recent messages the LLM actually sees per turn. The full
+# 30-message buffer above is kept for compression/consolidation, but shipping all
+# of it to the model every turn is the single biggest INPUT-token cost. The
+# semantic + episodic recall re-injects older *relevant* context anyway, so a
+# short raw window loses nothing important while cutting the payload hard.
+# Override with JARVIS_HISTORY_TURNS (set to 30 to restore the old behaviour).
+import os as _os
+_HISTORY_TURNS = int(_os.getenv("JARVIS_HISTORY_TURNS", "12"))
+
+
+def get_context_window(limit: int | None = None):
+    """Return the last `limit` messages for the LLM call, ALWAYS keeping a
+    leading [CONTEXT SUMMARY] system message if the buffer has one (so the
+    compressed older history isn't dropped). Falls back to the full buffer when
+    limit is None or the buffer is already small."""
+    n = _HISTORY_TURNS if limit is None else limit
+    if n <= 0 or len(working_memory) <= n:
+        return working_memory
+    tail = working_memory[-n:]
+    head = working_memory[0]
+    if (head not in tail
+            and head.get("role") == "system"
+            and str(head.get("content", "")).startswith("[CONTEXT SUMMARY]")):
+        return [head] + tail
+    return tail
 
 def clear_working_memory():
     """Wipes the short-term memory (useful for a reset command)."""
