@@ -5,8 +5,12 @@
 > click, double-click, drag & drop, scrolling — plus a safe way to engage/disengage
 > so normal hand movement never hijacks the pointer.
 >
-> Status: **PLANNED — not started.** Start at Phase G1. Dependencies need Kaustav's
-> install approval first (see "Dependencies").
+> Status (2026-07-11): **G1 ✅ PASSED LIVE** (30–40 fps via phone IP Webcam,
+> commit e1cc385). Deps installed + pinned (protobuf 6.33.6 — do not bump).
+> **G2 ✅ BUILT — harness 27/27, full pipeline 53 fps headless; awaiting
+> Kaustav's live run** (gesture_spike.py is now the G2 driver: clicks, drag,
+> scroll, palm gate). G1 carry-forwards done (FrameSource latest-frame thread,
+> URL res hint, classified camera errors). **Resume at: live G2 gate, then G3.**
 
 ---
 
@@ -113,17 +117,45 @@ JARVIS-action bindings (e.g. thumbs-up = confirm a pending CONFIRM action).
   the PC (PC subnet 192.168.0.x); (c) improve the no-camera error message to
   distinguish "no device present" from "device busy".
 
-### Phase G2 — gesture engine + pointer backend (1–2 days)
-- `modules/gesture_engine.py`: state machine above; One-Euro filter; pinch
-  hysteresis; palm-gate engage/disengage; hand-size normalisation.
-- `modules/gesture_pointer.py`: ctypes SendInput backend (move absolute,
-  button down/up, wheel). Multi-monitor + DPI aware — reuse the §4.8
-  `SetProcessDpiAwareness` work so coordinates match physical pixels.
-- **Harness `test_gesture_engine.py`**: recorded landmark sequences (JSON fixtures)
-  → expected intent streams: tap vs hold, chatter rejection, deadzone, engage gate.
-  No camera needed — same no-hardware pattern as the other harnesses.
+### Phase G2 — gesture engine + pointer backend — ✅ BUILT 2026-07-11, awaiting live gate
+- **DONE** `modules/gesture_engine.py`: pure state machine (no I/O, no mediapipe
+  import) — One-Euro filter, margin map 0.15, deadzone 0.004, pinch hysteresis
+  (down < 0.40 / up > 0.60 of hand size = wrist→middle-MCP) + 2-frame debounce,
+  palm-facing gate (1 s hold toggles; `palm_sign` calibratable — mirroring flips
+  it), tap < 250 ms = click, 2nd tap < 400 ms = double, hold > 250 ms = drag,
+  thumb–middle = right click, index+middle = scroll (hand up = scroll up),
+  cursor freezes during a pending tap AND during the open-palm gate pose,
+  lost tracking → drag released 0.2 s / disengage 2 s. Emits intent tuples.
+- **DONE** `modules/gesture_pointer.py`: ctypes SendInput,
+  `MOUSEEVENTF_ABSOLUTE|VIRTUALDESK` (multi-monitor), DPI-aware (§4.8 pattern),
+  `send_fn` injectable for tests, `release_all()` so no button sticks on exit.
+- **DONE** `modules/gesture_camera.py` (G1 carry-forwards): `FrameSource`
+  latest-frame reader thread (consumer always gets the newest frame — kills the
+  WiFi MJPEG lag), `decorate_url` appends `?640x480` to IP-Webcam /video URLs
+  (env `JARVIS_CAM_RES`), `CameraError` kinds absent/busy/stream/dead with the
+  same-Wi-Fi + mobile-data-IP-trap hints baked into the messages.
+- **DONE** harness `test_gesture_engine.py`: **27/27** — synthetic 21-landmark
+  hands (no camera): engage gate + wave/back-of-hand rejection, deadzone,
+  tap/double/chatter, drag + loss-releases-drag, scroll, pointer flags, URL
+  helper. Plain-python runner (no pytest in venv — project convention).
+- **DONE** `gesture_spike.py` rewritten as the G2 live driver: engine + pointer
+  end to end, state overlay, event log, env `JARVIS_PALM_FACING`/`JARVIS_PALM_SIGN`
+  to calibrate the facing check live. Control starts OFF (palm gate is the safety).
+- **Bench:** full pipeline (landmarker + engine + pointer) **53 fps** headless
+  on 640×480 — 2.6× the 20 fps gate.
+- **G1 live finding (Kaustav): cursor left/right INVERTED, up/down fine** —
+  double-mirror: the spike flips the frame assuming a raw webcam, but IP Webcam
+  streams often arrive pre-mirrored (front cam/app mirror setting). Fixed:
+  mirror is now toggleable — press **m** in the preview window, or set
+  `JARVIS_CAM_MIRROR=0`. The palm-facing check is stable under the toggle
+  (cross-product and handedness label flip together).
+- **⏳ LIVE GATE (Kaustav):** `venv\Scripts\python.exe gesture_spike.py http://192.168.0.105:8080/video`
+  — if left/right is inverted press **m** once; engage with palm, click a
+  taskbar icon, drag a file, right-click, scroll; casual waving must never
+  engage. If the palm gate won't fire → set `JARVIS_PALM_FACING=0`
+  (then report — palm_sign needs flipping instead).
 
-### Phase G3 — JARVIS integration (1 day)
+### Phase G3 — JARVIS integration (1 day) — ⏳ NOT STARTED
 - `gesture_daemon.py` adopted by `DaemonSupervisor` in main.py's lifespan.
 - Voice + fast-path commands: "hand control on/off" (deterministic fast-lane, no
   LLM); governance entry `gesture_control: AUTO` (reversible, low-risk).
@@ -133,7 +165,7 @@ JARVIS-action bindings (e.g. thumbs-up = confirm a pending CONFIRM action).
   after. Hook where the engine dispatches those actions.
 - Camera sharing with ambient_vision resolved per §5 risk 1.
 
-### Phase G4 — polish + hardening (1 day, after real use)
+### Phase G4 — polish + hardening (1 day, after real use) — ⏳ NOT STARTED
 - Calibration routine ("hold your hand comfortably, pinch twice") → per-user
   thresholds in a config JSON.
 - Precision mode, edge-of-frame handling, lost-tracking grace (~200 ms before
