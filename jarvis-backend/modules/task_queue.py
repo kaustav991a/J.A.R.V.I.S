@@ -36,6 +36,12 @@ NEEDS_CONFIRMATION = "needs_confirmation"
 # Statuses that represent a finished task whose outcome may need surfacing.
 _FINISHED = (DONE, FAILED, NEEDS_CONFIRMATION)
 
+# Phase 4 item 10: a task that has been claimed this many times is dead-lettered
+# instead of re-served. Without this cap, a task that crashes the worker (or the
+# server, via requeue_stuck_running) is re-claimed oldest-first forever and
+# wedges the whole queue behind it.
+MAX_ATTEMPTS = 3
+
 
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(_DB_PATH, timeout=10.0)
@@ -58,12 +64,19 @@ def init_db() -> None:
                 attempts    INTEGER NOT NULL DEFAULT 0,
                 user        TEXT NOT NULL DEFAULT 'KAUSTAV',
                 reported    INTEGER NOT NULL DEFAULT 0,
+                approved    INTEGER NOT NULL DEFAULT 0,
                 created_at  TEXT,
                 started_at  TEXT,
                 finished_at TEXT
             )
             """
         )
+        # Phase 4 item 5: migrate pre-existing databases. `approved=1` means the
+        # owner authorised this task's CONFIRM-tier steps to run unattended.
+        try:
+            conn.execute("ALTER TABLE tasks ADD COLUMN approved INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.commit()
     finally:
         conn.close()
@@ -115,23 +128,40 @@ def claim_next_pending() -> dict | None:
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT * FROM tasks WHERE status = ? ORDER BY created_at ASC LIMIT 1",
-            (PENDING,),
-        ).fetchone()
-        if row is None:
+        while True:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE status = ? ORDER BY created_at ASC LIMIT 1",
+                (PENDING,),
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return None
+            tid = row["id"]
+            # Phase 4 item 10: dead-letter a poison task instead of re-serving
+            # it forever (attempts increments on every claim, so >= MAX means
+            # it already ran/crashed that many times).
+            if (row["attempts"] or 0) >= MAX_ATTEMPTS:
+                conn.execute(
+                    "UPDATE tasks SET status = ?, result = ?, finished_at = ?, reported = 0 WHERE id = ?",
+                    (
+                        FAILED,
+                        f"Dead-lettered after {row['attempts']} attempts — the task kept "
+                        f"crashing or being interrupted (crash-loop guard).",
+                        datetime.datetime.now().isoformat(),
+                        tid,
+                    ),
+                )
+                print(f"[TASK_QUEUE] ☠ Task {tid} dead-lettered after {row['attempts']} attempts.", flush=True)
+                continue  # look at the next-oldest pending task
+            conn.execute(
+                "UPDATE tasks SET status = ?, started_at = ?, attempts = attempts + 1 WHERE id = ?",
+                (RUNNING, datetime.datetime.now().isoformat(), tid),
+            )
             conn.commit()
-            return None
-        tid = row["id"]
-        conn.execute(
-            "UPDATE tasks SET status = ?, started_at = ?, attempts = attempts + 1 WHERE id = ?",
-            (RUNNING, datetime.datetime.now().isoformat(), tid),
-        )
-        conn.commit()
-        task = _row_to_dict(row)
-        task["status"] = RUNNING
-        task["attempts"] = (row["attempts"] or 0) + 1
-        return task
+            task = _row_to_dict(row)
+            task["status"] = RUNNING
+            task["attempts"] = (row["attempts"] or 0) + 1
+            return task
     finally:
         conn.close()
 
@@ -158,6 +188,62 @@ def mark_failed(tid: str, error: str) -> None:
 
 def mark_needs_confirmation(tid: str, note: str) -> None:
     _finish(tid, NEEDS_CONFIRMATION, note)
+
+
+def set_remaining_actions(tid: str, actions: list[dict]) -> None:
+    """Phase 4 item 5: replace a task's action list with only its UNEXECUTED
+    steps (called when the worker pauses at a CONFIRM-tier step). An approved
+    resume then re-runs nothing that already succeeded — the idempotency gap
+    the audit flagged."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET actions = ? WHERE id = ?",
+            (json.dumps(actions or []), tid),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def approve_task(tid: str) -> bool:
+    """Phase 4 item 5: owner authorised a paused task's CONFIRM-tier steps.
+    Flips needs_confirmation → pending with approved=1 and resets the attempt
+    counter (the pause attempts shouldn't count against the dead-letter cap).
+    Returns True if a task was resumed."""
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, approved = 1, attempts = 0 "
+            "WHERE id = ? AND status = ?",
+            (PENDING, tid, NEEDS_CONFIRMATION),
+        )
+        conn.commit()
+        if cur.rowcount > 0:
+            print(f"[TASK_QUEUE] ✅ Task {tid} approved — re-queued with authorisation.", flush=True)
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def find_awaiting_confirmation(prefix: str | None = None) -> list[dict]:
+    """Tasks paused on a CONFIRM step. With a prefix, match ids starting with it
+    (lets the owner type the short id from the report message)."""
+    conn = _connect()
+    try:
+        if prefix:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE status = ? AND id LIKE ? ORDER BY finished_at ASC",
+                (NEEDS_CONFIRMATION, prefix + "%"),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE status = ? ORDER BY finished_at ASC",
+                (NEEDS_CONFIRMATION,),
+            ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def get_unreported_finished(user: str | None = None) -> list[dict]:

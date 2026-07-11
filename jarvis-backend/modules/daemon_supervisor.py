@@ -19,9 +19,15 @@ Design:
 from __future__ import annotations
 
 import asyncio
+import time
 
 
 class DaemonSupervisor:
+    # Phase 4 item 8: a daemon that stays healthy this long earns one restart
+    # credit back, so transient crash storms (network flap, provider outage)
+    # can't permanently exhaust the cap and disable a daemon forever.
+    RESTART_DECAY_SECS = 600.0
+
     def __init__(self, check_interval: float = 20.0, max_restarts: int = 10,
                  should_continue=None) -> None:
         self.check_interval = check_interval
@@ -30,7 +36,8 @@ class DaemonSupervisor:
         # the supervisor stops and never restarts a cleanly-exited daemon.
         self.should_continue = should_continue or (lambda: True)
         self.is_running = True
-        # name -> {"factory": callable->coro, "task": Task, "restarts": int}
+        # name -> {"factory": callable->coro, "task": Task, "restarts": int,
+        #          "last_restart": float|None}
         self._daemons: dict[str, dict] = {}
 
     def adopt(self, name: str, factory, task: asyncio.Task) -> None:
@@ -39,11 +46,26 @@ class DaemonSupervisor:
         `factory` is a zero-arg callable returning the daemon's coroutine
         (e.g. `lambda: proactive_agent.start()`).
         """
-        self._daemons[name] = {"factory": factory, "task": task, "restarts": 0}
+        self._daemons[name] = {"factory": factory, "task": task, "restarts": 0,
+                               "last_restart": None}
 
     def _respawn(self, name: str) -> None:
         d = self._daemons[name]
         d["task"] = asyncio.create_task(d["factory"](), name=f"daemon:{name}")
+        d["last_restart"] = time.monotonic()
+
+    async def _alert_owner(self, name: str) -> None:
+        """Phase 4 item 8: a daemon left down is a silent capability loss —
+        tell the owner wherever he is instead of only logging it."""
+        try:
+            from modules.owner_notify import notify_owner
+            await notify_owner(
+                f"Sir, my '{name}' background daemon kept crashing and has hit "
+                f"its restart cap — I've left it offline. Its duties are "
+                f"suspended until the next system restart.",
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[SUPERVISOR] owner alert failed: {e}", flush=True)
 
     async def start(self) -> None:
         print(f"[SUPERVISOR] Daemon health-monitor online — watching {len(self._daemons)} daemon(s).", flush=True)
@@ -55,7 +77,18 @@ class DaemonSupervisor:
                 for name, d in self._daemons.items():
                     task = d["task"]
                     if task is None or not task.done():
-                        continue  # still running — healthy
+                        # Healthy (or already given up). Phase 4 item 8: decay
+                        # one restart credit per healthy stretch so a past crash
+                        # storm doesn't permanently count against the daemon.
+                        if (task is not None and d["restarts"] > 0
+                                and d.get("last_restart") is not None
+                                and time.monotonic() - d["last_restart"] > self.RESTART_DECAY_SECS):
+                            d["restarts"] -= 1
+                            d["last_restart"] = time.monotonic()
+                            print(f"[SUPERVISOR] Daemon '{name}' healthy for "
+                                  f"{int(self.RESTART_DECAY_SECS)}s — restart credit "
+                                  f"restored ({d['restarts']}/{self.max_restarts} used).", flush=True)
+                        continue
                     if task.cancelled():
                         continue  # graceful shutdown — leave it down
 
@@ -70,6 +103,7 @@ class DaemonSupervisor:
                         print(f"[SUPERVISOR] Daemon '{name}' hit the restart cap "
                               f"({self.max_restarts}) — leaving it down.", flush=True)
                         d["task"] = None
+                        await self._alert_owner(name)
                         continue
 
                     d["restarts"] += 1

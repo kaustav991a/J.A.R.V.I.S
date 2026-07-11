@@ -52,47 +52,74 @@ class ProactiveAgent:
 
     async def _check_cycle(self):
         """Runs all environmental checks in priority order."""
-        if self.is_system_online_callback and not self.is_system_online_callback():
-            return
-        
-        # Don't interrupt while JARVIS is actively speaking or user is in conversation
-        try:
-            import speaker
-            if speaker.is_system_speaking:
-                return
-        except Exception:
-            pass
-            
+        # Phase 4.1/4.2: standby no longer silences the agent entirely. Safety-
+        # class checks (intruder, system health) still run and reach the owner's
+        # PHONE via the owner-notify fan-out — only desk TTS and the ambient/
+        # convenience checks are suppressed while offline.
+        online = not (self.is_system_online_callback and not self.is_system_online_callback())
+
+        # Don't interrupt while JARVIS is actively speaking or user is in
+        # conversation (standby never speaks, so the gate only matters online).
+        if online:
+            try:
+                import speaker
+                if speaker.is_system_speaking:
+                    return
+            except Exception:
+                pass
+
         now = time.time()
         hour = datetime.datetime.now().hour
-        
+
         # ==========================================
-        # 1. SYSTEM HEALTH CHECK (Highest Priority)
+        # 1. INTRUDER DETECTION (Phase 8) — SECURITY FIRST
+        # Moved ahead of every wellness/briefing check: each cycle returns after
+        # one event, so a break nudge used to mask an intruder for a full cycle.
+        # ==========================================
+        if shared_optical_cache.get("camera_active") and shared_optical_cache.get("intruder_detected"):
+            if not getattr(self, "intruder_alerted", False):
+                message = "Security alert. I am detecting an unrecognized individual in the room. Initiating lockdown protocols."
+                await self.broadcast_callback({"status": "security_override", "message": "INTRUDER DETECTED. LOCKDOWN ENGAGED.", "is_proactive": True})
+                if online:
+                    await self.speak_callback(message)
+                await self._alert_phone("🚨 " + message)
+                self.intruder_alerted = True
+                return
+        else:
+            self.intruder_alerted = False
+
+        # ==========================================
+        # 2. SYSTEM HEALTH CHECK
         # ==========================================
         if now - self.last_health_alert_time > self.health_alert_cooldown:
             try:
                 telemetry = await asyncio.to_thread(sensors.get_system_telemetry)
-                
+
                 if telemetry["cpu_percent"] > 90:
                     message = f"Sir, I'm detecting sustained CPU utilisation at {telemetry['cpu_percent']}%. You may have a runaway process. Shall I investigate?"
-                    await self._trigger_event(message)
+                    await self._trigger_event(message, critical=True, speak=online)
                     self.last_health_alert_time = now
                     return
-                
+
                 if telemetry["ram_percent"] > 85:
                     message = f"A word of caution, sir. System memory is at {telemetry['ram_percent']}% — {telemetry['ram_used_gb']}GB of {telemetry['ram_total_gb']}GB consumed. You may want to close some applications."
-                    await self._trigger_event(message)
+                    await self._trigger_event(message, critical=True, speak=online)
                     self.last_health_alert_time = now
                     return
-                    
+
                 if telemetry["disk_percent"] > 90:
                     message = f"Sir, disk utilisation has exceeded 90%. Only {telemetry['disk_free_gb']}GB remaining. I'd recommend some housekeeping."
-                    await self._trigger_event(message)
+                    await self._trigger_event(message, critical=True, speak=online)
                     self.last_health_alert_time = now
                     return
             except Exception as e:
                 print(f"[PROACTIVE AGENT] Health check failed: {e}", flush=True)
-        
+
+        # Standby: safety-class checks are done; everything below is
+        # convenience/ambient and stays quiet while the system is offline.
+        if not online:
+            return
+
         # ==========================================
         # 2. WORK SESSION TIMER (Existing, improved)
         # ==========================================
@@ -136,19 +163,6 @@ class ProactiveAgent:
                     return
                 except Exception as e:
                     print(f"[PROACTIVE AGENT] Morning briefing failed: {e}", flush=True)
-        
-        # ==========================================
-        # 4. INTRUDER DETECTION (Phase 8)
-        # ==========================================
-        if shared_optical_cache.get("camera_active") and shared_optical_cache.get("intruder_detected"):
-            if not hasattr(self, "intruder_alerted") or not self.intruder_alerted:
-                message = "Security alert. I am detecting an unrecognized individual in the room. Initiating lockdown protocols."
-                await self.broadcast_callback({"status": "security_override", "message": "INTRUDER DETECTED. LOCKDOWN ENGAGED.", "is_proactive": True})
-                await self.speak_callback(message)
-                self.intruder_alerted = True
-                return
-        else:
-            self.intruder_alerted = False
         
         # ==========================================
         # 5. USER ABSENCE DETECTION (Phase 8)
@@ -303,11 +317,26 @@ class ProactiveAgent:
             ]
         return random.choice(messages)
 
-    async def _trigger_event(self, message):
-        """Broadcasts a proactive message to the frontend and speaks it."""
+    async def _alert_phone(self, message):
+        """Phase 4.1: push a safety-class alert to the owner's phone via the
+        owner-notify fan-out. Logs (never raises) when no remote route is up."""
+        try:
+            from modules.owner_notify import send_to_phone
+            if not await send_to_phone(message):
+                print("[PROACTIVE AGENT] ⚠ No phone route live — alert was desk-only.", flush=True)
+        except Exception as e:
+            print(f"[PROACTIVE AGENT] Phone alert failed: {e}", flush=True)
+
+    async def _trigger_event(self, message, *, critical=False, speak=True):
+        """Broadcasts a proactive message to the frontend and speaks it.
+        critical=True additionally pushes it to the owner's phone (Phase 4.1);
+        speak=False suppresses desk TTS (standby)."""
         print(f"\n[PROACTIVE AGENT] {message[:80]}...", flush=True)
         await self.broadcast_callback({"status": "speaking", "message": message, "is_proactive": True})
-        await self.speak_callback(message)
+        if speak:
+            await self.speak_callback(message)
+        if critical:
+            await self._alert_phone(message)
         # Give the UI time to revert to standby
         await asyncio.sleep(5)
         await self.broadcast_callback({"status": "online", "message": "SYSTEM ONLINE // STANDBY", "is_proactive": True})
@@ -318,10 +347,13 @@ class ScheduleDaemon(threading.Thread):
     Runs on a dedicated background thread, polling the calendar every 60 seconds
     and triggering direct TTS alerts for events starting in 5 to 10 minutes.
     """
-    def __init__(self, main_loop, active_user="KAUSTAV"):
+    def __init__(self, main_loop, active_user="KAUSTAV", is_online_fn=None):
         super().__init__(daemon=True)
         self.main_loop = main_loop
         self.active_user = active_user
+        # Phase 4 item 11: () -> bool; when False (standby / user away) the
+        # reminder goes to the owner's phone instead of the desk speakers.
+        self.is_online_fn = is_online_fn
         self.notified_events = set()
         self.last_clear_date = datetime.datetime.now().date()
         
@@ -374,13 +406,27 @@ class ScheduleDaemon(threading.Thread):
                 message = f"Pardon the interruption, {title}. Your '{event['summary']}' starts in {mins} minute{'s' if mins != 1 else ''}."
                 
                 print(f"[SCHEDULE DAEMON] Triggering proactive alert: {message}", flush=True)
-                
-                # Safely execute TTS on the main event loop
-                asyncio.run_coroutine_threadsafe(
-                    speaker.speak_text(message),
-                    self.main_loop
-                )
-                
+
+                # Phase 4 item 11: reminders were desk-TTS-only — spoken to an
+                # empty room when the user is away/standby. Now: speak when the
+                # system is engaged, otherwise push to the owner's phone.
+                online = True
+                try:
+                    online = self.is_online_fn() if self.is_online_fn else True
+                except Exception:
+                    pass
+                if online:
+                    asyncio.run_coroutine_threadsafe(
+                        speaker.speak_text(message),
+                        self.main_loop
+                    )
+                else:
+                    from modules.owner_notify import send_to_phone
+                    asyncio.run_coroutine_threadsafe(
+                        send_to_phone(message),
+                        self.main_loop
+                    )
+
                 # Mark as notified
                 self.notified_events.add(evt_id)
                 # Only announce one event at a time to prevent overlapping audio

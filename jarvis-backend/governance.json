@@ -1,6 +1,6 @@
 {
   "_comment": "J.A.R.V.I.S. Governance Ruleset — Phase 6",
-  "_version": "1.4.1",
+  "_version": "1.5.0",
   "_policy": "Fail-safe: any action_type NOT listed here defaults to BLOCK.",
 
   "tiers": {
@@ -15,7 +15,6 @@
     "===  TIER: AUTO  ===": "─────────────────────────────────────────────",
 
     "workspace_read": "AUTO",
-    "workspace_patch": "AUTO",
     "telegram_send_file": "AUTO",
     "search_documents": "AUTO",
     "render_chart": "AUTO",
@@ -83,6 +82,7 @@
     "===  TIER: CONFIRM  ===": "─────────────────────────────────────────────",
 
     "workspace_write": "CONFIRM",
+    "workspace_patch": "CONFIRM",
     "ghost_save_file": "CONFIRM",
     "send_email": "CONFIRM",
     "create_event": "CONFIRM",

@@ -65,6 +65,7 @@ import os
 import asyncio
 import hashlib
 import threading
+import time
 import traceback
 from typing import Optional
 
@@ -656,6 +657,13 @@ _poll_task = None
 _desk_ws: Optional[WebSocket] = None
 _req_seq = itertools.count(1)
 
+# Phase 4 item 7: per-forwarded-request reply correlation. Each entry is
+# {"evt": asyncio.Event set on the first reply/done frame, "last": monotonic
+# time of the last sign of life (notify frames refresh it)}. A watchdog answers
+# locally when a connected-but-wedged desk produces nothing within the window.
+_pending_reqs: dict[int, dict] = {}
+_DESK_REPLY_TIMEOUT = float(os.getenv("DESK_REPLY_TIMEOUT_SECS", "45"))
+
 
 def _desk_connected() -> bool:
     return _desk_ws is not None
@@ -718,9 +726,10 @@ async def _forward_to_desk(message, ident: dict, text: str) -> bool:
     ws = _desk_ws
     if ws is None:
         return False
+    req_id = next(_req_seq)
     frame = {
         "type": "cmd",
-        "req_id": next(_req_seq),
+        "req_id": req_id,
         "chat_id": message.chat.id,
         # Desk brain keys persona/memory off an UPPERCASE user string
         # ("KAUSTAV"/"MOUSUMI"/"KINSHUK") — align cloud's display name to it.
@@ -731,10 +740,48 @@ async def _forward_to_desk(message, ident: dict, text: str) -> bool:
     }
     try:
         await ws.send_json(frame)
-        return True
     except Exception as e:  # noqa: BLE001
         print(f"[CLOUD] desk forward failed ({e}); falling back to local brain.", flush=True)
         return False
+
+    # Phase 4 item 7: a connected-but-wedged desk must not black-hole the
+    # message. If NOTHING referencing this req_id comes back within the window
+    # (notify heartbeats extend it), answer locally so the operator always
+    # gets a reply.
+    entry = {"evt": asyncio.Event(), "last": time.monotonic()}
+    _pending_reqs[req_id] = entry
+
+    async def _watchdog():
+        try:
+            while True:
+                remaining = _DESK_REPLY_TIMEOUT - (time.monotonic() - entry["last"])
+                if remaining <= 0:
+                    print(f"[CLOUD] ⚠ Desk silent on req {req_id} for "
+                          f"{_DESK_REPLY_TIMEOUT:.0f}s — answering from the cloud brain.", flush=True)
+                    try:
+                        reply = await think(message.chat.id, text,
+                                            ident["who"], ident["honorific"])
+                    except Exception:  # noqa: BLE001
+                        reply = ("The desk link stalled on that one — I couldn't get "
+                                 "an answer through. Try again in a moment.")
+                    bot, _ = _ensure_bot()
+                    for i in range(0, len(reply), 4000):
+                        try:
+                            await bot.send_message(message.chat.id, reply[i:i + 4000])
+                        except Exception as e:  # noqa: BLE001
+                            print(f"[CLOUD] fallback send failed: {e}", flush=True)
+                            break
+                    return
+                try:
+                    await asyncio.wait_for(entry["evt"].wait(), remaining)
+                    return  # the desk answered — nothing to do
+                except asyncio.TimeoutError:
+                    continue  # re-check: a notify heartbeat may have refreshed "last"
+        finally:
+            _pending_reqs.pop(req_id, None)
+
+    asyncio.create_task(_watchdog())
+    return True
 
 
 @app.websocket("/desk-link")
@@ -775,6 +822,16 @@ async def desk_link(websocket: WebSocket):
             frame = await websocket.receive_json()
             ftype = frame.get("type")
             chat_id = frame.get("chat_id")
+            # Phase 4 item 7: reply correlation. A reply/done frame resolves the
+            # request's watchdog; a notify (typing) frame is a heartbeat that
+            # extends its window — a long-running command that shows signs of
+            # life is never double-answered by the cloud fallback.
+            rid = frame.get("req_id")
+            if rid is not None and rid in _pending_reqs:
+                if ftype in ("reply", "done"):
+                    _pending_reqs[rid]["evt"].set()
+                else:
+                    _pending_reqs[rid]["last"] = time.monotonic()
             if ftype == "reply" and chat_id is not None:
                 text = (frame.get("text") or "").strip()
                 if text:
@@ -789,6 +846,24 @@ async def desk_link(websocket: WebSocket):
                     await bot.send_chat_action(chat_id, "typing")
                 except Exception:
                     pass
+            elif ftype == "alert":
+                # Unsolicited desk-originated alert (proactive detection, worker
+                # report). Relay to the given chat, or to the admin identity when
+                # the desk didn't include one.
+                text = (frame.get("text") or "").strip()
+                target = chat_id
+                if target is None:
+                    target = next((uid for uid, i in _IDENTITIES.items()
+                                   if i["tier"] == _ADMIN_TIER), None)
+                if text and target is not None:
+                    for i in range(0, len(text), 4000):
+                        try:
+                            await bot.send_message(target, text[i:i + 4000])
+                        except Exception as e:  # noqa: BLE001
+                            print(f"[CLOUD] alert relay failed: {e}", flush=True)
+                            break
+                elif text:
+                    print("[CLOUD] ⚠ alert dropped — no admin identity configured.", flush=True)
             # "done" and unknown frames need no relay.
     except WebSocketDisconnect:
         print("[CLOUD] Desk link dropped — falling back to local brain.", flush=True)

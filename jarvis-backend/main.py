@@ -263,6 +263,21 @@ _DENIAL_WORDS: frozenset[str] = frozenset({
     "nevermind", "never mind", "don't",
 })
 
+# Phase 4 item 5: deterministic queued-task approve/deny — "approve task 3fa9c2d1"
+# resumes a worker task that paused on a CONFIRM-tier step; "deny task …" drops it.
+_TASK_APPROVAL_RE = re.compile(
+    r"^(approve|resume|authorise|authorize|deny|reject|drop|cancel)\s+task\s+([0-9a-f]{4,12})\b"
+)
+_TASK_APPROVE_VERBS = frozenset({"approve", "resume", "authorise", "authorize"})
+
+# Phase 4 item 4: the confirmation_id of the CONFIRM-tier action the DESK was
+# asked about (backdoor + HUD/voice share one physical operator, so one slot).
+# Desk approvals resolve THIS id instead of the governance manager's global
+# single slot, so a desk "yes" can never execute an action that a remote
+# channel pended in the meantime. A dict so nested handlers can mutate it
+# without `global` declarations.
+_DESK_PENDING = {"cid": None}
+
 # Chat transcript panel (HUD COMM TRANSCRIPT) — show/hide phrases.
 # Hide is checked first so "hide/close" is never swallowed by a "show" match.
 _CHAT_SHOW_PHRASES: tuple[str, ...] = (
@@ -682,6 +697,11 @@ async def lifespan(app: FastAPI):
     async def global_speak(text):
         asyncio.create_task(speaker.speak_text(text))
 
+    # Phase 4.1: register desk delivery legs with the owner-notify fan-out so
+    # proactive/worker alerts can reach HUD + TTS + phone from one call.
+    from modules import owner_notify
+    owner_notify.configure(safe_send_all, global_speak)
+
     # §3.1: in-process supervisor that restarts any daemon that crashes/wedges
     # (the standalone watchdog.py covers the whole server; this covers the daemons).
     from modules.daemon_supervisor import DaemonSupervisor
@@ -707,7 +727,8 @@ async def lifespan(app: FastAPI):
 
     # --- Phase 7.2: Start Zero-CPU Proactive Scheduler ---
     from background_monitor import ScheduleDaemon
-    scheduler_daemon = ScheduleDaemon(asyncio.get_running_loop(), active_user)
+    scheduler_daemon = ScheduleDaemon(asyncio.get_running_loop(), active_user,
+                                      is_online_fn=lambda: SYSTEM_ONLINE)
     scheduler_daemon.start()
 
     # --- Phase 7: Start Zero-CPU Routine Scheduler ---
@@ -1074,6 +1095,90 @@ async def run_remote_command(command_text: str, channel) -> None:
     except Exception:
         pass
 
+    # ── Phase 4 item 3: session-scoped governance confirmation (remote) ─────
+    # If THIS channel was asked to authorise a CONFIRM-tier action, a short
+    # yes/no answers that question. The staged action is keyed by its
+    # confirmation_id inside this channel's session, so a phone approval can
+    # never resolve a desk confirmation (or another chat's) — and vice versa.
+    sess = await SESSIONS.get_or_create(channel)
+    _gov_pending = sess.pending.get("governance")
+    if _gov_pending:
+        _low = command_text.lower().strip()
+        _is_approval = any(w in _low for w in _APPROVAL_WORDS)
+        _is_denial = any(w in _low for w in _DENIAL_WORDS)
+        _is_decision = ((_is_approval or _is_denial) and len(_low) < 60
+                        and not any(w in _low for w in _jarvis_command_words))
+        if _is_decision:
+            sess.pending.pop("governance", None)
+            cid = _gov_pending.get("cid")
+            conf_atype = _gov_pending.get("atype", "unknown")
+            if _is_approval and tier == ADMIN_TIER:
+                approved_payload = governance_manager.consume_pending(cid)
+                if approved_payload is None:
+                    await channel.reply(
+                        f"That authorisation window has expired, {honor} — "
+                        f"ask me again and I'll re-stage it."
+                    )
+                    return
+                print(f"[REMOTE:{kind}] ✅ {user} approved '{conf_atype}' (id={cid}) — executing.", flush=True)
+                trace_id = engine.new_trace_id()
+                async with COMMAND_LOCK:
+                    exec_meta = await engine.execute_with_retry(
+                        approved_payload, True, trace_id,
+                        governance_bypass=True, permission_tier=tier,
+                    )
+                result = exec_meta.get("result", exec_meta) if isinstance(exec_meta, dict) else exec_meta
+                result_str = str(result)
+                spoken = _sanitize_for_speech(conf_atype, result_str) or result_str
+                await channel.reply(spoken or f"Done, {honor}.")
+            else:
+                governance_manager.cancel_pending(cid)
+                await channel.reply(f"Cancelled, {honor}. Standing by.")
+            return
+        # A new, unrelated command supersedes the open question — cancel the
+        # staged action so a stray "yes" minutes later can't run it out of
+        # context, then process the new command normally.
+        governance_manager.cancel_pending(_gov_pending.get("cid"))
+        sess.pending.pop("governance", None)
+        print(f"[REMOTE:{kind}] Pending confirmation superseded by a new command — cancelled.", flush=True)
+
+    # ── Phase 4 item 5: queued-task approve/deny (deterministic, admin-only) ─
+    # A worker task paused on a CONFIRM step reports "say 'approve task <id>'".
+    # Resolve that phrase here, before any LLM, so authorisation is exact.
+    _task_m = _TASK_APPROVAL_RE.match(command_text.strip().lower())
+    if _task_m:
+        if tier != ADMIN_TIER:
+            await channel.reply(
+                "I'm afraid I cannot perform that action without direct authorization from Sir."
+            )
+            return
+        _verb, _tprefix = _task_m.group(1), _task_m.group(2)
+        matches = await asyncio.to_thread(task_queue.find_awaiting_confirmation, _tprefix)
+        if not matches:
+            await channel.reply(
+                f"No task awaiting authorisation matches '{_tprefix}', {honor}."
+            )
+            return
+        if len(matches) > 1:
+            ids = ", ".join(m["id"][:8] for m in matches)
+            await channel.reply(
+                f"That matches several waiting tasks ({ids}) — give me more of the id, {honor}."
+            )
+            return
+        _t = matches[0]
+        if _verb in _TASK_APPROVE_VERBS:
+            ok = await asyncio.to_thread(task_queue.approve_task, _t["id"])
+            await channel.reply(
+                f"Authorised, {honor} — resuming '{_t['title']}' in the background. "
+                f"I'll report when it's done."
+                if ok else
+                f"I couldn't resume that task, {honor} — it may have been cancelled already."
+            )
+        else:
+            await asyncio.to_thread(task_queue.cancel, _t["id"])
+            await channel.reply(f"Dropped, {honor} — '{_t['title']}' will not run.")
+        return
+
     # ── Deterministic fast-lane (Roadmap §3.4) — skip the LLM entirely ───────
     _fp = fast_path.match(command_text)
     if _fp is not None:
@@ -1181,17 +1286,34 @@ async def run_remote_command(command_text: str, channel) -> None:
                 replied = True
                 continue
             if isinstance(result, str) and result.startswith("GOVERNANCE_CONFIRM:"):
+                # Format: GOVERNANCE_CONFIRM:<action_type>:<confirmation_id>
                 parts = result.split(":", 2)
                 conf_action = parts[1] if len(parts) > 1 else "unknown"
-                # A remote channel has no live desk operator to authorise a
-                # CONFIRM-tier action, and we must not auto-run it. Clear the
-                # pending slot so it can't be approved later out of context.
-                governance_manager.cancel_pending()
-                await channel.reply(
-                    f"Authorisation required for '{conf_action}', Sir. "
-                    f"That is a CONFIRM-tier action — I will not execute it "
-                    f"unattended from a remote channel."
-                )
+                conf_id = parts[2] if len(parts) > 2 else None
+                if tier == ADMIN_TIER and conf_id:
+                    # Phase 4 item 3: a remote CONFIRM is now a session-scoped
+                    # question instead of a dead end. The staged action waits
+                    # (90s TTL) keyed by its confirmation_id in THIS channel's
+                    # session; the next short yes/no from this channel resolves
+                    # exactly this action and nothing else.
+                    prev = sess.pending.get("governance")
+                    if prev:
+                        governance_manager.cancel_pending(prev.get("cid"))
+                    sess.pending["governance"] = {"cid": conf_id, "atype": conf_action}
+                    await channel.reply(
+                        f"Authorisation required, {honor}: '{conf_action}' is a "
+                        f"CONFIRM-tier action. Reply 'confirm' to execute it or "
+                        f"'cancel' to drop it."
+                    )
+                else:
+                    # Non-admin caller (or malformed sentinel): refuse and clear
+                    # so it can't be approved later out of context.
+                    governance_manager.cancel_pending(conf_id)
+                    await channel.reply(
+                        f"Authorisation required for '{conf_action}' — that "
+                        f"action needs Sir's direct approval, which I can't "
+                        f"accept on this channel."
+                    )
                 replied = True
                 continue
 
@@ -1297,7 +1419,7 @@ async def backdoor_command(req: BackdoorRequest):
     # If a CONFIRM-tier action is waiting in the pending slot AND this command
     # looks like an approval/denial (short, no Jarvis-command words), resolve it
     # immediately BEFORE any other intercept layer.
-    if governance_manager.has_pending():
+    if governance_manager.has_pending() or _DESK_PENDING["cid"] is not None:
         _gov_lower = _cmd_lower
         _is_approval = any(w in _gov_lower for w in _APPROVAL_WORDS)
         _is_denial   = any(w in _gov_lower for w in _DENIAL_WORDS)
@@ -1306,7 +1428,11 @@ async def backdoor_command(req: BackdoorRequest):
 
         if (_is_approval or _is_denial) and _looks_short and _no_cmd_words:
             if _is_approval:
-                approved_payload = governance_manager.consume_pending()
+                # Phase 4 item 4: resolve the DESK's own confirmation id (falls
+                # back to the single slot only when no id was pinned) so this
+                # "yes" can never run an action pended by a remote channel.
+                approved_payload = governance_manager.consume_pending(_DESK_PENDING["cid"])
+                _DESK_PENDING["cid"] = None
                 if approved_payload:
                     atype = approved_payload.get("action_type", "unknown")
                     print(f"[GOVERNANCE] ✅ User approved '{atype}' — executing now.", flush=True)
@@ -1328,7 +1454,8 @@ async def backdoor_command(req: BackdoorRequest):
                     await safe_send_all({"status": "complete", "result": msg})
                     asyncio.create_task(speaker.speak_text(msg))
             else:
-                governance_manager.cancel_pending()
+                governance_manager.cancel_pending(_DESK_PENDING["cid"])
+                _DESK_PENDING["cid"] = None
                 msg = "Action cancelled, Sir. Standing by."
                 await safe_send_all({"status": "complete", "result": msg})
                 asyncio.create_task(speaker.speak_text(msg))
@@ -1739,6 +1866,10 @@ async def backdoor_command(req: BackdoorRequest):
                         # Format: GOVERNANCE_CONFIRM:<action_type>:<confirmation_id>
                         parts = result.split(":", 2)
                         conf_action = parts[1] if len(parts) > 1 else "unknown"
+                        # Phase 4 item 4: remember WHICH confirmation the desk was
+                        # asked about, so the approval resolves this id and not
+                        # whatever last landed in the global pending slot.
+                        _DESK_PENDING["cid"] = parts[2] if len(parts) > 2 else None
                         title = "Madam" if active_user == "MOUSUMI" else "Sir"
                         msg = (
                             f"Authorisation required, {title}. I would like to execute ‘{conf_action}’. "
@@ -2260,7 +2391,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                     continue
 
                             # ── Phase 6: GOVERNANCE CONFIRMATION INTERCEPT (voice / WS path) ──
-                            if governance_manager.has_pending():
+                            if governance_manager.has_pending() or _DESK_PENDING["cid"] is not None:
                                 _gov_lower = command_lower
                                 _is_approval = any(w in _gov_lower for w in _APPROVAL_WORDS)
                                 _is_denial = any(w in _gov_lower for w in _DENIAL_WORDS)
@@ -2268,7 +2399,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 _no_cmd_words = not any(w in _gov_lower for w in _jarvis_command_words)
                                 if (_is_approval or _is_denial) and _looks_short and _no_cmd_words:
                                     if _is_approval:
-                                        approved_payload = governance_manager.consume_pending()
+                                        # Phase 4 item 4: resolve the desk's own pinned id.
+                                        approved_payload = governance_manager.consume_pending(_DESK_PENDING["cid"])
+                                        _DESK_PENDING["cid"] = None
                                         if approved_payload:
                                             atype = approved_payload.get("action_type", "unknown")
                                             print(f"[GOVERNANCE] ✅ User approved '{atype}' — executing now.", flush=True)
@@ -2290,7 +2423,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                             await safe_send({"status": "complete", "result": msg})
                                             asyncio.create_task(speaker.speak_text(msg))
                                     else:
-                                        governance_manager.cancel_pending()
+                                        governance_manager.cancel_pending(_DESK_PENDING["cid"])
+                                        _DESK_PENDING["cid"] = None
                                         msg = "Action cancelled, Sir. Standing by."
                                         await safe_send({"status": "complete", "result": msg})
                                         asyncio.create_task(speaker.speak_text(msg))
@@ -2528,6 +2662,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                             elif isinstance(result, str) and result.startswith("GOVERNANCE_CONFIRM:"):
                                                 parts = result.split(":", 2)
                                                 conf_action = parts[1] if len(parts) > 1 else "unknown"
+                                                # Phase 4 item 4: pin the desk's confirmation id.
+                                                _DESK_PENDING["cid"] = parts[2] if len(parts) > 2 else None
                                                 title = "Madam" if active_user == "MOUSUMI" else "Sir"
                                                 msg = (
                                                     f"Authorisation required, {title}. I would like to execute ‘{conf_action}’. "

@@ -477,6 +477,21 @@ async def send_document_to_owner(path: str, caption: str = "") -> bool:
     return await _send_document(_OWNER_ID, path, caption)
 
 
+async def send_text_to_owner(text: str) -> bool:
+    """Push an unsolicited text message to the owner's Telegram chat (used by
+    the owner-notify fan-out for proactive alerts). Returns True only if every
+    chunk was accepted by Telegram."""
+    if _bot is None or _OWNER_ID is None or not text or not text.strip():
+        return False
+    for chunk in _chunk(text.strip(), 4000):
+        try:
+            await _bot.send_message(_OWNER_ID, chunk)
+        except Exception as e:  # noqa: BLE001
+            print(f"[TELEGRAM] owner alert send failed: {e}", flush=True)
+            return False
+    return True
+
+
 def is_configured() -> bool:
     return _bot is not None and _OWNER_ID is not None
 

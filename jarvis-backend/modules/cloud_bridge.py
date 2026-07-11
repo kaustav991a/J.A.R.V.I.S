@@ -70,6 +70,11 @@ _process_fn: Optional[Callable[[str, OutputChannel], Awaitable[None]]] = None
 _task: Optional[asyncio.Task] = None
 _stop = False
 
+# Live-session state so out-of-band alerts (owner_notify) can ride the same
+# socket. Set while a session is connected, cleared on disconnect.
+_active_ws = None
+_active_lock: Optional[asyncio.Lock] = None
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # Output channel — replies ride back UP the socket to a specific Telegram chat
@@ -85,7 +90,8 @@ class BridgeChannel(OutputChannel):
     kind = "bridge"
 
     def __init__(self, ws, send_lock: asyncio.Lock, chat_id: int, *,
-                 user: str, permission_tier: str, honorific: str) -> None:
+                 user: str, permission_tier: str, honorific: str,
+                 req_id=None) -> None:
         # Scope the session id to the remote chat, mirroring TelegramChannel so a
         # remote caller's working memory stays isolated from the desk HUD's.
         super().__init__(channel_id=f"bridge:{chat_id}", user=user)
@@ -94,8 +100,13 @@ class BridgeChannel(OutputChannel):
         self.chat_id = chat_id
         self.permission_tier = permission_tier
         self.honorific = honorific
+        # Phase 4 item 7: echoed on every frame so the cloud can correlate
+        # replies/heartbeats to the forwarded request (wedged-desk fallback).
+        self.req_id = req_id
 
     async def _emit(self, frame: dict) -> None:
+        if self.req_id is not None:
+            frame.setdefault("req_id", self.req_id)
         async with self._send_lock:
             try:
                 await self._ws.send(json.dumps(frame))
@@ -134,13 +145,14 @@ async def _handle_cmd(ws, send_lock: asyncio.Lock, frame: dict) -> None:
     chat_id = frame.get("chat_id")
     if not text or chat_id is None or _process_fn is None:
         return
+    req_id = frame.get("req_id")
     channel = BridgeChannel(
         ws, send_lock, int(chat_id),
         user=frame.get("user") or "KAUSTAV",
         permission_tier=frame.get("tier") or _ADMIN_TIER,
         honorific=frame.get("honorific") or "Sir",
+        req_id=req_id,
     )
-    req_id = frame.get("req_id")
     try:
         await _process_fn(text, channel)
     except Exception as e:  # noqa: BLE001
@@ -161,6 +173,7 @@ async def _handle_cmd(ws, send_lock: asyncio.Lock, frame: dict) -> None:
 
 async def _session(url: str, secret: str) -> None:
     """One connected lifetime: authenticate, then pump command frames."""
+    global _active_ws, _active_lock
     import websockets
 
     # Secret travels in a header and is checked BEFORE the socket is accepted,
@@ -172,20 +185,46 @@ async def _session(url: str, secret: str) -> None:
     ) as ws:
         print(f"[BRIDGE] ✅ Linked to cloud front door → {url}", flush=True)
         send_lock = asyncio.Lock()
-        async for raw in ws:
-            try:
-                frame = json.loads(raw)
-            except Exception:
-                continue
-            ftype = frame.get("type")
-            if ftype == "cmd":
-                # Fire-and-forget so long-running commands don't block the reader
-                # and multiple chats can be served concurrently.
-                asyncio.create_task(_handle_cmd(ws, send_lock, frame))
-            elif ftype == "welcome":
-                roster = frame.get("identities", "")
-                print(f"[BRIDGE] Cloud accepted the link. Identities: {roster}", flush=True)
-            # ignore anything else (future frame types)
+        _active_ws, _active_lock = ws, send_lock
+        try:
+            async for raw in ws:
+                try:
+                    frame = json.loads(raw)
+                except Exception:
+                    continue
+                ftype = frame.get("type")
+                if ftype == "cmd":
+                    # Fire-and-forget so long-running commands don't block the reader
+                    # and multiple chats can be served concurrently.
+                    asyncio.create_task(_handle_cmd(ws, send_lock, frame))
+                elif ftype == "welcome":
+                    roster = frame.get("identities", "")
+                    print(f"[BRIDGE] Cloud accepted the link. Identities: {roster}", flush=True)
+                # ignore anything else (future frame types)
+        finally:
+            if _active_ws is ws:
+                _active_ws, _active_lock = None, None
+
+
+async def send_alert_to_owner(text: str) -> bool:
+    """Push an unsolicited alert up the bridge for relay to the owner's
+    Telegram chat (owner-notify fan-out). Includes the admin chat id when the
+    desk knows it; otherwise the cloud resolves its own admin identity.
+    Returns True only when the frame was written to a live socket."""
+    ws, lock = _active_ws, _active_lock
+    if ws is None or lock is None or not text or not text.strip():
+        return False
+    frame: dict = {"type": "alert", "text": text.strip()}
+    owner_raw = os.getenv("TELEGRAM_USER_ID", "").strip()
+    if owner_raw.lstrip("-").isdigit():
+        frame["chat_id"] = int(owner_raw)
+    try:
+        async with lock:
+            await ws.send(json.dumps(frame))
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[BRIDGE] alert send failed: {e}", flush=True)
+        return False
 
 
 async def _run_forever(url: str, secret: str) -> None:

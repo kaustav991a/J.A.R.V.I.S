@@ -32,6 +32,11 @@ from governance_manager import governance_manager
 
 
 class OvernightWorker:
+    # Phase 4 item 9: AUTO-tier actions that must NOT run unattended — they
+    # drive the live GUI/autopilot with nobody watching. The worker treats
+    # them as CONFIRM-class; interactive (voice/HUD) use is unaffected.
+    _UNATTENDED_CONFIRM = frozenset({"run_autopilot", "agentic_gui_task"})
+
     def __init__(
         self,
         execute_fn,                 # ActionEngine.execute_with_retry (async)
@@ -91,21 +96,45 @@ class OvernightWorker:
         actions = task.get("actions") or []
         print(f"[WORKER] >> Task {tid}: '{title}' ({len(actions)} action(s))", flush=True)
 
+        # Phase 4 item 5: the owner said "approve task <id>" → this task's
+        # CONFIRM-tier steps are authorised to run unattended (BLOCK never is).
+        approved = bool(task.get("approved"))
+
         try:
             await self._notify({"status": "task_started", "task_id": tid, "title": title})
 
             results: list[str] = []
             needs_confirm = False
             blocked = False
+            paused_at: int | None = None
 
             for i, action in enumerate(actions):
                 atype = str(action.get("action_type", "")).strip() or "unknown"
                 tier = governance_manager.get_tier(atype)  # read-only; no pending-slot mutation
+                # Phase 4 item 9: autopilot/GUI-driving actions are CONFIRM-class
+                # for the UNATTENDED worker even though they stay AUTO for
+                # interactive use — the worker must not drive the GUI alone.
+                if tier == "AUTO" and atype in self._UNATTENDED_CONFIRM:
+                    tier = "CONFIRM"
 
-                if tier == "AUTO":
+                if tier == "CONFIRM" and not approved:
+                    # Phase 4 item 5: STOP here — running later steps around a
+                    # skipped one would execute the plan out of order. The
+                    # remaining steps are persisted so an approval resumes
+                    # exactly here without re-running finished work.
+                    needs_confirm = True
+                    paused_at = i
+                    results.append(
+                        f"step {i + 1} [{atype}]: paused — needs your authorisation (CONFIRM tier)")
+                    break
+
+                if tier in ("AUTO", "CONFIRM"):
                     meta = None
                     try:
-                        meta = await self.execute_fn(action, True, None)
+                        meta = await self.execute_fn(
+                            action, True, None,
+                            governance_bypass=(tier == "CONFIRM"),  # only reachable when approved
+                        )
                         res = meta.get("result", meta) if isinstance(meta, dict) else meta
                     except Exception as ae:
                         # execute_with_retry already traps most failures, but be defensive.
@@ -121,9 +150,6 @@ class OvernightWorker:
                         healed = await self._self_heal(title, action, res, results)
                         if healed is not None:
                             res = healed  # latest (recovered) result feeds the summary
-                elif tier == "CONFIRM":
-                    needs_confirm = True
-                    results.append(f"step {i + 1} [{atype}]: deferred — needs your authorisation (CONFIRM tier)")
                 else:  # BLOCK or unknown → fail-safe skip
                     blocked = True
                     results.append(f"step {i + 1} [{atype}]: skipped — blocked by governance policy")
@@ -131,10 +157,15 @@ class OvernightWorker:
             summary = "\n".join(results) if results else "No actions were attached to this task."
 
             if needs_confirm:
+                remaining = actions[paused_at:] if paused_at is not None else []
+                await asyncio.to_thread(task_queue.set_remaining_actions, tid, remaining)
                 await asyncio.to_thread(task_queue.mark_needs_confirmation, tid, summary)
+                short = tid[:8]
                 await self._announce(
                     tid,
-                    f"The task you queued needs your authorisation, Sir: {title}.",
+                    f"The task you queued needs your authorisation, Sir: {title}. "
+                    f"Say 'approve task {short}' and I'll finish it, or "
+                    f"'deny task {short}' to drop it.",
                     {"status": "task_needs_confirmation", "task_id": tid, "title": title, "result": summary},
                 )
             elif blocked and not any("step" in r and "blocked" not in r for r in results):
@@ -230,7 +261,13 @@ class OvernightWorker:
     # Report results queued while the user was away (called on wake)
     # -----------------------------------------------------------------------
     async def report_pending(self, user: str | None = None) -> None:
-        """Surface any finished-but-unreported tasks. Safe to call on every wake."""
+        """Surface any finished-but-unreported tasks. Safe to call on every wake.
+
+        Phase 4 item 6: items are marked reported only AFTER a delivery leg
+        actually succeeded (desk voice, or the owner's phone as fallback). A
+        failed delivery leaves them queued for the next wake instead of
+        silently swallowing the report forever.
+        """
         try:
             items = await asyncio.to_thread(task_queue.get_unreported_finished, user)
         except Exception as e:
@@ -239,8 +276,9 @@ class OvernightWorker:
         if not items:
             return
 
+        batch = items[:5]
         lines: list[str] = []
-        for it in items[:5]:
+        for it in batch:
             status = it.get("status")
             t = it.get("title", "a task")
             if status == task_queue.DONE:
@@ -249,17 +287,26 @@ class OvernightWorker:
                 lines.append(f"{t} — awaiting your authorisation")
             else:
                 lines.append(f"{t} — couldn't be completed")
+
+        msg = "While you were away, Sir, I worked through the queue. " + "; ".join(lines) + "."
+        await self._notify({"status": "task_report", "count": len(items), "items": batch})
+
+        delivered = False
+        try:
+            await self.speak(msg)
+            delivered = True
+        except Exception as e:
+            print(f"[WORKER] report_pending voice leg failed: {e}", flush=True)
+        if not delivered:
+            delivered = await self._phone(msg)
+        if not delivered:
+            print("[WORKER] report_pending: no delivery leg succeeded — items stay queued for next wake.", flush=True)
+            return
+        for it in batch:
             try:
                 await asyncio.to_thread(task_queue.mark_reported, it["id"])
             except Exception:
                 pass
-
-        msg = "While you were away, Sir, I worked through the queue. " + "; ".join(lines) + "."
-        await self._notify({"status": "task_report", "count": len(items), "items": items[:5]})
-        try:
-            await self.speak(msg)
-        except Exception:
-            pass
 
     # -----------------------------------------------------------------------
     # Internal helpers
@@ -270,12 +317,32 @@ class OvernightWorker:
         except Exception:
             pass
 
+    async def _phone(self, text: str) -> bool:
+        """Phase 4 item 6: deliver a worker report to the owner's phone via the
+        owner-notify fan-out. Returns delivery success; never raises."""
+        try:
+            from modules.owner_notify import send_to_phone
+            return await send_to_phone(text)
+        except Exception as e:
+            print(f"[WORKER] phone leg failed: {e}", flush=True)
+            return False
+
     async def _announce(self, tid: str, line: str, payload: dict) -> None:
-        """HUD always; voice + mark-reported only if the user is actively engaged."""
+        """HUD always; voice when the user is engaged, PHONE when they're away.
+        The task is marked reported only after a leg actually delivered
+        (Phase 4 item 6) — otherwise report_pending() re-surfaces it on wake."""
         await self._notify(payload)
+        delivered = False
         try:
             if self.is_online():
                 await self.speak(line)
-                await asyncio.to_thread(task_queue.mark_reported, tid)
+                delivered = True
         except Exception:
             pass
+        if not delivered:
+            delivered = await self._phone(line)
+        if delivered:
+            try:
+                await asyncio.to_thread(task_queue.mark_reported, tid)
+            except Exception:
+                pass

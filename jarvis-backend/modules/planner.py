@@ -129,7 +129,6 @@ GITHUB
 - github_status / github_log / github_diff: target=""
 - github_commit: target="message"   - github_push: target=""
 OS / SYSTEM
-- run_terminal_command: OS shell op. target="verb: argument"
 - get_telemetry / system_status: machine state. target=""
 - native_app_launcher: open an app. target="app name"   - close_app: target="app name"
 - os_control: target="mute|unmute|play_pause|next_track|prev_track|lock_screen"
@@ -261,14 +260,17 @@ async def run_react(
 
         # ── Governance signals ───────────────────────────────────────────────
         if result_str.startswith("GOVERNANCE_CONFIRM:"):
-            # A mid-plan CONFIRM-tier step cannot be auto-approved. Clear the
-            # pending slot so it can't dangle, and stop — ask the user.
+            # A mid-plan CONFIRM-tier step cannot be auto-approved. Cancel THIS
+            # confirmation by its id (Phase 4 item 4: never the global slot,
+            # which may hold a different channel's pending action) and stop.
+            _parts = result_str.split(":", 2)
+            conf = _parts[1] if len(_parts) > 1 else atype
+            _cid = _parts[2] if len(_parts) > 2 else None
             if governance_manager is not None:
                 try:
-                    governance_manager.cancel_pending()
+                    governance_manager.cancel_pending(_cid)
                 except Exception:
                     pass
-            conf = result_str.split(":", 2)[1] if ":" in result_str else atype
             return _finish(
                 scratchpad, success=False, needs_confirmation=True,
                 answer=(f"To finish that, Sir, I need your authorisation for a "
