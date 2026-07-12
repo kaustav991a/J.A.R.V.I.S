@@ -725,6 +725,17 @@ async def lifespan(app: FastAPI):
     # --- Phase 5: Start Ambient Vision Daemon ---
     ambient_vision_daemon.start()
 
+    # --- Phase G3: Gesture + presence daemon (hand control, owner face gate,
+    #     away soft-lock). Thread daemon with an internal retry shell, same
+    #     Pattern B as ambient_vision. JARVIS_GESTURE=0 skips it entirely.
+    try:
+        from gesture_daemon import gesture_daemon
+        if os.getenv("JARVIS_GESTURE", "1") == "1":
+            gesture_daemon.loop = asyncio.get_running_loop()
+            gesture_daemon.start()
+    except Exception as e:
+        print(f"[GESTURE] daemon failed to start: {e}", flush=True)
+
     # --- Phase 7.2: Start Zero-CPU Proactive Scheduler ---
     from background_monitor import ScheduleDaemon
     scheduler_daemon = ScheduleDaemon(asyncio.get_running_loop(), active_user,
@@ -841,6 +852,11 @@ async def lifespan(app: FastAPI):
     if overnight_worker:
         overnight_worker.is_running = False
     ambient_vision_daemon.stop()
+    try:
+        from gesture_daemon import gesture_daemon
+        gesture_daemon.stop()
+    except Exception:
+        pass
     is_shutting_down.set()
     await asyncio.sleep(1)
 
@@ -940,6 +956,15 @@ async def vision_state():
     except Exception as e:
         print(f"[API] Vision state error: {e}")
         return {"camera_active": False, "camera_url": None, "detections": [], "error": str(e)}
+
+@app.get("/api/gesture/state")
+async def gesture_state_api():
+    """Gesture/presence daemon state for the HUD (mirrors the ws gesture_state frames)."""
+    try:
+        from gesture_daemon import gesture_state
+        return dict(gesture_state)
+    except Exception as e:
+        return {"state": "unavailable", "error": str(e)}
 
 @app.get("/api/health/summary")
 async def health_summary():

@@ -69,7 +69,34 @@ _RULES: list[tuple[re.Pattern, object]] = [
      lambda: _media("prev_track", "Going back, Sir.")),
     (re.compile(r"^(lock( the| my)? (screen|pc|computer|workstation|system)|lock up|lock it)$"),
      lambda: {"action": {"action_type": "os_control", "target": "lock_screen"}, "say": "Locking down, Sir."}),
+    # ── G3 gesture control + presence lock — toggled directly, no engine hop ─
+    (re.compile(r"^(hand control|gesture control|gestures|hand gestures) on$"),
+     lambda: _gesture_toggle(True)),
+    (re.compile(r"^(hand control|gesture control|gestures|hand gestures) off$"),
+     lambda: _gesture_toggle(False)),
+    (re.compile(r"^(auto ?lock on|enable auto ?lock|presence lock on)$"),
+     lambda: _auto_lock_toggle(True)),
+    (re.compile(r"^(auto ?lock off|disable auto ?lock|presence lock off)$"),
+     lambda: _auto_lock_toggle(False)),
 ]
+
+
+def _gesture_toggle(on: bool) -> dict:
+    try:
+        from gesture_daemon import gesture_daemon
+        gesture_daemon.set_gestures_enabled(on)
+        return {"say": f"Hand control {'engaged — show me your index finger to start' if on else 'off'}, Sir."}
+    except Exception:
+        return {"say": "Gesture system is not running, Sir."}
+
+
+def _auto_lock_toggle(on: bool) -> dict:
+    try:
+        from gesture_daemon import gesture_daemon
+        gesture_daemon.set_auto_lock(on)
+        return {"say": f"Presence lock {'armed' if on else 'disarmed'}, Sir."}
+    except Exception:
+        return {"say": "Gesture system is not running, Sir."}
 
 
 def match(user_text: str):
