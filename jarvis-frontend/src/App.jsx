@@ -22,6 +22,7 @@ import LockdownOverlay from "./components/LockdownOverlay";
 import ScreenScanOverlay from "./components/ScreenScanOverlay";
 import DataOverlay from "./components/DataOverlay";
 import ChatPanel from "./components/ChatPanel";
+import GestureGuide from "./components/GestureGuide";
 import TaskHud from "./components/TaskHud";
 import "./App.scss";
 
@@ -172,6 +173,8 @@ function App() {
 
   // --- AUTONOMY QUEUE (Task HUD) — polls /api/tasks; auto-opens on worker activity ---
   const [isTaskHudOpen, setIsTaskHudOpen] = useState(false);
+  const [isGestureGuideOpen, setIsGestureGuideOpen] = useState(false);
+  const [gestureState, setGestureState] = useState(null);
   const [taskRefresh, setTaskRefresh] = useState(0);
 
   const socket = useRef(null);
@@ -249,6 +252,12 @@ function App() {
           ui_action: data.ui_action,
           data: Array.isArray(data.data) ? data.data : [],
         });
+        return;
+      }
+
+      // --- G3: live gesture/presence state (HUD chip + Gesture Guide practice mode) ---
+      if (data.type === "gesture_state") {
+        setGestureState(data);
         return;
       }
 
@@ -846,6 +855,12 @@ function App() {
         onClose={() => setIsTaskHudOpen(false)}
       />
 
+      <GestureGuide
+        open={isGestureGuideOpen}
+        gesture={gestureState}
+        onClose={() => setIsGestureGuideOpen(false)}
+      />
+
       {backendUnreachable && (
         <div className="backend-offline-banner" role="status">
           <strong>API unreachable</strong> (127.0.0.1:8000). Start the backend from{' '}
@@ -940,6 +955,14 @@ function App() {
               title="Background task queue"
             >
               TASKS
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsGestureGuideOpen((v) => !v)}
+              className={isGestureGuideOpen ? "is-active" : ""}
+              title="How to control the PC by hand gestures"
+            >
+              GESTURES
             </button>
           </div>
         </div>
