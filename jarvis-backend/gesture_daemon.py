@@ -280,9 +280,7 @@ class GestureDaemon:
         except Exception as e:  # noqa: BLE001
             print(f"[GESTURE] hand model unavailable ({e}) — presence-only mode", flush=True)
 
-        engine = GestureEngine(GestureConfig(
-            require_palm_facing=os.getenv("JARVIS_PALM_FACING", "1") == "1",
-            palm_sign=int(os.getenv("JARVIS_PALM_SIGN", "1"))))
+        engine = GestureEngine(GestureConfig.from_env())
         pointer = PointerBackend()
         gate = FaceGate()
         motion = MotionDetector()

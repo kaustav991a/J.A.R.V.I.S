@@ -111,8 +111,15 @@ class GestureConfig:
     # camera->screen mapping: only the middle of the frame maps to the full
     # screen so the hand never has to reach the frame edge (G1-proven).
     margin: float = 0.15
-    # One-Euro cursor smoothing (normalised units).
-    min_cutoff: float = 1.2
+    # cursor sensitivity: how much of the frame maps to the full screen.
+    # 1.0 = original (middle 70% of the frame). Higher = a smaller central
+    # band spans the screen = LESS hand travel for the same cursor distance.
+    # Env JARVIS_GESTURE_SENSITIVITY + live +/- keys in gesture_spike.py.
+    # Supersedes `margin`.
+    sensitivity: float = 1.5
+    # One-Euro cursor smoothing (normalised units). Lower min_cutoff = smoother
+    # when the hand is still; beta keeps fast moves lag-free.
+    min_cutoff: float = 1.0
     beta: float = 0.015
     d_cutoff: float = 1.0
     # no move emitted below this normalised displacement (steady-hand hold).
@@ -146,6 +153,24 @@ class GestureConfig:
     # mouse button stuck down), disengage after a longer gap.
     lost_drag_grace_s: float = 0.2
     lost_disengage_s: float = 2.0
+
+    @staticmethod
+    def from_env() -> "GestureConfig":
+        """Build from JARVIS_* env vars — standalone scripts + daemon share this."""
+        import os
+
+        def _flt(name: str, default: float) -> float:
+            try:
+                return float(os.getenv(name, ""))
+            except (TypeError, ValueError):
+                return default
+
+        return GestureConfig(
+            require_palm_facing=os.getenv("JARVIS_PALM_FACING", "1") == "1",
+            palm_sign=int(os.getenv("JARVIS_PALM_SIGN", "1")),
+            sensitivity=_flt("JARVIS_GESTURE_SENSITIVITY", 1.5),
+            min_cutoff=_flt("JARVIS_GESTURE_SMOOTH", 1.0),
+        )
 
 
 class _PinchTracker:
@@ -256,7 +281,7 @@ class GestureEngine:
         d_left = _dist(lm[THUMB_TIP], lm[INDEX_TIP]) / hand_size
         d_right = _dist(lm[THUMB_TIP], lm[MIDDLE_TIP]) / hand_size
 
-        raw = self._classify(ext, lm, handedness)
+        raw = self._classify(ext, lm, handedness, d_left)
         pose = self._pose_tracker.update(raw)
         self.pose = pose
 
@@ -276,8 +301,9 @@ class GestureEngine:
         if self._update_stop_gate(pose, t, intents):
             return intents
 
-        self._update_pinches(ext, d_left, d_right, t, intents)
-        if pose == "fist" and not self._dragging:
+        self._update_pinches(pose, d_left, d_right, t, intents)
+        if pose == "fist" and not self._dragging \
+                and not self._left.down and not self._right.down:
             self._dragging = True
             intents.append(("drag_start",))
         scrolling = self._update_scroll(pose, lm, intents)
@@ -301,7 +327,7 @@ class GestureEngine:
         ys = (lm[INDEX_MCP][1] + lm[MIDDLE_MCP][1] + lm[RING_MCP][1] + lm[PINKY_MCP][1]) / 4.0
         return (xs, ys)
 
-    def _classify(self, ext, lm, handedness: str) -> str:
+    def _classify(self, ext, lm, handedness: str, d_left: float) -> str:
         n = ext
         if n["index"] and n["middle"] and n["ring"] and n["pinky"]:
             if not self.cfg.require_palm_facing:
@@ -311,9 +337,12 @@ class GestureEngine:
             return "two_finger"
         if n["index"] and not n["middle"] and not n["ring"] and not n["pinky"]:
             return "index_only"
-        # tolerant fist: at most one of index/middle/ring misreads as extended
-        # (tip-PIP test gets one finger wrong on tilted fists — live finding)
-        if (int(n["index"]) + int(n["middle"]) + int(n["ring"])) <= 1:
+        # A closed hand is a GRAB only when the thumb is NOT pinching the index:
+        # thumb+index touching is always a click intent (user spec), even with
+        # the rest of the hand curled. Tolerant of one misread finger (the
+        # tip-PIP extension test is noisy on tilted fists — live finding).
+        if d_left >= self.cfg.pinch_down \
+                and (int(n["index"]) + int(n["middle"]) + int(n["ring"])) <= 1:
             return "fist"
         return "other"
 
@@ -405,17 +434,18 @@ class GestureEngine:
 
     # ---- clicks / grab / scroll / move ------------------------------- #
 
-    def _update_pinches(self, ext, d_left, d_right, t, intents) -> None:
+    def _update_pinches(self, pose, d_left, d_right, t, intents) -> None:
         """Click fires the moment a pinch lands (down-confirm) — snappy, and a
-        pinch can never turn into a drag any more (grab is the fist now).
+        pinch can never turn into a drag (grab is the fist).
 
-        A closing fist also shrinks both thumb distances, so each pinch only
-        arms while the OTHER fingers say the hand is otherwise open:
-          left  (thumb+index)  needs middle+ring extended AND thumb far from middle
-          right (thumb+middle) needs index extended AND thumb far from index
+        Left (thumb+index) vs right (thumb+middle) are told apart by which
+        touch is CLOSER — not by absolute finger-extension, which was too
+        fragile and silently dropped real taps (live finding). Both are
+        suppressed inside a committed fist so a grab can't fire a click.
         """
-        left_ok = ext["middle"] and ext["ring"] and d_right > self.cfg.pinch_up
-        right_ok = ext["index"] and d_left > self.cfg.pinch_up
+        in_fist = pose == "fist"
+        left_ok = not in_fist and d_left <= d_right
+        right_ok = not in_fist and d_right < d_left
         left_ev = self._left.update(d_left if left_ok else 2.0, t)
         if self._left.down or left_ev == "up":
             self._right.reset()   # left has priority while down
@@ -456,11 +486,14 @@ class GestureEngine:
         return True
 
     def _update_move(self, driver, t, intents) -> None:
-        m = self.cfg.margin
-        nx = (driver[0] - m) / (1 - 2 * m)
-        ny = (driver[1] - m) / (1 - 2 * m)
-        nx = min(max(nx, 0.0), 1.0)
-        ny = min(max(ny, 0.0), 1.0)
+        # sensitivity-scaled active region centred on the frame: only a band of
+        # half-width `half` maps to the full screen, so higher sensitivity =
+        # a narrower band = less hand travel. Clamped so it can't collapse.
+        half = max(0.35 / max(self.cfg.sensitivity, 0.1), 0.05)
+        lo = 0.5 - half
+        span = 2.0 * half
+        nx = min(max((driver[0] - lo) / span, 0.0), 1.0)
+        ny = min(max((driver[1] - lo) / span, 0.0), 1.0)
         nx = self._fx(nx, t)
         ny = self._fy(ny, t)
         if self._last_emit is not None \

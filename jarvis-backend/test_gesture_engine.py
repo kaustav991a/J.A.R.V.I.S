@@ -175,7 +175,7 @@ def test_palm_moves_cursor_margin_mapped():
     out = sim.feed(PALM, 40)  # hold until the filter settles
     moves = [i for i in out if i[0] == "move"]
     assert moves, "engaged open palm must move the cursor"
-    assert abs(moves[-1][1] - 0.5107) < 0.03   # centroid 0.5075 margin-mapped
+    assert abs(moves[-1][1] - 0.516) < 0.03    # centroid 0.5075, sensitivity 1.5
     out2 = sim.feed(palm_at(0.15), 40)
     moves2 = [i for i in out2 if i[0] == "move"]
     assert moves2 and moves2[-1][1] > moves[-1][1] + 0.15  # followed rightwards
@@ -304,15 +304,27 @@ def test_fist_grabs_drags_and_drops():
     assert k.index("drag_start") < k.index("drag_end")
 
 
-def test_fist_with_thumb_touching_fingers_never_clicks():
+def test_click_fires_with_other_fingers_curled():
+    # thumb+index touch with the rest of the hand relaxed/curled is still a
+    # click — the old middle+ring-extended gate silently dropped these.
     sim = engaged_sim()
     sim.feed(PALM, 40)
-    # a closing fist shortens BOTH thumb distances — must grab, never click
-    out = sim.feed(make_hand(ext=(), pinch=("left", 0.2)), 8)
-    out += sim.feed(make_hand(ext=(), pinch=("right", 0.2)), 8)
+    out = sim.feed(make_hand(ext=(), pinch=("left", 0.2)), 4)
+    out += sim.feed(PALM, 8)
+    k = kinds(out)
+    assert k.count("click") == 1
+    assert "drag_start" not in k and "double_click" not in k
+
+
+def test_grab_with_thumb_near_middle_never_right_clicks():
+    # a closed hand with the thumb parked over the MIDDLE (not pinching index)
+    # is a grab, never a right click.
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(make_hand(ext=(), pinch=("right", 0.2)), 10)
     out += sim.feed(PALM, 6)
     k = kinds(out)
-    assert "click" not in k and "right_click" not in k and "double_click" not in k
+    assert "right_click" not in k and "click" not in k
     assert k.count("drag_start") == 1 and k.count("drag_end") == 1
 
 

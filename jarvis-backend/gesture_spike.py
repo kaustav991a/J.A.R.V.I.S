@@ -74,10 +74,7 @@ def main() -> int:
             num_hands=1,
         )
     )
-    engine = GestureEngine(GestureConfig(
-        require_palm_facing=os.getenv("JARVIS_PALM_FACING", "1") == "1",
-        palm_sign=int(os.getenv("JARVIS_PALM_SIGN", "1")),
-    ))
+    engine = GestureEngine(GestureConfig.from_env())
     pointer = PointerBackend()
     print("control starts OFF — hold your INDEX FINGER up for 1 s to start; "
           "show the BACK of your open hand for 1.5 s to stop. ESC quits.")
@@ -140,16 +137,24 @@ def main() -> int:
             cv2.putText(frame, f"{fps:5.1f} fps  {state}  pose:{engine.pose}  last:{last_event}",
                         (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             cv2.putText(frame,
-                        f"index 1s = start   back-of-hand 1.5s = stop   m = mirror({'on' if mirror else 'off'})   ESC = quit",
-                        (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
+                        f"index 1s=start  back-hand 1.5s=stop  m=mirror({'on' if mirror else 'off'})  +/-=sens({engine.cfg.sensitivity:.1f})  ESC=quit",
+                        (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             cv2.imshow("JARVIS gesture (G2)", frame)
             key = cv2.waitKey(1) & 0xFF
             if key == 27:  # ESC
                 break
-            if key in (ord("m"), ord("M")):
+            elif key in (ord("m"), ord("M")):
                 mirror = not mirror
                 print(f"mirror -> {'ON' if mirror else 'OFF'} "
                       f"(persist with JARVIS_CAM_MIRROR={'1' if mirror else '0'})")
+            elif key in (ord("+"), ord("=")):
+                engine.cfg.sensitivity = min(engine.cfg.sensitivity + 0.1, 4.0)
+                print(f"sensitivity -> {engine.cfg.sensitivity:.1f} "
+                      f"(persist JARVIS_GESTURE_SENSITIVITY={engine.cfg.sensitivity:.1f})")
+            elif key in (ord("-"), ord("_")):
+                engine.cfg.sensitivity = max(engine.cfg.sensitivity - 0.1, 0.5)
+                print(f"sensitivity -> {engine.cfg.sensitivity:.1f} "
+                      f"(persist JARVIS_GESTURE_SENSITIVITY={engine.cfg.sensitivity:.1f})")
     finally:
         pointer.release_all()  # never exit with a mouse button stuck down
         landmarker.close()
