@@ -2,7 +2,7 @@
 
 A fully autonomous, voice-activated, locally-hosted AI assistant inspired by Iron Man's J.A.R.V.I.S.
 
-It pairs a cinematic React holographic HUD with a Python "nervous system" that does privacy-first local voice (wake word → streaming STT → reasoning → local TTS), continuous camera-based spatial awareness, deep OS/app automation, a 4-tier memory system, and an always-on **cloud gateway** so you can reach JARVIS from Telegram even when this PC is off.
+It pairs a cinematic React holographic HUD with a Python "nervous system" that does privacy-first local voice (wake word → streaming STT → reasoning → local TTS), continuous camera-based spatial awareness, hand-gesture mouse control, deep OS/app automation, a 4-tier memory system, and an always-on **cloud gateway** so you can reach JARVIS from Telegram even when this PC is off.
 
 Cloud reasoning runs on **Groq** (with local Ollama/LLaVA fallback for vision), giving near-zero-latency conversation and multi-step ReAct planning.
 
@@ -27,6 +27,8 @@ Two processes, connected over WebSockets:
   * *TTS* — local **Piper** streaming synthesis, Edge-TTS fallback.
 * **Autonomy engine** — ReAct planner + self-healing worker loop, durable goal/task queue, overnight worker, and a guarded self-improvement loop (propose → branch → test → PR, never auto-merge).
 * **Continuous spatial awareness** — YOLOv8 + DeepFace over IP cameras: who's present, emotional state, proactive UI lock when you leave frame.
+* **Hand-gesture mouse control** — full in-air pointer via **MediaPipe Hands** (21 landmarks, CPU-only ~30 fps, 100% local). Open-palm engage/disengage gate (nothing hijacks the cursor by accident), index-finger cursor with One-Euro smoothing, pinch left/right/double-click, pinch-hold drag & drop, and scroll — injected through `ctypes SendInput` for 30 Hz latency. Pure-logic state machine (`gesture_engine.py`) is harness-tested; the loop runs as a supervised daemon (crash → auto-restart). See [`HAND_GESTURE_CONTROL_PLAN.md`](HAND_GESTURE_CONTROL_PLAN.md).
+* **Multi-window holographic HUD** — the full-screen kiosk HUD plus two ambient **Electron** modes: a top-center **Notch** (voice-visualizer orb + live status) and a right-edge **Sidecar** (clock, task queue, system vitals, calendar). All share one backend WebSocket.
 * **4-tier memory** — RAM short-term → SQLite core facts → ChromaDB semantic vectors → episodic daily summaries. Plus a personal-document RAG cortex.
 * **Deep OS / app control** — file, terminal, GUI, workspace, browser, macro, and OS agents; Android-TV control over ADB.
 * **Digital life manager** — Google Calendar, Gmail, Google Fit via OAuth2.
@@ -45,6 +47,7 @@ Two processes, connected over WebSockets:
 | TTS | Piper (`en-gb-alan-low`) + Edge-TTS fallback |
 | Wake word | Picovoice Porcupine |
 | Vision | Ultralytics YOLOv8 + DeepFace + OpenCV |
+| Hand tracking | MediaPipe Hands (21 landmarks, CPU) + One-Euro filter → `ctypes SendInput` |
 | Vector DB | ChromaDB |
 | Backend | FastAPI + Uvicorn + WebSockets |
 | Automation | pyautogui, pywinauto (UIA), pytesseract, psutil, Playwright, ADB |
@@ -65,6 +68,10 @@ JARVIS-Project/
 │   ├── background_monitor.py       # Proactive daemon
 │   ├── cloud_gateway.py            # Always-on Telegram cloud brain (deploy separately)
 │   ├── modules/                    # Specialized agents (stt, tts, planner, os/file/terminal/tv/github… )
+│   │   ├── gesture_engine.py       # Pure hand-gesture state machine (landmarks → intents; harness-tested)
+│   │   ├── gesture_pointer.py      # ctypes SendInput cursor backend (move/click/drag/scroll)
+│   │   └── gesture_camera.py       # Shared frame source for hand tracking
+│   ├── gesture_daemon.py           # Supervised hand-control loop (auto-restart)
 │   ├── models/vosk/                # ⬇️ Vosk STT model  (NOT in git — see Fresh Install)
 │   ├── en-gb-alan-low.onnx(.json)  # ⬇️ Piper voice      (NOT in git — see Fresh Install)
 │   ├── yolov8n.pt                  # ⬇️ YOLO weights     (auto-downloads on first use)
@@ -73,7 +80,9 @@ JARVIS-Project/
 │   └── requirements.txt / requirements-cloud.txt
 └── jarvis-frontend/                # React holographic HUD
     ├── src/                        # Components, App.jsx (WS client), HUD styling
-    ├── electron/                   # Electron desktop shell
+    │   ├── NotchView.jsx           # Top-center notch window (voice orb + status)
+    │   └── SidecarView.jsx         # Right-edge sidecar (clock, tasks, vitals, calendar)
+    ├── electron/                   # Multi-window Electron shell (main.js, preload.js)
     └── package.json
 ```
 
@@ -167,6 +176,8 @@ ANTHROPIC_API_KEY=                  # optional (agent worker)
 # --- Voice / vision (optional) ---
 JARVIS_VOSK_MODEL=                  # override Vosk model dir (default: models/vosk/)
 JARVIS_CAMERA_URL=                  # IP camera stream for ambient vision
+JARVIS_CAM=                         # hand-gesture camera (device index or IP Webcam URL)
+JARVIS_CAM_MIRROR=                  # 1 to flip horizontally if the gesture cursor moves inverted
 JARVIS_FULL_DUPLEX=1
 JARVIS_AEC=1
 
@@ -208,4 +219,5 @@ The **cloud gateway** has its own env + deploy guide in [`jarvis-backend/CLOUD_G
 * [`CHANGELOG.md`](CHANGELOG.md) — release history
 * [`ROADMAP_TO_FULL_JARVIS.md`](ROADMAP_TO_FULL_JARVIS.md) — capability roadmap
 * [`JARVIS_MANUAL.md`](JARVIS_MANUAL.md) — operation manual
+* [`HAND_GESTURE_CONTROL_PLAN.md`](HAND_GESTURE_CONTROL_PLAN.md) — hand-gesture mouse control design & status
 * [`jarvis-backend/CLOUD_GATEWAY.md`](jarvis-backend/CLOUD_GATEWAY.md) — always-on Telegram deploy
