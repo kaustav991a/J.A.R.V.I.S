@@ -207,3 +207,41 @@ JARVIS-action bindings (e.g. thumbs-up = confirm a pending CONFIRM action).
 - [ ] Walk across the room talking with hands — cursor never moves (gate holds).
 - [ ] "Jarvis, hand control off" → gestures dead instantly; "on" → back in < 2 s.
 - [ ] Gesture daemon crash → supervisor restarts it; owner notified if it caps out.
+
+---
+
+## G3 SHIPPED (2026-07-12) — supersedes the G3 section above
+
+Live-gate findings from G2 (laggy pinch, clicks drag-selecting text) drove a
+vocabulary rework: **click and grab are separate gestures now.**
+
+| Gesture | Action |
+|---|---|
+| index up · hold 1 s | START control |
+| open palm (facing camera) | move cursor — palm-knuckle centroid |
+| thumb+index tap | left click (fires on pinch-land; can never become a drag) |
+| 2nd tap ≤ 1 s, same spot | double-click |
+| closed fist | GRAB — down · move · open = drop |
+| index+middle vertical | scroll |
+| thumb+middle tap | right click |
+| back of open hand · 1.5 s | STOP control |
+
+Shipped pieces:
+- `modules/gesture_engine.py` rework + 35/35 `test_gesture_engine.py`
+- `gesture_daemon.py` — tiered loop LOCKED 2 fps / IDLE 9 fps / ACTIVE 30 fps,
+  started from `main.py` lifespan (`JARVIS_GESTURE=0` disables)
+- `modules/face_gate.py` — YuNet+SFace ONNX owner gate (ms-cheap, no TF) on the
+  same frames; `enroll_face.py` → `models/owner_embeddings.npz` (gitignored);
+  5/5 `test_face_gate.py`
+- deny non-owner hands (HUD toast + Telegram snapshot alert, 60 s cooldown)
+- away soft-lock: no face AND no motion for `JARVIS_LOCK_AFTER` (6 s) →
+  `lock_overlay.py` subprocess (all monitors, topmost, `JARVIS_UNLOCK_CODE`
+  blind escape hatch) + monitor power-off; owner face auto-unlocks
+- voice fast-path: "hand control on/off", "auto lock on/off"; governance
+  `gesture_control: AUTO`; `GET /api/gesture/state`
+- HUD: `GESTURES` button → GestureGuide field manual with live practice mode
+  (`gesture_state` ws frames highlight the pose the camera sees)
+
+G4 follow-ups: 12-sample re-enroll on the live camera (db currently seeded from
+known_faces/kaustav.jpg), cursor-arbiter flag so agentic GUI / ghost_type
+auto-suspends gestures, per-user calibration JSON, notch/sidecar gesture chip.
