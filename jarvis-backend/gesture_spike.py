@@ -37,6 +37,12 @@ import time
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+try:  # standalone script — pull JARVIS_CAM etc. from .env like main.py does
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import cv2
 import mediapipe as mp
 from mediapipe.tasks.python import vision, BaseOptions
