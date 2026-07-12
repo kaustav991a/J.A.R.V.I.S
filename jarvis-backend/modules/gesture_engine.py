@@ -266,21 +266,29 @@ class GestureEngine:
             return intents
         self.start_progress = 0.0
 
+        # A grab is STICKY: once the fist closes, only a clearly opened hand
+        # (palm or back-of-hand) drops it — transitional "other" frames while
+        # the fist moves must not fumble the drag (live finding).
+        if self._dragging and pose in ("palm", "back_palm"):
+            self._dragging = False
+            intents.append(("drag_end",))
+
         if self._update_stop_gate(pose, t, intents):
             return intents
 
         self._update_pinches(ext, d_left, d_right, t, intents)
-        self._update_grab(pose, intents)
+        if pose == "fist" and not self._dragging:
+            self._dragging = True
+            intents.append(("drag_start",))
         scrolling = self._update_scroll(pose, lm, intents)
 
         # The cursor is driven by the palm-knuckle centroid, and ONLY while
-        # the open palm shows or a grab is being dragged. The raw (uncommitted)
-        # classify must agree too: the instant the fingers start closing the
-        # cursor freezes, so a click/grab can't drag it off target mid-gesture
-        # (the G2 drag-select bug).
+        # the open palm shows (raw classify must agree — the instant the
+        # fingers start closing the cursor freezes, so a click/grab can't
+        # drag it off target: the G2 drag-select bug) or while a grab is
+        # held (then it always follows — that IS the drag).
         if not scrolling and (
-                (pose == "palm" and raw == "palm")
-                or (self._dragging and pose == "fist" and raw == "fist")):
+                (pose == "palm" and raw == "palm") or self._dragging):
             self._update_move(self._palm_centroid(lm), t, intents)
         return intents
 
@@ -299,12 +307,14 @@ class GestureEngine:
             if not self.cfg.require_palm_facing:
                 return "palm"
             return "palm" if self._palm_facing(lm, handedness) else "back_palm"
-        if not n["index"] and not n["middle"] and not n["ring"]:
-            return "fist"                      # pinky is lax — half fists count
-        if n["index"] and not n["middle"] and not n["ring"] and not n["pinky"]:
-            return "index_only"
         if n["index"] and n["middle"] and not n["ring"] and not n["pinky"]:
             return "two_finger"
+        if n["index"] and not n["middle"] and not n["ring"] and not n["pinky"]:
+            return "index_only"
+        # tolerant fist: at most one of index/middle/ring misreads as extended
+        # (tip-PIP test gets one finger wrong on tilted fists — live finding)
+        if (int(n["index"]) + int(n["middle"]) + int(n["ring"])) <= 1:
+            return "fist"
         return "other"
 
     def _on_lost(self, t: float) -> list[tuple]:
@@ -428,16 +438,9 @@ class GestureEngine:
         if right_ev == "down":
             intents.append(("right_click",))
 
-    def _update_grab(self, pose: str, intents) -> None:
-        if pose == "fist" and not self._dragging:
-            self._dragging = True
-            intents.append(("drag_start",))
-        elif pose != "fist" and pose != "none" and self._dragging:
-            self._dragging = False
-            intents.append(("drag_end",))
-
     def _update_scroll(self, pose: str, lm, intents) -> bool:
-        if pose != "two_finger" or self._left.down or self._right.down:
+        if pose != "two_finger" or self._dragging \
+                or self._left.down or self._right.down:
             self._scroll_y = None
             self._scroll_acc = 0.0
             return False

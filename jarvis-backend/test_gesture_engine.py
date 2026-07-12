@@ -316,6 +316,27 @@ def test_fist_with_thumb_touching_fingers_never_clicks():
     assert k.count("drag_start") == 1 and k.count("drag_end") == 1
 
 
+def test_drag_sticky_through_classify_flicker():
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(FIST, 6)                                # grab
+    out += sim.feed(make_hand(ext=("index", "ring")), 6)   # "other" mid-drag
+    out += sim.feed(make_hand(ext=(), shift=(0.08, 0.0)), 6)
+    out += sim.feed(PALM, 6)                               # only open palm drops
+    k = kinds(out)
+    assert k.count("drag_start") == 1 and k.count("drag_end") == 1
+    assert [i for i in out[:-6] if i[0] == "drag_end"] == []  # not dropped early
+
+
+def test_tilted_fist_one_finger_misread_still_grabs():
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(make_hand(ext=("middle",)), 6)  # tip-PIP misreads one finger
+    out += sim.feed(PALM, 6)
+    k = kinds(out)
+    assert k.count("drag_start") == 1 and k.count("drag_end") == 1
+
+
 def test_tracking_loss_releases_drag_then_disengages():
     sim = engaged_sim()
     sim.feed(PALM, 40)
