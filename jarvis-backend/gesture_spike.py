@@ -3,14 +3,15 @@ gesture_spike.py — Phase G2 live driver (HAND_GESTURE_CONTROL_PLAN.md)
 =======================================================================
 
 G1 proved camera → landmarks → cursor (30–40 fps live, commit e1cc385).
-G2 upgrade: full gesture engine + SendInput pointer backend, end to end:
+G3 natural-grab vocabulary (click and grab are separate gestures):
 
-    open palm 1 s   engage / disengage (control starts OFF — safe)
-    index point     move cursor (One-Euro smoothed, deadzoned)
-    thumb+index tap left click; two taps = double-click
-    pinch and hold  drag & drop
+    index up 1 s    START control (control starts OFF — safe)
+    open palm       move cursor (palm-knuckle centroid, One-Euro smoothed)
+    thumb+index tap left click (fires on pinch-land); 2nd tap <=1 s = double
+    closed fist     GRAB — mouse down, move to drag, open hand to drop
     thumb+middle    right click
     index+middle    scroll (hand up = scroll up)
+    back of hand    hold 1.5 s = STOP control
 
 Run:   venv\Scripts\python.exe gesture_spike.py [index | http://ip:port/video]
        (or env JARVIS_CAM; phone IP Webcam must be on the SAME Wi-Fi as the PC)
@@ -72,8 +73,8 @@ def main() -> int:
         palm_sign=int(os.getenv("JARVIS_PALM_SIGN", "1")),
     ))
     pointer = PointerBackend()
-    print("control starts OFF — hold an open palm to the camera for 1 s to "
-          "engage. ESC in the window to quit.")
+    print("control starts OFF — hold your INDEX FINGER up for 1 s to start; "
+          "show the BACK of your open hand for 1.5 s to stop. ESC quits.")
 
     seq = 0
     stalls = 0
@@ -126,11 +127,14 @@ def main() -> int:
                     print(f"[{time.strftime('%H:%M:%S')}] {i[0]}")
 
             state = "ENGAGED" if engine.engaged else "off"
+            prog = max(engine.start_progress, engine.stop_progress)
+            if prog > 0.0:
+                state += f"  hold:{int(prog * 100):3d}%"
             color = (0, 255, 0) if engine.engaged else (0, 0, 255)
-            cv2.putText(frame, f"{fps:5.1f} fps  {state}  last:{last_event}",
+            cv2.putText(frame, f"{fps:5.1f} fps  {state}  pose:{engine.pose}  last:{last_event}",
                         (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             cv2.putText(frame,
-                        f"palm 1s = on/off   m = mirror({'on' if mirror else 'off'})   ESC = quit",
+                        f"index 1s = start   back-of-hand 1.5s = stop   m = mirror({'on' if mirror else 'off'})   ESC = quit",
                         (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
             cv2.imshow("JARVIS gesture (G2)", frame)
             key = cv2.waitKey(1) & 0xFF

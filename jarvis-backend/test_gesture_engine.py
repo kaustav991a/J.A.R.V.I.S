@@ -1,8 +1,10 @@
-"""Phase G2 — harness for the gesture state machine + pointer backend.
+"""Phase G3 — harness for the gesture state machine + pointer backend.
 
 No camera, no mediapipe, no ctypes side effects: synthetic 21-landmark hands
-are fed through GestureEngine and intents are asserted (plan §4 G2). Same
-no-hardware discipline as the other harnesses.
+are fed through GestureEngine and intents are asserted. Covers the G3
+natural-grab vocabulary: index-up start, back-of-hand stop, palm-centroid
+move, pinch tap click (fires on pinch-land, never drags), fist grab drag,
+two-finger scroll, thumb+middle right click.
 """
 
 from modules.gesture_camera import decorate_url
@@ -28,18 +30,18 @@ TIP_IDX = {"index": 8, "middle": 12, "ring": 16, "pinky": 20}
 HAND_SIZE = 0.15  # wrist -> middle MCP
 
 
-def make_hand(index_tip=(0.42, 0.32), ext=("index", "middle", "ring", "pinky"),
-              pinch=None, facing=True):
-    """21 (x, y, z) landmarks. pinch = ("left"|"right", normalised_distance)."""
+def make_hand(ext=("index", "middle", "ring", "pinky"), pinch=None,
+              facing=True, shift=(0.0, 0.0)):
+    """21 (x, y, z) landmarks. pinch = ("left"|"right", normalised_distance).
+    shift translates the whole hand (drives the palm-centroid cursor)."""
     lm = [(WRIST_POS[0], WRIST_POS[1], 0.0)] * 21
     lm[9] = (0.5, WRIST_POS[1] - HAND_SIZE, 0.0)          # middle MCP
     lm[5] = ((0.44, 0.47, 0.0) if facing else (0.56, 0.47, 0.0))   # index MCP
     lm[17] = ((0.56, 0.48, 0.0) if facing else (0.44, 0.48, 0.0))  # pinky MCP
+    lm[13] = (0.53, 0.475, 0.0)                            # ring MCP
     for name, x in FINGER_X.items():
         if name in ext:
             pip, tip = (x, 0.40), (x, 0.32)
-            if name == "index":
-                tip = index_tip
         else:
             pip, tip = (x, 0.48), (x, 0.55)
         lm[PIP_IDX[name]] = (pip[0], pip[1], 0.0)
@@ -50,23 +52,28 @@ def make_hand(index_tip=(0.42, 0.32), ext=("index", "middle", "ring", "pinky"),
         which, d = pinch
         anchor = lm[TIP_IDX["index" if which == "left" else "middle"]]
         lm[4] = (anchor[0] + d * HAND_SIZE, anchor[1], 0.0)
+    if shift != (0.0, 0.0):
+        lm = [(p[0] + shift[0], p[1] + shift[1], p[2]) for p in lm]
     return lm
 
 
 PALM = make_hand()                                   # open palm, facing camera
-PALM_BACK = make_hand(facing=False)
-FIST = make_hand(ext=())
-POINT = make_hand(ext=("index",))                    # index-point (move pose)
+PALM_BACK = make_hand(facing=False)                  # back of hand = stop sign
+FIST = make_hand(ext=())                             # grab
+INDEX_UP = make_hand(ext=("index",))                 # start trigger
 SCROLL_POSE = make_hand(ext=("index", "middle"))
 
 
-def point_at(x, y):
-    return make_hand(index_tip=(x, y), ext=("index",))
+def palm_at(dx, dy=0.0):
+    return make_hand(shift=(dx, dy))
 
 
-def pinched(d=0.2, which="left", index_tip=(0.42, 0.32)):
-    ext = ("index",) if which == "left" else ("index", "middle", "ring", "pinky")
-    return make_hand(index_tip=index_tip, ext=ext, pinch=(which, d))
+def pinched(d=0.2, which="left"):
+    """A pinch with the hand otherwise open: the pinching finger dips to the
+    thumb, every other finger stays extended (that is what arms the click)."""
+    ext = (("middle", "ring", "pinky") if which == "left"
+           else ("index", "ring", "pinky"))
+    return make_hand(ext=ext, pinch=(which, d))
 
 
 class Sim:
@@ -87,8 +94,7 @@ class Sim:
 
 def engaged_sim():
     sim = Sim()
-    assert sim.feed(PALM, 35) == [("engaged",)]
-    sim.feed(POINT, 5)  # leave palm pose so the gate re-arms
+    assert sim.feed(INDEX_UP, 35) == [("engaged",)]
     assert sim.e.engaged
     return sim
 
@@ -98,93 +104,157 @@ def kinds(intents):
 
 
 # ------------------------------------------------------------------ #
-# engage / disengage gate
+# start / stop gates
 # ------------------------------------------------------------------ #
 
-def test_palm_hold_engages():
-    assert Sim().feed(PALM, 35) == [("engaged",)]
+def test_index_hold_starts_control():
+    sim = Sim()
+    assert sim.feed(INDEX_UP, 35) == [("engaged",)]
+    assert sim.e.engaged
 
 
-def test_brief_palm_does_not_engage():
-    assert Sim().feed(PALM, 20) == []
+def test_brief_index_does_not_start():
+    assert Sim().feed(INDEX_UP, 20) == []
 
 
-def test_waving_hand_never_engages():
+def test_palm_or_fist_never_starts():
+    sim = Sim()
+    out = sim.feed(PALM, 60) + sim.feed(FIST, 60) + sim.feed(PALM_BACK, 60)
+    assert out == []
+    assert not sim.e.engaged
+
+
+def test_waving_hand_never_starts():
     sim = Sim()
     out = []
-    for _ in range(12):  # open/close chatter, none held for a second
+    for _ in range(12):  # open/close chatter, nothing held for a second
         out += sim.feed(PALM, 5)
         out += sim.feed(FIST, 5)
     assert out == []
 
 
-def test_palm_back_of_hand_does_not_engage():
-    assert Sim().feed(PALM_BACK, 60) == []
-
-
-def test_holding_palm_does_not_retoggle():
-    assert Sim().feed(PALM, 90) == [("engaged",)]
-
-
-def test_second_palm_hold_disengages():
+def test_back_hand_hold_stops_control():
     sim = engaged_sim()
-    assert sim.feed(PALM, 35) == [("disengaged",)]
-    assert sim.feed(point_at(0.30, 0.30), 10) == []  # gestures dead
+    out = sim.feed(PALM_BACK, 55)
+    assert out == [("disengaged",)]
+    assert not sim.e.engaged
+    assert sim.feed(pinched(), 6) == []  # gestures dead after stop
+
+
+def test_brief_back_hand_does_not_stop():
+    sim = engaged_sim()
+    assert kinds(sim.feed(PALM_BACK, 30)).count("disengaged") == 0
+    assert sim.e.engaged
+
+
+def test_start_progress_reports_while_arming():
+    sim = Sim()
+    sim.feed(INDEX_UP, 15)
+    assert 0.0 < sim.e.start_progress < 1.0
+
+
+def test_back_palm_freezes_cursor_while_arming():
+    sim = engaged_sim()
+    sim.feed(PALM, 40)  # settle
+    out = sim.feed(make_hand(facing=False, shift=(0.1, 0.0)), 20)
+    assert [i for i in out if i[0] == "move"] == []
 
 
 # ------------------------------------------------------------------ #
-# cursor movement
+# cursor movement (palm centroid)
 # ------------------------------------------------------------------ #
 
-def test_no_move_before_engage():
-    assert Sim().feed(POINT, 20) == []
+def test_no_move_or_click_before_start():
+    sim = Sim()
+    out = sim.feed(PALM, 20) + sim.feed(pinched(), 6) + sim.feed(FIST, 6)
+    assert out == []
 
 
-def test_move_emits_margin_mapped_coords():
+def test_palm_moves_cursor_margin_mapped():
     sim = engaged_sim()
-    out = sim.feed(point_at(0.30, 0.30), 40)  # hold until the filter settles
+    out = sim.feed(PALM, 40)  # hold until the filter settles
     moves = [i for i in out if i[0] == "move"]
-    assert moves, "engaged index-point must move the cursor"
-    assert abs(moves[-1][1] - (0.30 - 0.15) / 0.70) < 0.03
-    assert abs(moves[-1][2] - (0.30 - 0.15) / 0.70) < 0.03
-    out2 = sim.feed(point_at(0.60, 0.30), 40)
+    assert moves, "engaged open palm must move the cursor"
+    assert abs(moves[-1][1] - 0.5107) < 0.03   # centroid 0.5075 margin-mapped
+    out2 = sim.feed(palm_at(0.15), 40)
     moves2 = [i for i in out2 if i[0] == "move"]
-    assert moves2 and moves2[-1][1] > moves[-1][1] + 0.3  # followed rightwards
+    assert moves2 and moves2[-1][1] > moves[-1][1] + 0.15  # followed rightwards
     assert all(0.0 <= m[1] <= 1.0 and 0.0 <= m[2] <= 1.0 for m in moves + moves2)
 
 
 def test_deadzone_holds_steady_cursor():
     sim = engaged_sim()
-    sim.feed(point_at(0.30, 0.30), 40)  # settle on the target first
+    sim.feed(PALM, 40)  # settle on the target first
     out = []
     for i in range(10):  # sub-deadzone jitter
-        out += sim.feed(point_at(0.30 + 0.0005 * (-1) ** i, 0.30))
+        out += sim.feed(palm_at(0.0005 * (-1) ** i))
+    assert [i for i in out if i[0] == "move"] == []
+
+
+def test_index_only_does_not_move_cursor_when_active():
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(make_hand(ext=("index",), shift=(0.1, 0.0)), 20)
     assert [i for i in out if i[0] == "move"] == []
 
 
 # ------------------------------------------------------------------ #
-# clicks, taps, chatter
+# clicks (pinch tap — click fires on pinch-land, never drags)
 # ------------------------------------------------------------------ #
 
-def test_pinch_tap_clicks():
+def test_pinch_tap_clicks_fast():
     sim = engaged_sim()
-    out = sim.feed(POINT, 3)
-    out += sim.feed(pinched(), 4)
-    out += sim.feed(POINT, 8)
-    assert kinds(out).count("click") == 1
-    assert "drag_start" not in kinds(out)
-    assert "double_click" not in kinds(out)
+    sim.feed(PALM, 40)
+    out = sim.feed(pinched(), 4)          # click on the down-confirm frame
+    out += sim.feed(PALM, 8)
+    k = kinds(out)
+    assert k.count("click") == 1
+    assert "drag_start" not in k and "double_click" not in k
 
 
-def test_double_tap_double_clicks():
+def test_pinch_hold_stays_single_click_no_drag():
     sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(pinched(), 30)         # held a full second — G2 turned this
+    out += sim.feed(PALM, 8)              # into a drag-select; G3 must not
+    k = kinds(out)
+    assert k.count("click") == 1
+    assert "drag_start" not in k and "drag_end" not in k
+
+
+def test_double_tap_same_spot_double_clicks():
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
     out = sim.feed(pinched(), 4)
-    out += sim.feed(POINT, 4)
+    out += sim.feed(PALM, 8)
     out += sim.feed(pinched(), 4)
-    out += sim.feed(POINT, 8)
+    out += sim.feed(PALM, 8)
     k = kinds(out)
     assert k.count("click") == 1 and k.count("double_click") == 1
     assert k.index("click") < k.index("double_click")
+
+
+def test_slow_second_tap_stays_single():
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(pinched(), 4)
+    out += sim.feed(PALM, 35)             # > double_window_s apart
+    out += sim.feed(pinched(), 4)
+    out += sim.feed(PALM, 8)
+    k = kinds(out)
+    assert k.count("click") == 2 and "double_click" not in k
+
+
+def test_two_clicks_far_apart_stay_single():
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(pinched(), 4)
+    out += sim.feed(palm_at(0.15), 12)    # cursor travels between the taps
+    out += sim.feed(make_hand(ext=("middle", "ring", "pinky"),
+                              pinch=("left", 0.2), shift=(0.15, 0.0)), 4)
+    out += sim.feed(palm_at(0.15), 8)
+    k = kinds(out)
+    assert k.count("click") == 2 and "double_click" not in k
 
 
 def test_single_frame_chatter_rejected():
@@ -192,17 +262,17 @@ def test_single_frame_chatter_rejected():
     out = []
     for _ in range(10):  # one-frame pinch blips must be debounced away
         out += sim.feed(pinched(), 1)
-        out += sim.feed(POINT, 3)
-    assert [i for i in out if i[0] in ("click", "double_click", "drag_start")] == []
+        out += sim.feed(PALM, 3)
+    assert [i for i in out if i[0] in ("click", "double_click")] == []
 
 
-def test_cursor_frozen_during_pending_tap():
+def test_cursor_frozen_during_pinch():
     sim = engaged_sim()
-    sim.feed(point_at(0.30, 0.30), 40)                    # settle
-    sim.feed(pinched(index_tip=(0.30, 0.30)), 2)          # debounce -> down
+    sim.feed(PALM, 40)                                    # settle
     out = []
-    for i in range(5):  # finger dips while pinched — cursor must not budge
-        out += sim.feed(pinched(index_tip=(0.30 + 0.02 * i, 0.32)))
+    for i in range(6):  # hand wobbles while pinched — cursor must not budge
+        out += sim.feed(make_hand(ext=("middle", "ring", "pinky"),
+                                  pinch=("left", 0.2), shift=(0.02 * i, 0.01)))
     assert [i for i in out if i[0] == "move"] == []
 
 
@@ -216,26 +286,40 @@ def test_right_pinch_tap_right_clicks():
 
 
 # ------------------------------------------------------------------ #
-# drag & drop
+# grab (fist) — drag & drop, fully separate from click
 # ------------------------------------------------------------------ #
 
-def test_pinch_hold_drags_then_releases():
+def test_fist_grabs_drags_and_drops():
     sim = engaged_sim()
-    out = sim.feed(pinched(), 12)  # held past tap_max -> drag
+    sim.feed(PALM, 40)
+    out = sim.feed(FIST, 6)               # close hand -> mouse down
     for i in range(6):
-        out += sim.feed(pinched(index_tip=(0.42 + 0.02 * i, 0.32)))
-    out += sim.feed(POINT, 4)
+        out += sim.feed(make_hand(ext=(), shift=(0.02 * i, 0.0)))
+    out += sim.feed(PALM, 6)              # open hand -> drop
     k = kinds(out)
     assert k.count("drag_start") == 1 and k.count("drag_end") == 1
-    assert "click" not in k
+    assert "click" not in k and "double_click" not in k
     drag_moves = [i for i in out[k.index("drag_start"):] if i[0] == "move"]
     assert drag_moves, "cursor must keep moving while dragging"
     assert k.index("drag_start") < k.index("drag_end")
 
 
+def test_fist_with_thumb_touching_fingers_never_clicks():
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    # a closing fist shortens BOTH thumb distances — must grab, never click
+    out = sim.feed(make_hand(ext=(), pinch=("left", 0.2)), 8)
+    out += sim.feed(make_hand(ext=(), pinch=("right", 0.2)), 8)
+    out += sim.feed(PALM, 6)
+    k = kinds(out)
+    assert "click" not in k and "right_click" not in k and "double_click" not in k
+    assert k.count("drag_start") == 1 and k.count("drag_end") == 1
+
+
 def test_tracking_loss_releases_drag_then_disengages():
     sim = engaged_sim()
-    sim.feed(pinched(), 12)
+    sim.feed(PALM, 40)
+    sim.feed(FIST, 6)
     out = sim.feed(None, 75)  # hand leaves the frame mid-drag
     k = kinds(out)
     assert k.count("drag_end") == 1 and k.count("disengaged") == 1
@@ -251,12 +335,28 @@ def test_two_finger_scroll_up():
     sim = engaged_sim()
     out = []
     for i in range(10):  # hand moves up -> positive ticks, no cursor moves
-        out += sim.feed(make_hand(index_tip=(0.44, 0.32 - 0.012 * i),
-                                  ext=("index", "middle")))
+        out += sim.feed(make_hand(ext=("index", "middle"),
+                                  shift=(0.0, -0.012 * i)))
     ticks = [i[1] for i in out if i[0] == "scroll"]
     assert sum(ticks) >= 3
     assert all(t > 0 for t in ticks)
     assert [i for i in out if i[0] == "move"] == []
+
+
+# ------------------------------------------------------------------ #
+# pose exposure (daemon/HUD live state)
+# ------------------------------------------------------------------ #
+
+def test_pose_attribute_tracks_committed_pose():
+    sim = engaged_sim()
+    sim.feed(PALM, 5)
+    assert sim.e.pose == "palm"
+    sim.feed(FIST, 5)
+    assert sim.e.pose == "fist"
+    sim.feed(PALM_BACK, 5)
+    assert sim.e.pose == "back_palm"
+    sim.feed(None, 2)
+    assert sim.e.pose == "none"
 
 
 # ------------------------------------------------------------------ #
