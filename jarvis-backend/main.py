@@ -69,6 +69,31 @@ SYSTEM_ONLINE = False
 proactive_agent = None
 overnight_worker = None  # Roadmap §1.1: the autonomous task-queue daemon (set in lifespan)
 
+# --- Action types whose raw output is routed through the synthesis pipeline
+# (spoken as a synthesised summary) instead of str(result) verbatim. Shared by
+# BOTH dispatch paths (backdoor/API + voice/WS) so they can never diverge again.
+# memory_recall is intentionally NOT here — it has a dedicated intercept branch
+# that routes [DEEP_MEMORY_DATA] to _stream_deep_memory_speak.
+DATA_ACTIONS = frozenset({
+    "web_search",
+    "tavily_search",
+    "web_browse",
+    "read_email",
+    "check_email",
+    "check_calendar",
+    "check_vitals",
+    "read_screen",
+    "gmail_read_unread",
+    "gmail_read",
+    # Phase 8.6.7: telemetry actions routed through synthesis so Rule 9
+    # (TELEMETRY VERBOSITY RULE) can filter raw snapshots down to a
+    # single spoken metric or a brief health summary.
+    "system_status",
+    "get_telemetry",
+    # Personal-document RAG results synthesised like other data tools.
+    "search_documents",
+})
+
 # --- Barge-in / interruptibility (Refinement Phase) ---
 # Set by a "stop"/"quiet"/"cancel"/"shut up" command; checked at the top of every
 # sentence iteration in the streaming-synthesis loops so JARVIS can be cut off
@@ -1817,30 +1842,7 @@ async def backdoor_command(req: BackdoorRequest):
                 else:
                     await safe_send_all({"status": "close_search", "message": "Clearing satellite display."})
 
-                # --- BATCHED ACTION ENGINE ---
-                DATA_ACTIONS = {
-                    "web_search",
-                    "tavily_search",
-                    "web_browse",
-                    "read_email",
-                    "check_email",
-                    "check_calendar",
-                    "check_vitals",
-                    "read_screen",
-                    "gmail_read_unread",
-                    "gmail_read",
-                    # Phase 8.6.7: telemetry actions routed through synthesis so Rule 9
-                    # (TELEMETRY VERBOSITY RULE) can filter raw snapshots down to a
-                    # single spoken metric or a brief health summary.
-                    "system_status",
-                    "get_telemetry",
-                    # Personal-document RAG results synthesised like other data tools.
-                    "search_documents",
-                    # NOTE: memory_recall is NOT in DATA_ACTIONS — it has its own
-                    # dedicated intercept branch below to route [DEEP_MEMORY_DATA]
-                    # payloads to _stream_deep_memory_speak, bypassing the standard
-                    # 2-sentence synthesis pipeline.
-                }
+                # --- BATCHED ACTION ENGINE --- (uses module-level DATA_ACTIONS)
                 batched_data = []
                 has_web_search = False
                 
@@ -2626,23 +2628,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                         else:
                                             await safe_send({"status": "close_search", "message": "Clearing satellite display."})
 
-                                        DATA_ACTIONS = {
-                    "web_search",
-                    "tavily_search",
-                    "read_email",
-                    "check_email",
-                    "check_calendar",
-                    "check_vitals",
-                    "read_screen",
-                    "gmail_read_unread",
-                    "gmail_read",
-                    # Phase 8.6.7: telemetry actions routed through synthesis so Rule 9
-                    # (TELEMETRY VERBOSITY RULE) can filter raw snapshots down to a
-                    # single spoken metric or a brief health summary.
-                    "system_status",
-                    "get_telemetry",
-                    # NOTE: memory_recall is NOT here — dedicated intercept branch below
-                }
+                                        # (uses module-level DATA_ACTIONS)
                                         batched_data = []
                                         has_web_search = False
                                         for intent_json in actions:
