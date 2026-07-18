@@ -27,7 +27,7 @@ Two processes, connected over WebSockets:
   * *TTS* — local **Piper** streaming synthesis, Edge-TTS fallback.
 * **Autonomy engine** — ReAct planner + self-healing worker loop, durable goal/task queue, overnight worker, and a guarded self-improvement loop (propose → branch → test → PR, never auto-merge).
 * **Continuous spatial awareness** — YOLOv8 + DeepFace over IP cameras: who's present, emotional state, proactive UI lock when you leave frame.
-* **Hand-gesture mouse control** — full in-air pointer via **MediaPipe Hands** (21 landmarks, CPU-only ~30 fps, 100% local). Open-palm engage/disengage gate (nothing hijacks the cursor by accident), index-finger cursor with One-Euro smoothing, pinch left/right/double-click, pinch-hold drag & drop, and scroll — injected through `ctypes SendInput` for 30 Hz latency. Pure-logic state machine (`gesture_engine.py`) is harness-tested; the loop runs as a supervised daemon (crash → auto-restart). See [`HAND_GESTURE_CONTROL_PLAN.md`](HAND_GESTURE_CONTROL_PLAN.md).
+* **Hand-gesture mouse control** — full in-air pointer via **MediaPipe Hands** (21 landmarks, CPU-only ~30 fps, 100% local). Open-palm engage/disengage gate (nothing hijacks the cursor by accident), index-finger cursor with One-Euro smoothing, pinch left/right/double-click, pinch-hold drag & drop, and scroll — injected through `ctypes SendInput` for 30 Hz latency. Pure-logic state machine (`gesture_engine.py`) is harness-tested; the loop runs as a supervised daemon (crash → auto-restart). Now with relative-trackpad + acceleration + clutch + dwell right-click and a calibration wizard (G5.1/G5.2). See [`JARVIS_MASTER_ROADMAP.md`](JARVIS_MASTER_ROADMAP.md).
 * **Multi-window holographic HUD** — the full-screen kiosk HUD plus two ambient **Electron** modes: a top-center **Notch** (voice-visualizer orb + live status) and a right-edge **Sidecar** (clock, task queue, system vitals, calendar). All share one backend WebSocket.
 * **4-tier memory** — RAM short-term → SQLite core facts → ChromaDB semantic vectors → episodic daily summaries. Plus a personal-document RAG cortex.
 * **Deep OS / app control** — file, terminal, GUI, workspace, browser, macro, and OS agents; Android-TV control over ADB.
@@ -217,7 +217,7 @@ The **cloud gateway** has its own env + deploy guide in [`jarvis-backend/CLOUD_G
 ## 📜 Documentation
 
 * [`CHANGELOG.md`](CHANGELOG.md) — release history
-* [`ROADMAP_TO_FULL_JARVIS.md`](ROADMAP_TO_FULL_JARVIS.md) — capability roadmap
+* [`JARVIS_MASTER_ROADMAP.md`](JARVIS_MASTER_ROADMAP.md) — **single source of truth**: what's done, what's left, decisions & constraints (merges the old roadmap / reliability / gesture / upgrades / mobile / login plans)
+* [`TEST_PLAN.md`](TEST_PLAN.md) — automatic + manual test plan (pre-Electron)
 * [`JARVIS_MANUAL.md`](JARVIS_MANUAL.md) — operation manual
-* [`HAND_GESTURE_CONTROL_PLAN.md`](HAND_GESTURE_CONTROL_PLAN.md) — hand-gesture mouse control design & status
 * [`jarvis-backend/CLOUD_GATEWAY.md`](jarvis-backend/CLOUD_GATEWAY.md) — always-on Telegram deploy
