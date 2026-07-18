@@ -2166,6 +2166,9 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
     # --- Phase 6: Gather digital life context for briefing ---
     email_context = "Email integration offline."
     calendar_context = "Calendar integration offline."
+    health_context = "Health integration offline."  # init BEFORE the try — used
+    # outside it at the f-string below; a Gmail/Calendar/Health fault must not
+    # leave it unbound (was a NameError that killed the whole wake briefing).
     try:
         from modules.gmail_agent import GmailAgent, is_gmail_available
         from modules.calendar_agent import CalendarAgent, is_calendar_available
@@ -2176,8 +2179,7 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
         if is_calendar_available():
             _cal = CalendarAgent()
             calendar_context = _cal.get_today_schedule()
-            
-        health_context = "Health integration offline."
+
         if is_health_available():
             _health = HealthAgent()
             health_data = _health.get_today_health_data()

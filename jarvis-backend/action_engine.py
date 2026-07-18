@@ -480,8 +480,8 @@ class ActionEngine:
             return await asyncio.to_thread(self._sleep_protocol)
         elif action == "os_control":
             if target == "lock_screen":
-                return self.os_agent.lock_workstation()
-            return self.os_agent.control_media(target)
+                return await asyncio.to_thread(self.os_agent.lock_workstation)
+            return await asyncio.to_thread(self.os_agent.control_media, target)
         elif action == "system_status":
             # Phase 2 upgrade: full TelemetryAgent snapshot supersedes os_agent basic read
             return await asyncio.to_thread(self.telemetry_agent.get_summary_string)
@@ -661,7 +661,7 @@ class ActionEngine:
             print(f"[ACTION ENGINE] HumanGUIAgent result: {result[:120]}")
             return result
         elif action == "read_screen":
-            return self._read_screen()
+            return await asyncio.to_thread(self._read_screen)
         # --- Phase 7: Health Data ---
         elif action == "check_vitals":
             return await asyncio.to_thread(self._check_vitals)
@@ -671,24 +671,24 @@ class ActionEngine:
         elif action == "read_email":
             return await asyncio.to_thread(self._read_email, target)
         elif action == "search_email":
-            return self._search_email(target)
+            return await asyncio.to_thread(self._search_email, target)
         elif action == "send_email":
-            return self._send_email(target)
+            return await asyncio.to_thread(self._send_email, target)
         # ── Phase 6: Gmail Skill Pack ─────────────────────────────────────────
         elif action == "gmail_read_unread":
             return await asyncio.to_thread(self._gmail_read_unread, target)
         elif action == "gmail_read":
             return await asyncio.to_thread(self._gmail_read, target)
         elif action == "gmail_send":
-            return self._gmail_send(target)
+            return await asyncio.to_thread(self._gmail_send, target)
         elif action == "gmail_reply":
-            return self._gmail_reply(target)
+            return await asyncio.to_thread(self._gmail_reply, target)
         elif action == "check_calendar":
             return await asyncio.to_thread(self._check_calendar)
         elif action == "create_event":
-            return self._create_event(target)
+            return await asyncio.to_thread(self._create_event, target)
         elif action == "clear_schedule":
-            return self._clear_schedule()
+            return await asyncio.to_thread(self._clear_schedule)
         elif action == "find_file":
             return await asyncio.to_thread(self._find_file, target)
         elif action == "list_directory":
@@ -697,32 +697,32 @@ class ActionEngine:
             # is NOT gated behind the deliberately-blocked run_terminal_command.
             return await asyncio.to_thread(self.terminal_agent.list_directory, target or ".")
         elif action == "create_note":
-            return self._create_note(target)
+            return await asyncio.to_thread(self._create_note, target)
         elif action == "organize_downloads":
-            return self._organize_downloads()
+            return await asyncio.to_thread(self._organize_downloads)
         # ── Phase 2: Invisible Fast-Lane ─────────────────────────────────────
         elif action == "run_terminal_command":
-            return self._run_terminal_command(target)
+            return await asyncio.to_thread(self._run_terminal_command, target)
         elif action == "get_telemetry":
             return await asyncio.to_thread(self.telemetry_agent.get_summary_string)
         # ── Phase 3: Code Specialist ──────────────────────────────────────────
         elif action == "workspace_read":
-            return self._workspace_read(target)
+            return await asyncio.to_thread(self._workspace_read, target)
         elif action == "workspace_write":
-            return self._workspace_write(target)
+            return await asyncio.to_thread(self._workspace_write, target)
         elif action == "workspace_patch":
-            return self._workspace_patch(target)
+            return await asyncio.to_thread(self._workspace_patch, target)
         # ── Phase 6: GitHub Specialist ────────────────────────────────────────
         elif action == "github_status":
-            return self._github_status(target)
+            return await asyncio.to_thread(self._github_status, target)
         elif action == "github_commit":
-            return self._github_commit(target)
+            return await asyncio.to_thread(self._github_commit, target)
         elif action == "github_push":
-            return self._github_push(target)
+            return await asyncio.to_thread(self._github_push, target)
         elif action == "github_log":
-            return self._github_log(target)
+            return await asyncio.to_thread(self._github_log, target)
         elif action == "github_diff":
-            return self._github_diff(target)
+            return await asyncio.to_thread(self._github_diff, target)
         # ── Phase 8.2: OS Macro Engine ────────────────────────────────────────
         elif action == "os_macro":
             return await asyncio.to_thread(self._os_macro, target)
