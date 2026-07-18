@@ -676,7 +676,22 @@ overlays, distance) plus the **audit-found robustness fixes** below.
 
 *Effort:* all small. Backend 1-4 have existing harness patterns (add cheap regressions); frontend 5-9 verified by `npm run build` + a manual drop/reconnect check.
 
-### 10.2 — G5.1 Relative trackpad mapping + acceleration + clutch (the big ergonomics change)
+### 10.2 — G5.1 Relative trackpad mapping + acceleration + clutch (✅ DONE 2026-07-19, `644a750`)
+
+> **Status:** built + harness-green (test_gesture_engine.py 49/49, calibration 31/31).
+> `mapping_mode` "absolute" (default) | "relative"; relative gated by
+> `JARVIS_GESTURE_RELATIVE=1` / calibration JSON / spike `r` key until Kaustav's
+> live gate flips the default. Delivered: acceleration curve (dampen slow / amplify
+> fast), CLUTCH (brief back-of-hand freeze + no-jump re-engage via anchor drop),
+> dwell right-click (quick pinch = left click, held ≥0.5s = right click; thumb+middle
+> RETIRED), pointer `move_rel` (read-add-write on the live cursor, absolute SendInput
+> so Windows ballistics can't distort the engine accel), spike `r`/`[`/`]` live toggles,
+> daemon broadcasts `clutch`. **LIVE GATE OWED (Kaustav):** run
+> `gesture_spike.py <url>`, press `r` for relative, feel the accel/gain (`[`/`]`),
+> clutch (brief back-of-hand → move hand → re-face palm, cursor must NOT jump), and
+> dwell right-click; `w` to persist; then decide whether to flip the default.
+>
+> **Original plan (kept for reference):**
 
 **Problem:** the engine maps the palm centroid to an *absolute* screen band (`_update_move` → `PointerBackend.move` with `MOUSEEVENTF_ABSOLUTE`) — arm-in-the-air "gorilla arm."
 
@@ -765,13 +780,13 @@ Friendliness questions to decide **before** touching the engine:
 `G5.0` → `G5.6` vocab decision (gates G5.1's vocab) → `G5.1` relative+clutch → `G5.2` wizard → `G5.4` distance → `G5.5` filtering → `G5.3` overlays → `G5.7` backlog. One commit per item; harness green + Kaustav live-gate before moving on.
 
 **Resume pointer (updated 2026-07-19):** ✅ **G5.0 DONE** (all 9,
-`4a2945b`/`b1771ff`/`31afe0d`/`54f47a0`, unpushed). ✅ **G5.6 vocab DECIDED** (§10.7:
-relative-trackpad move, first-class clutch via palm-tilt, pinch-and-hold right-click
-retiring thumb+middle, distinct start/stop holds with brief-back-of-hand=clutch /
-≥1.5s=STOP). **NEXT = build `G5.1`** — relative delta-mapping + acceleration + clutch
-in `gesture_engine.py` (pure state machine, no I/O) + `move_rel`/dwell-right-click in
-`gesture_pointer.py`, all harnessable via `test_gesture_engine.py` (delta math, accel
-buckets, clutch no-jump, dwell timing, mirror x-invert, deadzone). Absolute stays as
-`JARVIS_GESTURE_RELATIVE`-gated fallback; Kaustav live-gates before flipping the
-default. Good xhigh candidate. Kaustav-owed live gates still outstanding: G4 camera +
-Phase-4/5 smoke-tests (§9) + a quick G5.0-item-7 eyeball. Then push + merge.
+`4a2945b`/`b1771ff`/`31afe0d`/`54f47a0`). ✅ **G5.6 vocab DECIDED** (`bd54c0a`, §10.7).
+✅ **G5.1 DONE** (`644a750`, §10.2 — relative mapping + accel + clutch + dwell
+right-click, 49/49). All unpushed on `feat/cloud-gateway`. **NEXT buildable = `G5.2`
+interactive calibration wizard** (§10.3 — `calibrate_gesture.py`: measure palm_sign /
+hand-size / pinch min-max / reach instead of guessing; pure derivation helpers are
+harnessable, the flow is live-gated). Then G5.4 distance, G5.5 filtering, G5.3
+overlays, G5.7 backlog. **Kaustav-owed live gates (hardware):** G5.1 relative/clutch/
+dwell feel; G4 camera gates + Phase-4/5 smoke-tests (§9); G5.0-item-7 eyeball. Then
+push + merge. **Also queued (Kaustav asked 2026-07-19):** away→mobile presence — see
+NEW `MOBILE_PRESENCE_PLAN.md` (B: phone-WiFi probe, no app; C: dedicated app scope).
