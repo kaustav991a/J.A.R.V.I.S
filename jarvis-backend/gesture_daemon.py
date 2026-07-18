@@ -151,6 +151,7 @@ class GestureDaemon:
             "state": state,
             "pose": getattr(engine, "pose", "none") if engine else "none",
             "engaged": bool(engine and engine.engaged),
+            "clutch": bool(engine and getattr(engine, "clutch", False)),
             "denied": denied,
             "locked": self._locked,
             "suspended": gesture_arbiter.is_suspended(),

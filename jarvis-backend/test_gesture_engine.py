@@ -1,10 +1,12 @@
-"""Phase G3 — harness for the gesture state machine + pointer backend.
+"""Phase G3 + G5.1 — harness for the gesture state machine + pointer backend.
 
 No camera, no mediapipe, no ctypes side effects: synthetic 21-landmark hands
 are fed through GestureEngine and intents are asserted. Covers the G3
-natural-grab vocabulary: index-up start, back-of-hand stop, palm-centroid
-move, pinch tap click (fires on pinch-land, never drags), fist grab drag,
-two-finger scroll, thumb+middle right click.
+natural-grab vocabulary (index-up start, back-of-hand stop, palm-centroid
+move, fist grab drag, two-finger scroll) plus the G5.1 ergonomics rework:
+quick pinch = left click / held pinch = DWELL right click (both on release),
+thumb+middle right-click RETIRED, relative trackpad move_delta with an
+acceleration curve, and back-of-hand CLUTCH (freeze + reposition, no jump).
 """
 
 from modules.gesture_camera import decorate_url
@@ -205,20 +207,23 @@ def test_index_only_does_not_move_cursor_when_active():
 def test_pinch_tap_clicks_fast():
     sim = engaged_sim()
     sim.feed(PALM, 40)
-    out = sim.feed(pinched(), 4)          # click on the down-confirm frame
+    out = sim.feed(pinched(), 4)          # quick pinch: click fires on release
     out += sim.feed(PALM, 8)
     k = kinds(out)
     assert k.count("click") == 1
-    assert "drag_start" not in k and "double_click" not in k
+    assert "drag_start" not in k and "double_click" not in k and "right_click" not in k
 
 
-def test_pinch_hold_stays_single_click_no_drag():
+def test_pinch_hold_is_dwell_right_click():
+    # G5.1: a left pinch HELD past dwell_right_click_s is a RIGHT click (on
+    # release) — never a left click, never a drag (grab is the fist).
     sim = engaged_sim()
     sim.feed(PALM, 40)
-    out = sim.feed(pinched(), 30)         # held a full second — G2 turned this
-    out += sim.feed(PALM, 8)              # into a drag-select; G3 must not
+    out = sim.feed(pinched(), 30)         # held ~1s >= 0.5s dwell
+    out += sim.feed(PALM, 8)              # release -> decision
     k = kinds(out)
-    assert k.count("click") == 1
+    assert k.count("right_click") == 1
+    assert "click" not in k and "double_click" not in k
     assert "drag_start" not in k and "drag_end" not in k
 
 
@@ -249,10 +254,11 @@ def test_two_clicks_far_apart_stay_single():
     sim = engaged_sim()
     sim.feed(PALM, 40)
     out = sim.feed(pinched(), 4)
-    out += sim.feed(palm_at(0.15), 12)    # cursor travels between the taps
+    out += sim.feed(PALM, 8)              # release the first tap AT spot 0
+    out += sim.feed(palm_at(0.15), 12)    # then travel to a new spot
     out += sim.feed(make_hand(ext=("middle", "ring", "pinky"),
                               pinch=("left", 0.2), shift=(0.15, 0.0)), 4)
-    out += sim.feed(palm_at(0.15), 8)
+    out += sim.feed(palm_at(0.15), 8)     # release the second tap AT spot 0.15
     k = kinds(out)
     assert k.count("click") == 2 and "double_click" not in k
 
@@ -276,13 +282,26 @@ def test_cursor_frozen_during_pinch():
     assert [i for i in out if i[0] == "move"] == []
 
 
-def test_right_pinch_tap_right_clicks():
+def test_thumb_middle_no_longer_right_clicks():
+    # thumb+middle was RETIRED as the right-click in G5.1 (it reads as an
+    # ambiguous "other" pose now); right-click is the left-pinch dwell instead.
     sim = engaged_sim()
-    out = sim.feed(pinched(which="right"), 4)
-    out += sim.feed(PALM, 5)
+    sim.feed(PALM, 40)
+    out = sim.feed(pinched(which="right"), 6)
+    out += sim.feed(PALM, 6)
     k = kinds(out)
-    assert k.count("right_click") == 1
-    assert "click" not in k
+    assert "right_click" not in k and "click" not in k
+
+
+def test_quick_then_dwell_are_different_clicks():
+    # same finger pair, two hold lengths -> two different clicks.
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(pinched(), 4) + sim.feed(PALM, 40)      # quick -> left click
+    out += sim.feed(pinched(), 30) + sim.feed(PALM, 8)     # held  -> right click
+    k = kinds(out)
+    assert k.count("click") == 1 and k.count("right_click") == 1
+    assert k.index("click") < k.index("right_click")
 
 
 # ------------------------------------------------------------------ #
@@ -481,6 +500,115 @@ def test_url_with_query_or_other_shape_untouched():
     assert decorate_url("http://h:8080/video?320x240") == "http://h:8080/video?320x240"
     assert decorate_url("http://h/stream.mjpg") == "http://h/stream.mjpg"
     assert decorate_url("http://h:8080/video", res=None) == "http://h:8080/video"
+
+
+# ------------------------------------------------------------------ #
+# G5.1 — relative trackpad mapping + acceleration + clutch
+# ------------------------------------------------------------------ #
+
+def rel_sim(fps=30.0):
+    sim = Sim(GestureEngine(GestureConfig(mapping_mode="relative")), fps=fps)
+    assert sim.feed(INDEX_UP, 35) == [("engaged",)]
+    return sim
+
+
+def test_mapping_mode_defaults_to_absolute():
+    assert GestureConfig().mapping_mode == "absolute"
+
+
+def test_env_toggles_relative_mapping():
+    import os
+    old = os.environ.get("JARVIS_GESTURE_RELATIVE")
+    try:
+        os.environ["JARVIS_GESTURE_RELATIVE"] = "1"
+        assert GestureConfig.from_env().mapping_mode == "relative"
+        os.environ["JARVIS_GESTURE_RELATIVE"] = "0"
+        assert GestureConfig.from_env().mapping_mode == "absolute"
+    finally:
+        if old is None:
+            os.environ.pop("JARVIS_GESTURE_RELATIVE", None)
+        else:
+            os.environ["JARVIS_GESTURE_RELATIVE"] = old
+
+
+def test_relative_emits_move_delta_not_absolute():
+    sim = rel_sim()
+    sim.feed(PALM, 5)                      # anchor sync (no emit)
+    out = []
+    for i in range(1, 8):                  # hand travels rightward
+        out += sim.feed(palm_at(0.02 * i), 1)
+    deltas = [i for i in out if i[0] == "move_delta"]
+    assert deltas, "relative palm must emit move_delta"
+    assert all(d[1] > 0 for d in deltas)          # rightward hand -> +dx
+    assert [i for i in out if i[0] == "move"] == []   # never absolute in relative mode
+
+
+def test_accel_curve_dampens_slow_amplifies_fast():
+    e = GestureEngine(GestureConfig(mapping_mode="relative"))
+    c = e.cfg
+    assert e._accel(0.0) == c.accel_slow
+    assert e._accel(c.accel_v_lo) == c.accel_slow
+    assert e._accel(c.accel_v_hi) == c.accel_fast
+    assert e._accel(1e9) == c.accel_fast
+    mid = e._accel((c.accel_v_lo + c.accel_v_hi) / 2.0)
+    assert c.accel_slow < mid < c.accel_fast          # monotonic ramp
+    assert c.accel_slow < 1.0 < c.accel_fast          # slow dampens, fast amplifies
+
+
+def test_relative_deadzone_ignores_micro_jitter():
+    sim = rel_sim()
+    sim.feed(PALM, 5)
+    out = []
+    for i in range(10):                   # sub-deadzone wobble
+        out += sim.feed(palm_at(0.0005 * (-1) ** i))
+    assert [i for i in out if i[0] == "move_delta"] == []
+
+
+def test_relative_clutch_freezes_and_reengages_without_jump():
+    sim = rel_sim()
+    sim.feed(PALM, 5)
+    sim.feed(palm_at(0.1), 5)             # establish motion
+    # back-of-hand = clutch: reposition the hand far while frozen
+    sim.feed(make_hand(facing=False, shift=(0.1, 0.0)), 5)
+    out_clutch = sim.feed(make_hand(facing=False, shift=(0.4, 0.0)), 5)
+    assert sim.e.clutch is True
+    assert [i for i in out_clutch if i[0] == "move_delta"] == []   # frozen
+    # re-face the palm at the NEW hand location -> resume, no jump
+    out_resume = sim.feed(palm_at(0.4), 8)
+    deltas = [i for i in out_resume if i[0] == "move_delta"]
+    assert all(abs(d[1]) < 0.1 for d in deltas), "clutch must prevent a re-engage jump"
+    assert sim.e.clutch is False
+
+
+def test_clutch_flag_false_when_not_back_palm():
+    sim = rel_sim()
+    sim.feed(PALM, 6)
+    assert sim.e.clutch is False
+
+
+def test_relative_disengage_still_works():
+    sim = rel_sim()
+    out = sim.feed(PALM_BACK, 55)         # sustained back-of-hand = STOP
+    assert ("disengaged",) in out
+    assert not sim.e.engaged and sim.e.clutch is False
+
+
+def test_pointer_move_rel_adds_delta_to_cursor():
+    rec = Recorder()
+    b = PointerBackend(send_fn=rec, cursor_fn=lambda: (0.5, 0.5))
+    b.execute([("move_delta", 0.1, -0.2)])
+    flags, dx, dy, _ = rec.calls[0]
+    assert flags == PointerBackend.MOVE_FLAGS
+    assert abs(dx - to_absolute(0.6)) <= 1
+    assert abs(dy - to_absolute(0.3)) <= 1
+
+
+def test_pointer_move_rel_clamps_at_edges():
+    rec = Recorder()
+    b = PointerBackend(send_fn=rec, cursor_fn=lambda: (0.95, 0.05))
+    b.execute([("move_delta", 0.5, -0.5)])
+    _, dx, dy, _ = rec.calls[0]
+    assert dx == to_absolute(1.0) and dy == to_absolute(0.0)
 
 
 if __name__ == "__main__":  # plain-python runner, same no-pytest pattern as the other harnesses

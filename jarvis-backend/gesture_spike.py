@@ -128,19 +128,25 @@ def main() -> int:
             intents = engine.process(pts, now, handedness)
             pointer.execute(intents)
             for i in intents:
-                if i[0] != "move":
+                if i[0] not in ("move", "move_delta"):   # deltas would flood the log
                     last_event = i[0]
                     print(f"[{time.strftime('%H:%M:%S')}] {i[0]}")
 
             state = "ENGAGED" if engine.engaged else "off"
+            if engine.clutch:
+                state += "  CLUTCH"
             prog = max(engine.start_progress, engine.stop_progress)
             if prog > 0.0:
                 state += f"  hold:{int(prog * 100):3d}%"
             color = (0, 255, 0) if engine.engaged else (0, 0, 255)
             cv2.putText(frame, f"{fps:5.1f} fps  {state}  pose:{engine.pose}  last:{last_event}",
                         (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            _rel = engine.cfg.mapping_mode == "relative"
+            _tune = (f"gain({engine.cfg.base_gain:.2f}) [ ]" if _rel
+                     else f"sens({engine.cfg.sensitivity:.1f}) +/-")
             cv2.putText(frame,
-                        f"index 1s=start  back-hand 1.5s=stop  m=mirror({'on' if mirror else 'off'})  +/-=sens({engine.cfg.sensitivity:.1f})  w=save  ESC=quit",
+                        f"index 1s=start  back-hand=clutch/stop  m=mirror({'on' if mirror else 'off'})  "
+                        f"r=mode({'REL' if _rel else 'ABS'})  {_tune}  w=save  ESC=quit",
                         (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             cv2.imshow("JARVIS gesture (G2)", frame)
             key = cv2.waitKey(1) & 0xFF
@@ -158,6 +164,21 @@ def main() -> int:
                 engine.cfg.sensitivity = max(engine.cfg.sensitivity - 0.1, 0.5)
                 print(f"sensitivity -> {engine.cfg.sensitivity:.1f} "
                       f"(persist JARVIS_GESTURE_SENSITIVITY={engine.cfg.sensitivity:.1f})")
+            elif key in (ord("r"), ord("R")):   # G5.1: toggle absolute/relative live
+                engine.cfg.mapping_mode = (
+                    "absolute" if engine.cfg.mapping_mode == "relative" else "relative")
+                engine._reset_rel()
+                print(f"mapping_mode -> {engine.cfg.mapping_mode.upper()} "
+                      f"(persist JARVIS_GESTURE_RELATIVE="
+                      f"{'1' if engine.cfg.mapping_mode == 'relative' else '0'})")
+            elif key == ord("]"):               # relative gain up
+                engine.cfg.base_gain = min(engine.cfg.base_gain + 0.1, 5.0)
+                print(f"base_gain -> {engine.cfg.base_gain:.2f} "
+                      f"(persist JARVIS_GESTURE_GAIN={engine.cfg.base_gain:.2f})")
+            elif key == ord("["):               # relative gain down
+                engine.cfg.base_gain = max(engine.cfg.base_gain - 0.1, 0.2)
+                print(f"base_gain -> {engine.cfg.base_gain:.2f} "
+                      f"(persist JARVIS_GESTURE_GAIN={engine.cfg.base_gain:.2f})")
             elif key in (ord("w"), ord("W")):
                 if gesture_calibration.save(
                         gesture_calibration.from_config(engine.cfg, mirror=mirror)):

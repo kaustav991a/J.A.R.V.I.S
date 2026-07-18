@@ -7,21 +7,31 @@ mediapipe import, no ctypes — fully unit-testable with synthetic landmark
 sequences (test_gesture_engine.py), same no-hardware harness discipline as
 Phases 1–4.
 
-G3 vocabulary (natural-grab rework — G2's pinch-does-everything scheme caused
-laggy clicks and drag-selected text, live-gate finding):
+Vocabulary (G3 natural-grab rework + G5.1 ergonomics — vocab DECIDED with Kaustav
+2026-07-19, RELIABILITY_HARDENING.md §10.7):
 
     index finger up, 1 s      START control (from idle; other poses ignored)
     open palm (facing camera) MOVE cursor — palm-knuckle centroid, not the
                               fingertip, so a pinch or grab doesn't jerk the
-                              cursor off target while the fingers close
-    thumb+index tap           LEFT CLICK — fires the moment the pinch lands
-    second tap inside 1 s     DOUBLE CLICK (only if the cursor stayed put)
-    thumb+middle tap          RIGHT CLICK
+                              cursor off target while the fingers close.
+                              G5.1: two mapping modes (GestureConfig.mapping_mode):
+                              "absolute" (position->screen band, the G3 default)
+                              or "relative" (trackpad: palm DELTA drives the cursor
+                              with an acceleration curve — precise when slow, flicks
+                              when fast; kills "gorilla arm"). Gate the flip with
+                              env JARVIS_GESTURE_RELATIVE=1 until the live gate.
+    thumb+index QUICK tap     LEFT CLICK (fires on release; a quick pinch)
+    second tap inside 1 s     DOUBLE CLICK (only if the hand stayed put)
+    thumb+index HOLD >0.5 s   RIGHT CLICK — pinch-and-hold "dwell", fires on
+                              release. Replaces the finicky thumb+middle right-
+                              click (RETIRED in G5.1).
     closed fist               GRAB: mouse down while closed, move to drag,
                               open the hand to drop (click and grab are
                               separate gestures on purpose)
     index+middle vertical     SCROLL (hand up = scroll up)
-    back of open hand, 1.5 s  STOP control
+    back of open hand         CLUTCH (brief) — freeze the cursor and reposition
+                              the hand with no jump on re-engage ("lift the mouse").
+                              Held 1.5 s it becomes STOP control (disengage).
 
 Input : landmarks = sequence of 21 (x, y, z) in normalised image coords
         (mediapipe order: 0 wrist, 4 thumb tip, 8 index tip, 12 middle tip, …),
@@ -30,11 +40,14 @@ Output: list of intent tuples per frame:
 
     ("engaged",)            index-up hold turned control ON
     ("disengaged",)         back-of-hand hold turned control OFF (or tracking lost)
-    ("move", nx, ny)        cursor target, normalised 0..1 (margin-mapped,
-                            One-Euro-filtered, deadzoned)
-    ("click",)              left pinch tap
-    ("double_click",)       two left taps inside the double window, same spot
-    ("right_click",)        thumb–middle pinch tap
+    ("move", nx, ny)        ABSOLUTE cursor target, normalised 0..1 (margin-mapped,
+                            One-Euro-filtered, deadzoned) — absolute mode
+    ("move_delta", dx, dy)  RELATIVE cursor move, signed screen-fraction deltas
+                            (accel-scaled, One-Euro-smoothed, deadzoned) — relative
+                            mode. The pointer adds these to the live cursor position.
+    ("click",)              quick left pinch tap (on release)
+    ("double_click",)       two quick left taps inside the double window, same spot
+    ("right_click",)        left pinch held past the dwell threshold (on release)
     ("drag_start",)         fist closed -> mouse down
     ("drag_end",)           fist opened -> mouse up
     ("scroll", ticks)       signed wheel ticks (positive = scroll up)
@@ -45,6 +58,7 @@ Live-readable state for the daemon/HUD (updated every frame, read-only):
     .engaged         bool
     .pose            committed pose: "palm" | "back_palm" | "fist" |
                      "index_only" | "two_finger" | "other" | "none"
+    .clutch          bool — back-of-hand freeze active (reposition without moving)
     .start_progress  0..1 while the index-up start hold is arming
     .stop_progress   0..1 while the back-of-hand stop hold is arming
 """
@@ -153,6 +167,24 @@ class GestureConfig:
     # mouse button stuck down), disengage after a longer gap.
     lost_drag_grace_s: float = 0.2
     lost_disengage_s: float = 2.0
+    # ---- G5.1 relative-trackpad mapping + acceleration + dwell -------------- #
+    # "absolute" = G3 position->screen band (default until the live gate);
+    # "relative" = trackpad: palm DELTA drives the cursor with an accel curve.
+    mapping_mode: str = "absolute"
+    # relative: screen-fraction moved per unit of (One-Euro-smoothed) palm-delta,
+    # before the acceleration multiplier. Higher = faster cursor.
+    base_gain: float = 1.4
+    # acceleration curve A(V) over palm speed V (normalised frame-units / second):
+    # below accel_v_lo -> accel_slow (dampen: precision for tiny targets);
+    # above accel_v_hi -> accel_fast (amplify: flick across the screen);
+    # linear in between.
+    accel_slow: float = 0.6
+    accel_fast: float = 2.2
+    accel_v_lo: float = 0.15
+    accel_v_hi: float = 1.5
+    # left pinch held at least this long -> RIGHT CLICK on release ("dwell").
+    # A shorter pinch is a normal left click. Replaces thumb+middle right-click.
+    dwell_right_click_s: float = 0.5
 
     @staticmethod
     def from_env() -> "GestureConfig":
@@ -180,13 +212,17 @@ class GestureConfig:
             except (TypeError, ValueError):
                 pass
         for env_name, attr in (("JARVIS_GESTURE_SENSITIVITY", "sensitivity"),
-                               ("JARVIS_GESTURE_SMOOTH", "min_cutoff")):
+                               ("JARVIS_GESTURE_SMOOTH", "min_cutoff"),
+                               ("JARVIS_GESTURE_GAIN", "base_gain")):
             v = os.getenv(env_name)
             if v is not None:
                 try:
                     setattr(cfg, attr, float(v))
                 except (TypeError, ValueError):
                     pass
+        rel = os.getenv("JARVIS_GESTURE_RELATIVE")
+        if rel is not None:
+            cfg.mapping_mode = "relative" if rel == "1" else "absolute"
         return cfg
 
 
@@ -258,19 +294,22 @@ class GestureEngine:
         self.cfg = config or GestureConfig()
         self.engaged = False
         self.pose = "none"
+        self.clutch = False                   # back-of-hand freeze (G5.1)
         self.start_progress = 0.0
         self.stop_progress = 0.0
         self._fx = OneEuroFilter(self.cfg.min_cutoff, self.cfg.beta, self.cfg.d_cutoff)
         self._fy = OneEuroFilter(self.cfg.min_cutoff, self.cfg.beta, self.cfg.d_cutoff)
-        self._left = _PinchTracker(self.cfg)
-        self._right = _PinchTracker(self.cfg)
+        self._left = _PinchTracker(self.cfg)   # thumb+index (click + dwell right-click)
         self._pose_tracker = _PoseTracker(self.cfg)
         self._start_t: float | None = None   # index-up hold start
         self._stop_t: float | None = None    # back-of-hand hold start
         self._dragging = False
+        self._pinch_down_t: float | None = None      # left-pinch land time (dwell timer)
         self._last_click_t = -1e9
         self._last_click_pos: tuple[float, float] | None = None
-        self._last_emit: tuple[float, float] | None = None
+        self._last_emit: tuple[float, float] | None = None   # absolute mode last target
+        self._rel_prev: tuple[float, float] | None = None    # relative: prev smoothed centroid
+        self._rel_prev_t: float | None = None
         self._scroll_y: float | None = None
         self._scroll_acc = 0.0
         self._last_seen_t: float | None = None
@@ -296,14 +335,16 @@ class GestureEngine:
             "pinky": _dist(lm[PINKY_TIP], wrist) > _dist(lm[PINKY_PIP], wrist),
         }
         d_left = _dist(lm[THUMB_TIP], lm[INDEX_TIP]) / hand_size
-        d_right = _dist(lm[THUMB_TIP], lm[MIDDLE_TIP]) / hand_size
 
         raw = self._classify(ext, lm, handedness, d_left)
         pose = self._pose_tracker.update(raw)
         self.pose = pose
+        centroid = self._palm_centroid(lm)
 
         intents: list[tuple] = []
         if not self.engaged:
+            self.clutch = False
+            self._reset_rel()
             self._update_start_gate(pose, t, intents)
             return intents
         self.start_progress = 0.0
@@ -316,11 +357,16 @@ class GestureEngine:
             intents.append(("drag_end",))
 
         if self._update_stop_gate(pose, t, intents):
+            # Back-of-hand: CLUTCH (freeze) while it arms, STOP once held long
+            # enough. Either way nothing else moves this frame; drop the relative
+            # anchor so re-facing the palm resumes with no jump ("set the mouse
+            # back down" after repositioning the hand).
+            self._reset_rel()
             return intents
+        self.clutch = False
 
-        self._update_pinches(pose, d_left, d_right, t, intents)
-        if pose == "fist" and not self._dragging \
-                and not self._left.down and not self._right.down:
+        self._update_pinches(pose, d_left, centroid, t, intents)
+        if pose == "fist" and not self._dragging and not self._left.down:
             self._dragging = True
             intents.append(("drag_start",))
         scrolling = self._update_scroll(pose, lm, intents)
@@ -329,10 +375,16 @@ class GestureEngine:
         # the open palm shows (raw classify must agree — the instant the
         # fingers start closing the cursor freezes, so a click/grab can't
         # drag it off target: the G2 drag-select bug) or while a grab is
-        # held (then it always follows — that IS the drag).
+        # held (then it always follows — that IS the drag). Any other frame
+        # drops the relative anchor so the next move can't jump.
         if not scrolling and (
                 (pose == "palm" and raw == "palm") or self._dragging):
-            self._update_move(self._palm_centroid(lm), t, intents)
+            if self.cfg.mapping_mode == "relative":
+                self._update_move_relative(centroid, t, intents)
+            else:
+                self._update_move(centroid, t, intents)
+        else:
+            self._reset_rel()
         return intents
 
     # ------------------------------------------------------------------ #
@@ -371,6 +423,8 @@ class GestureEngine:
         self.stop_progress = 0.0
         self._pose_tracker.reset()
         self.pose = "none"
+        self.clutch = False
+        self._reset_rel()
         if not self.engaged or self._last_seen_t is None:
             return intents
         gap = t - self._last_seen_t
@@ -416,14 +470,19 @@ class GestureEngine:
         if pose != stop_pose:
             self._stop_t = None
             self.stop_progress = 0.0
+            self.clutch = False
             return False
         if self._stop_t is None:
             self._stop_t = t
         held = t - self._stop_t
         self.stop_progress = min(held / self.cfg.stop_hold_s, 1.0)
+        # back-of-hand while arming = CLUTCH (freeze + reposition); index-up-as-
+        # stop (facing detection off) is not a clutch pose.
+        self.clutch = stop_pose == "back_palm"
         if held >= self.cfg.stop_hold_s:
             self._stop_t = None
             self.stop_progress = 0.0
+            self.clutch = False
             self._disengage(intents)
         return True
 
@@ -432,16 +491,23 @@ class GestureEngine:
             self._dragging = False
             intents.append(("drag_end",))
         self.engaged = False
+        self.clutch = False
         self._reset_motion_state()
         intents.append(("disengaged",))
+
+    def _reset_rel(self) -> None:
+        """Drop the relative-mapping anchor so the next move re-syncs (no jump)."""
+        self._rel_prev = None
+        self._rel_prev_t = None
 
     def _reset_motion_state(self) -> None:
         self._fx.reset()
         self._fy.reset()
         self._left.reset()
-        self._right.reset()
         self._dragging = False
+        self._pinch_down_t = None
         self._last_emit = None
+        self._reset_rel()
         self._scroll_y = None
         self._scroll_acc = 0.0
         self._start_t = None
@@ -451,43 +517,49 @@ class GestureEngine:
 
     # ---- clicks / grab / scroll / move ------------------------------- #
 
-    def _update_pinches(self, pose, d_left, d_right, t, intents) -> None:
-        """Click fires the moment a pinch lands (down-confirm) — snappy, and a
-        pinch can never turn into a drag (grab is the fist).
+    def _update_pinches(self, pose, d_left, centroid, t, intents) -> None:
+        """The left pinch (thumb+index) does BOTH clicks, split by DWELL (G5.1):
 
-        Left (thumb+index) vs right (thumb+middle) are told apart by which
-        touch is CLOSER — not by absolute finger-extension, which was too
-        fragile and silently dropped real taps (live finding). Both are
-        suppressed inside a committed fist so a grab can't fire a click.
+        - a QUICK pinch (down then up under dwell_right_click_s) = LEFT CLICK,
+          with the double-click window (a 2nd quick tap, same spot, inside
+          double_window_s -> DOUBLE CLICK);
+        - a HELD pinch (>= dwell_right_click_s) = RIGHT CLICK.
+
+        Both fire on the UP transition, once the hold length is known — so the
+        cursor (frozen during the pinch) has settled on the target. The finicky
+        thumb+middle right-click was RETIRED in G5.1. Pinches are suppressed
+        inside a committed fist so a grab can't fire a click. `centroid` (palm
+        knuckles) is the same-spot reference — stable and mapping-mode-agnostic.
         """
         in_fist = pose == "fist"
-        left_ok = not in_fist and d_left <= d_right
-        right_ok = not in_fist and d_right < d_left
-        left_ev = self._left.update(d_left if left_ok else 2.0, t)
-        if self._left.down or left_ev == "up":
-            self._right.reset()   # left has priority while down
-            right_ev = None
-        else:
-            right_ev = self._right.update(d_right if right_ok else 2.0, t)
+        ev = self._left.update(d_left if not in_fist else 2.0, t)
+        if ev == "down":
+            self._pinch_down_t = t
+            return
+        if ev != "up":
+            return
 
-        if left_ev == "down":
-            pos = self._last_emit
-            same_spot = (pos is None or self._last_click_pos is None
-                         or _dist(pos, self._last_click_pos) <= self.cfg.double_max_move)
-            if t - self._last_click_t <= self.cfg.double_window_s and same_spot:
-                self._last_click_t = -1e9
-                intents.append(("double_click",))
-            else:
-                self._last_click_t = t
-                self._last_click_pos = pos
-                intents.append(("click",))
+        down_t = self._pinch_down_t
+        self._pinch_down_t = None
+        held = (t - down_t) if down_t is not None else 0.0
 
-        if right_ev == "down":
+        if held >= self.cfg.dwell_right_click_s:
             intents.append(("right_click",))
+            self._last_click_t = -1e9   # a dwell is not a left tap
+            return
+
+        same_spot = (self._last_click_pos is None
+                     or _dist(centroid, self._last_click_pos) <= self.cfg.double_max_move)
+        if t - self._last_click_t <= self.cfg.double_window_s and same_spot:
+            self._last_click_t = -1e9
+            intents.append(("double_click",))
+        else:
+            self._last_click_t = t
+            self._last_click_pos = centroid
+            intents.append(("click",))
 
     def _update_scroll(self, pose: str, lm, intents) -> bool:
-        if pose != "two_finger" or self._dragging \
-                or self._left.down or self._right.down:
+        if pose != "two_finger" or self._dragging or self._left.down:
             self._scroll_y = None
             self._scroll_acc = 0.0
             return False
@@ -518,3 +590,48 @@ class GestureEngine:
             return
         self._last_emit = (nx, ny)
         intents.append(("move", nx, ny))
+
+    # ---- G5.1 relative-trackpad move --------------------------------- #
+
+    def _accel(self, v: float) -> float:
+        """Acceleration multiplier for palm speed v (frame-units / second).
+
+        Slow  -> accel_slow (dampen: precision on tiny targets).
+        Fast  -> accel_fast (amplify: flick across the screen).
+        Linear in between. Monotonic, so a steady drag scales smoothly.
+        """
+        lo, hi = self.cfg.accel_v_lo, self.cfg.accel_v_hi
+        if v <= lo:
+            return self.cfg.accel_slow
+        if v >= hi:
+            return self.cfg.accel_fast
+        f = (v - lo) / (hi - lo)          # 0..1
+        return self.cfg.accel_slow + f * (self.cfg.accel_fast - self.cfg.accel_slow)
+
+    def _update_move_relative(self, centroid, t, intents) -> None:
+        """Trackpad mapping: emit a signed screen-fraction DELTA from the change
+        in the (One-Euro-smoothed) palm centroid, scaled by base_gain * accel.
+
+        The One-Euro filters smooth the centroid position; the delta is taken
+        between consecutive smoothed positions. `_rel_prev` is dropped (set None)
+        on any non-move frame (clutch, pinch, scroll, loss) — so the frame after a
+        freeze just re-syncs the anchor and emits nothing, guaranteeing NO cursor
+        jump on re-engage ("lift the mouse, set it back down"). x is already
+        mirror-correct upstream (the camera loop flips the frame)."""
+        sx = self._fx(centroid[0], t)
+        sy = self._fy(centroid[1], t)
+        if self._rel_prev is None or self._rel_prev_t is None:
+            self._rel_prev = (sx, sy)
+            self._rel_prev_t = t
+            return  # anchor sync frame — no move (prevents the re-engage jump)
+        dx_n = sx - self._rel_prev[0]
+        dy_n = sy - self._rel_prev[1]
+        dt = max(t - self._rel_prev_t, 1e-6)
+        self._rel_prev = (sx, sy)
+        self._rel_prev_t = t
+        dist = math.hypot(dx_n, dy_n)
+        if dist < self.cfg.deadzone:
+            return
+        a = self._accel(dist / dt)
+        gain = self.cfg.base_gain * a
+        intents.append(("move_delta", dx_n * gain, dy_n * gain))

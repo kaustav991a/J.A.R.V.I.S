@@ -31,6 +31,11 @@ def _to_bool(v) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _mapping_mode(v) -> str:
+    """Coerce to a valid GestureConfig.mapping_mode ("absolute" | "relative")."""
+    return "relative" if str(v).strip().lower() == "relative" else "absolute"
+
+
 # Persistable knobs and their coercers. Every GestureConfig field here is safe to
 # round-trip; "mirror" is not a GestureConfig field (the frame flip lives in the
 # camera loop) but is the other main live knob, so it rides along in the JSON.
@@ -47,6 +52,9 @@ SCHEMA = {
     "palm_sign": int,
     "require_palm_facing": _to_bool,
     "mirror": _to_bool,
+    # G5.1 relative-trackpad knobs
+    "mapping_mode": _mapping_mode,
+    "base_gain": float,
 }
 
 
