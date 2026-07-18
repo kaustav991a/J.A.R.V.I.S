@@ -3,3 +3,6 @@ action_chroma_db/
 # G3 face gate — personal biometrics + stranger snapshots stay local
 models/owner_embeddings.npz
 captures/
+
+# G4 gesture calibration — per-machine live-tuned knobs, not shared
+models/gesture_calibration.json

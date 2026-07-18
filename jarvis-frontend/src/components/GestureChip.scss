@@ -1,0 +1,123 @@
+// GESTURE STATUS CHIP — compact always-on HUD pill (GestureGuide-family styling)
+$cyan: #00ffcc;
+$accent-red: #ff3366;
+$gold: #ffd700;
+$panel-bg: rgba(6, 10, 14, 0.88);
+
+.gesture-chip {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 55; // above HUD, below the guide panel (60) and modals
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: $panel-bg;
+  border: 1px solid rgba(0, 255, 204, 0.28);
+  backdrop-filter: blur(10px) saturate(1.2);
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  font-family: "Orbitron", sans-serif;
+  font-size: 0.55rem;
+  letter-spacing: 0.12em;
+  color: rgba(0, 255, 204, 0.85);
+  line-height: 1;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+
+  &:hover {
+    background: rgba(0, 255, 204, 0.08);
+  }
+
+  &__icon {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  &__label {
+    white-space: nowrap;
+  }
+
+  &__owner {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding-left: 7px;
+    margin-left: 1px;
+    border-left: 1px solid rgba(255, 255, 255, 0.15);
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 0.6rem;
+
+    &.is-ok {
+      color: $cyan;
+    }
+  }
+
+  // thin engage/disengage hold progress under the pill
+  &__hold {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 3px;
+    height: 2px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.12);
+    overflow: hidden;
+  }
+  &__hold-bar {
+    display: block;
+    height: 100%;
+    background: currentColor;
+    transition: width 0.1s linear;
+  }
+
+  // --- tones ------------------------------------------------------------- //
+  &.is-live {
+    color: $cyan;
+    border-color: rgba(0, 255, 204, 0.55);
+    box-shadow: 0 0 18px rgba(0, 255, 204, 0.28);
+    .gesture-chip__icon { animation: gestureChipPulse 1.4s ease-in-out infinite; }
+  }
+
+  &.is-ready {
+    color: rgba(0, 255, 204, 0.8);
+    border-color: rgba(0, 255, 204, 0.3);
+  }
+
+  &.is-busy {
+    color: $gold;
+    border-color: rgba(255, 215, 0, 0.5);
+    box-shadow: 0 0 16px rgba(255, 215, 0, 0.2);
+    .gesture-chip__icon { animation: gestureChipPulse 1.1s ease-in-out infinite; }
+  }
+
+  &.is-off {
+    color: rgba(180, 195, 205, 0.6);
+    border-color: rgba(180, 195, 205, 0.22);
+  }
+
+  &.is-danger {
+    color: $accent-red;
+    border-color: rgba(255, 51, 102, 0.6);
+    box-shadow: 0 0 18px rgba(255, 51, 102, 0.3);
+    .gesture-chip__icon { animation: gestureChipPulse 0.9s ease-in-out infinite; }
+  }
+
+  &.is-warn {
+    color: $gold;
+    border-color: rgba(255, 215, 0, 0.4);
+  }
+}
+
+@keyframes gestureChipPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (max-width: 640px) {
+  .gesture-chip {
+    font-size: 0.5rem;
+    padding: 4px 8px;
+  }
+}

@@ -28,9 +28,13 @@ Voice fast-path: "hand control on/off" -> set_gestures_enabled() (fast_path.py).
 HUD: broadcasts {"type": "gesture_state", ...} via socket_manager (thread-safe)
 and GET /api/gesture/state mirrors the same dict (main.py).
 
-Known limit (documented in HAND_GESTURE_CONTROL_PLAN.md §5): when JARVIS's own
-GUI agents (agentic_gui_task / ghost_type / autopilot) drive the cursor, say
-"hand control off" first — an arbiter flag is the G4 follow-up.
+Cursor arbiter (G4): when JARVIS's own GUI agents (execute_autonomous_task /
+ghost_type / ghost_save_file, or any move/click/type/press/scroll) drive the
+cursor, modules/gesture_arbiter.py auto-suspends gesture output for the duration
+plus a short self-healing tail, then resumes — no need to say "hand control off"
+first. That suspend is independent of the user's gestures_enabled switch (an
+automation suspend is not a manual off), and the HUD/notch reports it as
+state="suspended" via gesture_state["suspended"/"suspend_reason"].
 """
 
 from __future__ import annotations
@@ -40,6 +44,9 @@ import subprocess
 import sys
 import threading
 import time
+
+from modules import gesture_arbiter  # G4: hand vs JARVIS-GUI cursor referee
+from modules import gesture_calibration  # G4: persisted live-tuned gesture knobs
 
 MODEL_PATH = os.path.join("models", "hand_landmarker.task")
 FRAME_W, FRAME_H = 640, 480
@@ -55,6 +62,8 @@ gesture_state: dict = {
     "stranger": False,
     "denied": False,
     "locked": False,
+    "suspended": False,      # JARVIS's own GUI automation is driving the cursor
+    "suspend_reason": None,
     "start_progress": 0.0,
     "stop_progress": 0.0,
     "camera": None,
@@ -141,6 +150,8 @@ class GestureDaemon:
             "engaged": bool(engine and engine.engaged),
             "denied": denied,
             "locked": self._locked,
+            "suspended": gesture_arbiter.is_suspended(),
+            "suspend_reason": gesture_arbiter.active_reason(),
             "start_progress": round(getattr(engine, "start_progress", 0.0), 2) if engine else 0.0,
             "stop_progress": round(getattr(engine, "stop_progress", 0.0), 2) if engine else 0.0,
             "ts": time.time(),
@@ -285,7 +296,8 @@ class GestureDaemon:
         gate = FaceGate()
         motion = MotionDetector()
         absence = AbsenceTracker(absent_after_s=self.absent_after)
-        mirror = os.getenv("JARVIS_CAM_MIRROR", "1") == "1"
+        mirror = gesture_calibration.load().get(
+            "mirror", os.getenv("JARVIS_CAM_MIRROR", "1") == "1")
 
         seq = 0
         try:
@@ -293,7 +305,7 @@ class GestureDaemon:
                 # ---- state-tiered pacing (the optimisation core) ----
                 if self._locked:
                     time.sleep(0.5)                    # ~2 fps
-                elif not (engine.engaged and self.gestures_enabled):
+                elif gesture_arbiter.is_suspended() or not (engine.engaged and self.gestures_enabled):
                     time.sleep(0.11)                   # ~9 fps idle scan
                 # ACTIVE: no sleep — read_new blocks on the camera (~30 fps)
 
@@ -341,8 +353,23 @@ class GestureDaemon:
                     continue
 
                 # ---- hands ----
-                if landmarker is None or not self.gestures_enabled:
-                    self._hud(engine, "disabled" if not self.gestures_enabled else "idle")
+                suspended = gesture_arbiter.is_suspended()
+                if landmarker is None or not self.gestures_enabled or suspended:
+                    if suspended and engine.engaged:
+                        # JARVIS's own GUI automation took the cursor — release
+                        # any in-progress drag and disengage so the two never
+                        # issue pointer input at the same time (G4 arbiter).
+                        engine.process(None, now + 10.0)
+                        engine.engaged = False
+                        engine._reset_motion_state()
+                        pointer.release_all()
+                    if suspended:
+                        state = "suspended"
+                    elif not self.gestures_enabled:
+                        state = "disabled"
+                    else:
+                        state = "idle"
+                    self._hud(engine, state)
                     continue
 
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

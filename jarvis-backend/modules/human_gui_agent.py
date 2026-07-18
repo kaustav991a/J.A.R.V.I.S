@@ -22,6 +22,7 @@ from modules.groq_key_manager import (
     has_groq_keys,
     run_with_key_rotation,
 )
+from modules import gesture_arbiter  # G4: suspend hand gestures while we drive the cursor
 
 pyautogui.FAILSAFE = True
 
@@ -59,12 +60,14 @@ class HumanGUIAgent:
     
     def move_mouse(self, x: int, y: int):
         """Glides the mouse to the target."""
+        gesture_arbiter.mark("gui:move")
         print(f"[HUMAN GUI AGENT] Moving mouse to ({x}, {y})")
         pyautogui.moveTo(x, y, duration=0.5, tween=pyautogui.easeInOutQuad)
         time.sleep(random.uniform(0.1, 0.3))
 
     def click_mouse(self, clicks: int = 1):
         """Clicks the mouse."""
+        gesture_arbiter.mark("gui:click")
         print(f"[HUMAN GUI AGENT] Clicking {clicks} time(s)")
         time.sleep(0.1) # Brief pause before clicking like a human
         pyautogui.click(clicks=clicks)
@@ -72,12 +75,14 @@ class HumanGUIAgent:
 
     def type_text(self, text: str):
         """Types text naturally."""
+        gesture_arbiter.mark("gui:type")
         print(f"[HUMAN GUI AGENT] Typing: {text[:20]}...")
         pyautogui.write(text, interval=0.05)
         time.sleep(random.uniform(0.1, 0.4))
 
     def press_key(self, key: str):
         """Presses a specific key or hotkey combination (e.g. 'win', 'enter', 'ctrl+s')."""
+        gesture_arbiter.mark("gui:key")
         key = key.lower().replace(" ", "")
         print(f"[HUMAN GUI AGENT] Pressing key: {key}")
         
@@ -90,6 +95,7 @@ class HumanGUIAgent:
 
     def scroll(self, amount: int):
         """Scrolls the mouse wheel."""
+        gesture_arbiter.mark("gui:scroll")
         print(f"[HUMAN GUI AGENT] Scrolling by {amount}")
         pyautogui.scroll(amount)
         time.sleep(random.uniform(0.2, 0.5))
@@ -358,6 +364,7 @@ class HumanGUIAgent:
             print(f"[HUMAN GUI AGENT] UIA set_text failed (falling back to keyboard): {e}")
             return False
 
+    @gesture_arbiter.suspends("gui:ghost_type")
     def ghost_type(self, text_to_type: str, shortcut_keys: str = None, app_hint: str = None,
                    app_pid: int = None, app_hwnd: int = None) -> str:
         """
@@ -563,6 +570,7 @@ class HumanGUIAgent:
         except Exception as e:
             return f"ERROR: {e}"
 
+    @gesture_arbiter.suspends("gui:ghost_save")
     def ghost_save_file(self, target_dir: str, filename: str, force_overwrite: bool = False,
                         app_hint: str = None, app_pid: int = None, app_hwnd: int = None) -> str:
         """
@@ -1135,6 +1143,7 @@ Estimate X/Y coordinates from the red coordinate grid overlaid on the screenshot
 
     # --- 5. The Observation-Action Loop ---
 
+    @gesture_arbiter.suspends("gui:autonomous")
     def execute_autonomous_task(self, task_description: str, vision_llm_client) -> str:
         """
         Entry point for all autonomous PC tasks. Implements a two-path strategy:

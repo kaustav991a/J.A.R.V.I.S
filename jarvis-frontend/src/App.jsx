@@ -23,6 +23,7 @@ import ScreenScanOverlay from "./components/ScreenScanOverlay";
 import DataOverlay from "./components/DataOverlay";
 import ChatPanel from "./components/ChatPanel";
 import GestureGuide from "./components/GestureGuide";
+import GestureChip from "./components/GestureChip";
 import TaskHud from "./components/TaskHud";
 import "./App.scss";
 
@@ -859,6 +860,12 @@ function App() {
         open={isGestureGuideOpen}
         gesture={gestureState}
         onClose={() => setIsGestureGuideOpen(false)}
+      />
+
+      {/* G4: compact always-on gesture-state pill; click opens the guide */}
+      <GestureChip
+        gesture={gestureState}
+        onClick={() => setIsGestureGuideOpen(true)}
       />
 
       {backendUnreachable && (

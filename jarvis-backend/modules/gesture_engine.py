@@ -156,21 +156,38 @@ class GestureConfig:
 
     @staticmethod
     def from_env() -> "GestureConfig":
-        """Build from JARVIS_* env vars — standalone scripts + daemon share this."""
+        """Resolve config: dataclass defaults < calibration JSON < JARVIS_* env.
+
+        The calibration JSON (modules.gesture_calibration) persists live-tuned
+        knobs across restarts; a JARVIS_* env var is a hard per-session override
+        applied ONLY when set, so an unset env never clobbers a persisted value.
+        Standalone scripts (gesture_spike.py, enroll) + the daemon share this.
+        """
         import os
 
-        def _flt(name: str, default: float) -> float:
-            try:
-                return float(os.getenv(name, ""))
-            except (TypeError, ValueError):
-                return default
+        from modules import gesture_calibration
 
-        return GestureConfig(
-            require_palm_facing=os.getenv("JARVIS_PALM_FACING", "1") == "1",
-            palm_sign=int(os.getenv("JARVIS_PALM_SIGN", "1")),
-            sensitivity=_flt("JARVIS_GESTURE_SENSITIVITY", 1.5),
-            min_cutoff=_flt("JARVIS_GESTURE_SMOOTH", 1.0),
-        )
+        cfg = GestureConfig()
+        gesture_calibration.apply_to(cfg, gesture_calibration.load())
+
+        pf = os.getenv("JARVIS_PALM_FACING")
+        if pf is not None:
+            cfg.require_palm_facing = pf == "1"
+        ps = os.getenv("JARVIS_PALM_SIGN")
+        if ps is not None:
+            try:
+                cfg.palm_sign = int(ps)
+            except (TypeError, ValueError):
+                pass
+        for env_name, attr in (("JARVIS_GESTURE_SENSITIVITY", "sensitivity"),
+                               ("JARVIS_GESTURE_SMOOTH", "min_cutoff")):
+            v = os.getenv(env_name)
+            if v is not None:
+                try:
+                    setattr(cfg, attr, float(v))
+                except (TypeError, ValueError):
+                    pass
+        return cfg
 
 
 class _PinchTracker:

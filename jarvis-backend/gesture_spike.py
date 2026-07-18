@@ -50,6 +50,7 @@ from mediapipe.tasks.python import vision, BaseOptions
 from modules.gesture_camera import CameraError, FrameSource
 from modules.gesture_engine import GestureConfig, GestureEngine
 from modules.gesture_pointer import PointerBackend
+from modules import gesture_calibration
 
 MODEL_PATH = "models/hand_landmarker.task"
 FRAME_W, FRAME_H = 640, 480
@@ -84,7 +85,9 @@ def main() -> int:
     fps = 0.0
     t_last = time.perf_counter()
     last_event = "-"
-    mirror = os.getenv("JARVIS_CAM_MIRROR", "1") == "1"
+    # mirror: persisted calibration wins over the env default (press w to save).
+    mirror = gesture_calibration.load().get(
+        "mirror", os.getenv("JARVIS_CAM_MIRROR", "1") == "1")
 
     try:
         while True:
@@ -137,7 +140,7 @@ def main() -> int:
             cv2.putText(frame, f"{fps:5.1f} fps  {state}  pose:{engine.pose}  last:{last_event}",
                         (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             cv2.putText(frame,
-                        f"index 1s=start  back-hand 1.5s=stop  m=mirror({'on' if mirror else 'off'})  +/-=sens({engine.cfg.sensitivity:.1f})  ESC=quit",
+                        f"index 1s=start  back-hand 1.5s=stop  m=mirror({'on' if mirror else 'off'})  +/-=sens({engine.cfg.sensitivity:.1f})  w=save  ESC=quit",
                         (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             cv2.imshow("JARVIS gesture (G2)", frame)
             key = cv2.waitKey(1) & 0xFF
@@ -155,6 +158,13 @@ def main() -> int:
                 engine.cfg.sensitivity = max(engine.cfg.sensitivity - 0.1, 0.5)
                 print(f"sensitivity -> {engine.cfg.sensitivity:.1f} "
                       f"(persist JARVIS_GESTURE_SENSITIVITY={engine.cfg.sensitivity:.1f})")
+            elif key in (ord("w"), ord("W")):
+                if gesture_calibration.save(
+                        gesture_calibration.from_config(engine.cfg, mirror=mirror)):
+                    print(f"calibration saved -> {gesture_calibration.path()} "
+                          f"(sens={engine.cfg.sensitivity:.1f}, "
+                          f"mirror={'on' if mirror else 'off'}, "
+                          f"palm_sign={engine.cfg.palm_sign}) — survives restart")
     finally:
         pointer.release_all()  # never exit with a mouse button stuck down
         landmarker.close()
