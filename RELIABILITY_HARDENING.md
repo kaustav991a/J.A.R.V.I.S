@@ -649,7 +649,17 @@ polish, then the lower-priority backlog.
 The genuinely-new work is the **ergonomics/UX layer** (relative mapping, clutch, wizard,
 overlays, distance) plus the **audit-found robustness fixes** below.
 
-### 10.1 — G5.0 Crash & resilience quick wins (DO FIRST — low risk, high value)
+### 10.1 — G5.0 Crash & resilience quick wins (✅ ALL 9 DONE 2026-07-19)
+
+> **Status:** items 1–2 `4a2945b`; item 3 `b1771ff`; item 4 `31afe0d`; items 5–9
+> `54f47a0` (frontend WS resilience + gesture-chip staleness + a new
+> `gesture_daemon._hud` 2s heartbeat that makes silence a real "daemon dead"
+> signal). Backend `py_compile` OK; `npm run build` OK. Item-7 daemon heartbeat +
+> the chip staleness/reconnect behaviour want a quick live eyeball by Kaustav
+> (camera + backend-restart), but nothing here is hardware-blocked to *build*.
+> **All 4 commits unpushed (branch `feat/cloud-gateway`).**
+
+**Original plan (kept for reference):**
 
 **Backend:**
 1. **[HARD CRASH] `brain.py` (`health_context` assigned ~L2180 inside the `try`, used ~L2235 outside).** If Gmail/Calendar/Health raises during `generate_briefing` (expired token, network blip, partial Google setup), `health_context` is never bound → `NameError` → propagates through `_smart_briefing` → the wake handler (no surrounding try) → HTTP 500 / WS teardown → **JARVIS never boots**. Fix: initialize `health_context = "Health integration offline."` beside `email_context`/`calendar_context` *before* the `try`. One line.
@@ -734,4 +744,14 @@ Friendliness questions to decide **before** touching the engine:
 
 ### 10.9 — Suggested order & tracking
 
-`G5.0` → `G5.6` vocab decision (gates G5.1's vocab) → `G5.1` relative+clutch → `G5.2` wizard → `G5.4` distance → `G5.5` filtering → `G5.3` overlays → `G5.7` backlog. One commit per item; harness green + Kaustav live-gate before moving on. **Resume pointer:** start at **G5.0 item 1** (the `brain.py` briefing crash) — it's the only hard crash and a one-line fix.
+`G5.0` → `G5.6` vocab decision (gates G5.1's vocab) → `G5.1` relative+clutch → `G5.2` wizard → `G5.4` distance → `G5.5` filtering → `G5.3` overlays → `G5.7` backlog. One commit per item; harness green + Kaustav live-gate before moving on.
+
+**Resume pointer (updated 2026-07-19):** ✅ **G5.0 is DONE** (all 9 items, commits
+`4a2945b`/`b1771ff`/`31afe0d`/`54f47a0`, unpushed). **Next = `G5.6` vocab decision**
+— it's an AskUserQuestion to Kaustav (relative-trackpad default? clutch first-class?
+replace finicky thumb+middle right-click? unify the two holds?) that GATES the `G5.1`
+relative-mapping+clutch build. Do NOT change the gesture vocabulary unilaterally
+(the G3 vocab was chosen with Kaustav). After the vocab call, build `G5.1`
+(engine delta-math + accel + clutch, pure/harnessable) — that item is a good
+candidate for xhigh reasoning. Kaustav-owed live gates still outstanding: G4 camera
+gates + Phase-4/5 smoke-tests (§9), and a quick G5.0-item-7 eyeball. Then push + merge.
