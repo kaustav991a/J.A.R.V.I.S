@@ -60,6 +60,7 @@
 
 | Upgrade | What it adds | Plan | When |
 |---|---|---|---|
+| **Login / wake revamp** | Cinematic staged boot (no sudden wake), an on-screen identity step, and a *believable* Kaustav face-auth (real scan states + success/fail transitions, replacing the self-timed janky overlay). Kinshuk/Mousumi/Backdoor logic already done — visual-only. | LOGIN_REVAMP_PLAN.md | after G5 desktop, before Electron |
 | **Away → mobile presence** | Auto "left the desk / left the house" → route to phone. Track B (phone-WiFi probe, no app) then Track C (app). | MOBILE_PRESENCE_PLAN.md | B: soon (desktop-side); C: after Electron |
 | **Electron single-exe** | One .exe boots FE+BE; notch (idle chat) → fullscreen takeover overlay (live agent-cam). | RELIABILITY §0, §9.6 | after ALL desktop work + tests |
 | **Dedicated mobile app** | FCM push, geofence presence, live agent-cam, voice, branded UI. | MOBILE_PRESENCE_PLAN.md Track C | after Electron |
