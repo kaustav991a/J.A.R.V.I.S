@@ -724,7 +724,25 @@ Writes `models/gesture_calibration.json` (the G4 `gesture_calibration.py` module
 
 One-Euro is already speed-adaptive. Add an explicit **precision mode**: when velocity stays below a threshold for K frames, drop `min_cutoff` further (or clamp harder) so tiny close-buttons (×) and text lines are selectable; re-tune `beta`. Pure engine change + harness.
 
-### 10.7 — G5.6 Vocabulary refresh (PROPOSAL — needs Kaustav sign-off + live-gate, like G3)
+### 10.7 — G5.6 Vocabulary refresh (✅ DECIDED with Kaustav 2026-07-19 — build in G5.1, live-gate)
+
+> **DECISION (AskUserQuestion, 2026-07-19):**
+> - **Move = RELATIVE trackpad + acceleration.** Absolute stays as env fallback
+>   (`JARVIS_GESTURE_RELATIVE`, default flips after the live gate). Build in G5.1.
+> - **CLUTCH is first-class** — palm-tilt (back-of-hand) freezes the cursor and lets
+>   you reposition the hand with no jump on re-engage (keep updating prev-centroid
+>   while frozen). Reuses the palm-facing detector.
+> - **Right-click = pinch-and-hold / dwell** — hold the left-click pinch >500ms →
+>   fires right-click on release. Removes the finicky thumb+middle classification;
+>   **thumb+middle is retired** as the right-click gesture.
+> - **Start/stop stay two distinct holds** — index-up 1s = START, back-of-hand = STOP.
+> - **⚠ Reconciliation (back-of-hand now does double duty):** brief back-of-hand =
+>   CLUTCH (transient freeze/reposition); **sustained back-of-hand ≥1.5s = STOP**
+>   (disengage). The existing `stop_progress` 1.5s hold becomes the STOP threshold;
+>   anything shorter is clutch. Engine must emit a `CLUTCH` state distinct from
+>   `stopping`/`disengaged`.
+>
+> **Original proposal (kept for reference):**
 
 Current committed vocabulary (recap): index-up 1 s = START · open palm = MOVE · thumb+index tap = CLICK (fires on pinch-land) · 2nd tap ≤1 s = DOUBLE · thumb+middle tap = RIGHT-CLICK · fist = GRAB/DRAG · index+middle = SCROLL · back-of-hand 1.5 s = STOP.
 
@@ -746,12 +764,14 @@ Friendliness questions to decide **before** touching the engine:
 
 `G5.0` → `G5.6` vocab decision (gates G5.1's vocab) → `G5.1` relative+clutch → `G5.2` wizard → `G5.4` distance → `G5.5` filtering → `G5.3` overlays → `G5.7` backlog. One commit per item; harness green + Kaustav live-gate before moving on.
 
-**Resume pointer (updated 2026-07-19):** ✅ **G5.0 is DONE** (all 9 items, commits
-`4a2945b`/`b1771ff`/`31afe0d`/`54f47a0`, unpushed). **Next = `G5.6` vocab decision**
-— it's an AskUserQuestion to Kaustav (relative-trackpad default? clutch first-class?
-replace finicky thumb+middle right-click? unify the two holds?) that GATES the `G5.1`
-relative-mapping+clutch build. Do NOT change the gesture vocabulary unilaterally
-(the G3 vocab was chosen with Kaustav). After the vocab call, build `G5.1`
-(engine delta-math + accel + clutch, pure/harnessable) — that item is a good
-candidate for xhigh reasoning. Kaustav-owed live gates still outstanding: G4 camera
-gates + Phase-4/5 smoke-tests (§9), and a quick G5.0-item-7 eyeball. Then push + merge.
+**Resume pointer (updated 2026-07-19):** ✅ **G5.0 DONE** (all 9,
+`4a2945b`/`b1771ff`/`31afe0d`/`54f47a0`, unpushed). ✅ **G5.6 vocab DECIDED** (§10.7:
+relative-trackpad move, first-class clutch via palm-tilt, pinch-and-hold right-click
+retiring thumb+middle, distinct start/stop holds with brief-back-of-hand=clutch /
+≥1.5s=STOP). **NEXT = build `G5.1`** — relative delta-mapping + acceleration + clutch
+in `gesture_engine.py` (pure state machine, no I/O) + `move_rel`/dwell-right-click in
+`gesture_pointer.py`, all harnessable via `test_gesture_engine.py` (delta math, accel
+buckets, clutch no-jump, dwell timing, mirror x-invert, deadzone). Absolute stays as
+`JARVIS_GESTURE_RELATIVE`-gated fallback; Kaustav live-gates before flipping the
+default. Good xhigh candidate. Kaustav-owed live gates still outstanding: G4 camera +
+Phase-4/5 smoke-tests (§9) + a quick G5.0-item-7 eyeball. Then push + merge.
