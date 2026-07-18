@@ -5,12 +5,15 @@
 > click, double-click, drag & drop, scrolling — plus a safe way to engage/disengage
 > so normal hand movement never hijacks the pointer.
 >
-> Status (2026-07-11): **G1 ✅ PASSED LIVE** (30–40 fps via phone IP Webcam,
-> commit e1cc385). Deps installed + pinned (protobuf 6.33.6 — do not bump).
-> **G2 ✅ BUILT — harness 27/27, full pipeline 53 fps headless; awaiting
-> Kaustav's live run** (gesture_spike.py is now the G2 driver: clicks, drag,
-> scroll, palm gate). G1 carry-forwards done (FrameSource latest-frame thread,
-> URL res hint, classified camera errors). **Resume at: live G2 gate, then G3.**
+> Status (2026-07-18): **G1 ✅** (e1cc385) · **G2 ✅** (0ba2c5b, 27/27) · **G3 ✅**
+> daemon + face-gate + away soft-lock (2cf46f2/e25fc1b/87d2094, live fixes
+> 839efad/053172b) · **G4 core ✅** cursor arbiter + guided 12-sample enroll +
+> calibration-JSON persistence + HUD chip (cc27156, NOT pushed). Harnesses: arbiter
+> 28/28, enroll 17/17, calibration 31/31, engine 38/38, face-gate 5/5. Deps pinned
+> (protobuf 6.33.6 — do not bump). **Resume at: Kaustav's live G4 camera gates
+> (arbiter during a real ghost_type, guided re-enroll, calibration `w`=save round-trip,
+> chip visuals), then push + merge. Remaining G4 polish (precision mode, low-light,
+> fatigue clutch) still open — see §Phase G4.**
 
 ---
 
@@ -159,15 +162,25 @@ JARVIS-action bindings (e.g. thumbs-up = confirm a pending CONFIRM action).
 - `gesture_daemon.py` adopted by `DaemonSupervisor` in main.py's lifespan.
 - Voice + fast-path commands: "hand control on/off" (deterministic fast-lane, no
   LLM); governance entry `gesture_control: AUTO` (reversible, low-risk).
-- HUD status chip (engaged/disengaged) via `send_ui_update`.
-- **Mutual exclusion:** auto-suspend gestures while `agentic_gui_task` /
-  `ghost_type` / autopilot drive the GUI (two cursor owners = chaos), and resume
-  after. Hook where the engine dispatches those actions.
+- HUD status chip (engaged/disengaged) — ✅ DONE in G4 (`GestureChip.jsx`, cc27156):
+  compact pill off/ready/active/JARVIS-driving/denied/locked/cam-error + owner tick;
+  click opens the field manual. Consumes the existing `gesture_state` ws frame.
+- **Mutual exclusion:** ✅ DONE in G4 (`cc27156`) — `modules/gesture_arbiter.py`
+  auto-suspends gesture output while `ghost_type` / `ghost_save_file` /
+  `execute_autonomous_task` drive the GUI (ref-counted `hold()` + self-healing `mark()`
+  window on the cursor atoms). The daemon polls `is_suspended()`, releases any drag on
+  the suspend edge, and reports `state="suspended"` to the HUD. Independent of the manual
+  on/off switch — no need to say "hand control off" first any more.
 - Camera sharing with ambient_vision resolved per §5 risk 1.
 
-### Phase G4 — polish + hardening (1 day, after real use) — ⏳ NOT STARTED
-- Calibration routine ("hold your hand comfortably, pinch twice") → per-user
-  thresholds in a config JSON.
+### Phase G4 — polish + hardening — 🟡 CORE SHIPPED (cc27156), polish remaining
+Core 4 done + harness-green: cursor arbiter, guided 12-sample enroll, calibration JSON,
+HUD chip (see the status header). The polish items below are still open.
+- Calibration JSON — ✅ DONE: `modules/gesture_calibration.py` persists sensitivity /
+  mirror / palm_sign / etc to `models/gesture_calibration.json` (gitignored, per-machine);
+  resolution order defaults < JSON < env; `gesture_spike.py` `w`=save, daemon + spike load
+  the persisted mirror. (The interactive "pinch twice" routine wasn't needed — live `+/-`
+  / `m` tuning + `w`=save covers it.)
 - Precision mode, edge-of-frame handling, lost-tracking grace (~200 ms before
   disengage so a dropped frame doesn't release a drag).
 - Low-light behaviour check; optional exposure bump via OpenCV.
@@ -242,6 +255,9 @@ Shipped pieces:
 - HUD: `GESTURES` button → GestureGuide field manual with live practice mode
   (`gesture_state` ws frames highlight the pose the camera sees)
 
-G4 follow-ups: 12-sample re-enroll on the live camera (db currently seeded from
-known_faces/kaustav.jpg), cursor-arbiter flag so agentic GUI / ghost_type
-auto-suspends gestures, per-user calibration JSON, notch/sidecar gesture chip.
+G4 follow-ups — ✅ ALL SHIPPED (cc27156): guided 12-sample enroll (`enroll_face.py` —
+quality-gated + pose-guided; db still the 1-sample kaustav.jpg seed until Kaustav
+re-runs), cursor arbiter so ghost_type / autonomous GUI auto-suspends gestures
+(`gesture_arbiter.py`), per-user calibration JSON (`gesture_calibration.py`), gesture
+HUD chip (`GestureChip.jsx` — mounted in the live HUD; drops into the Electron
+notch/sidecar when that surface is revived).

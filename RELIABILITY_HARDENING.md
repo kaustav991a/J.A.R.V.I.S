@@ -54,7 +54,7 @@ existing capability work every time, then packaging it.
 | **3.5** | GUI typing backend (pywinauto) + UIA path + UTF-8 stdout | ✅ DONE | (uncommitted) |
 | **4** | Autonomy reach (notify + remote confirm) | ✅ DONE 2026-07-11 | (uncommitted — STOP POINT) |
 | **5** | Multi-provider LLM cascade (Groq→Gemini→OpenRouter) + Gemini free vision | ✅ DONE 2026-07-11 (keys delivered, live-tested) | (uncommitted) |
-| **Gesture** | Full hand-gesture mouse control (MediaPipe) | 📋 PLANNED — see `HAND_GESTURE_CONTROL_PLAN.md` | — |
+| **Gesture** | Full hand-gesture mouse control (MediaPipe) | ✅ G1–G4 DONE — face-gated + presence soft-lock + cursor arbiter + calibration + HUD chip (detail in `HAND_GESTURE_CONTROL_PLAN.md`) | e1cc385 / 0ba2c5b / 2cf46f2·e25fc1b·87d2094 / cc27156 |
 | **Electron** | Single-exe boots FE+BE; notch→takeover overlay | ❌ LATER | — |
 
 Branch: `feat/cloud-gateway`. Phases 1–3.5 + §6 are committed AND pushed
@@ -541,15 +541,17 @@ are IN but NOT yet runtime-tested end-to-end.
 
 ## 9. Immediate next action when resuming  ← STOP POINT
 
-> **⏹ STOPPED HERE 2026-07-11 (later session) — PHASES 4 AND 5 BOTH COMPLETE + COMMITTED.**
-> Phase 4: all 13 autonomy-audit items FIXED and harness-verified (§5 per-item record,
-> §5.4a plain-words summary). Phase 5: full free-tier LLM cascade + Gemini vision live
-> (§5.5) — all 5 Gemini keys, OpenRouter chain, and the vision path tested with real
-> API calls. Keys live ONLY in `.env` (git-ignored; `KEys.txt` git-ignored too).
+> **⏹ STOPPED HERE 2026-07-18 — PHASES 1–5 + GESTURE G1–G4 ALL COMPLETE + COMMITTED.**
+> Phases 4/5 committed+pushed (`6438202`/`d8cace0`). Gesture control G1–G4 done: G1 spike
+> (`e1cc385`), G2 engine+pointer (`0ba2c5b`), G3 daemon + face-gate + away soft-lock
+> (`2cf46f2`/`e25fc1b`/`87d2094`, live fixes `839efad`/`053172b`), and G4 — cursor arbiter
+> + guided 12-sample enroll + calibration-JSON persistence + HUD chip (`cc27156`, NOT yet
+> pushed). Full gesture detail in `HAND_GESTURE_CONTROL_PLAN.md`. Harnesses green: arbiter
+> 28/28, enroll 17/17, calibration 31/31, engine 38/38, face-gate 5/5.
 >
-> **➡ RESUME AT: the hand-gesture control build — `HAND_GESTURE_CONTROL_PLAN.md`
-> (Phase G1 spike). Electron packaging stays after that. Kaustav's manual smoke-tests
-> below still owed.**
+> **➡ RESUME AT: Kaustav's live camera gates for G4 (item 1 below), then push + merge the
+> PR (`feat/cloud-gateway`). Electron packaging (single exe, notch → takeover) is the last
+> milestone. The Phase-4/5 manual smoke-tests below are still owed.**
 
 **Uncommitted working-tree changes from Phase 4 (branch `feat/cloud-gateway`):**
 - `jarvis-backend/modules/owner_notify.py` — NEW: owner-notify fan-out (desk HUD + TTS + phone)
@@ -567,10 +569,13 @@ are IN but NOT yet runtime-tested end-to-end.
 - `RELIABILITY_HARDENING.md` (this file)
 
 **Remaining work (in priority order):**
-1. **Hand-gesture mouse control** — full plan in `HAND_GESTURE_CONTROL_PLAN.md`
-   (repo root). Start at Phase G1 (feasibility spike). Deps (mediapipe,
-   opencv-python) need Kaustav's explicit install approval per the
-   dependency-averse rule — the plan lists them.
+1. **Gesture G4 live camera gates (Kaustav)** — code done + harness-green (`cc27156`);
+   live verification owed: (a) **arbiter** — engage the hand, then trigger a real
+   ghost_type / autopilot; the cursor must not fight and the HUD chip must show
+   "JARVIS DRIVING"; (b) **enroll** — `python enroll_face.py` 12-sample guided capture
+   (re-seeds `owner_embeddings.npz`, currently only the 1-sample seed); (c) **calibration**
+   — in `gesture_spike.py` tune `+/-` sensitivity and `m` mirror, press `w`, restart,
+   confirm it persisted; (d) eyeball the HUD chip states. Then push + merge the PR.
 2. **(Still pending from §4.5/§4.6) Kaustav's 2 GUI/hardware smoke-tests:**
    cold-start "open Notepad and write a poem" (ghost_type/UIA), and
    "open google chrome" → Chrome (not google.com) / "open google" → google.com.
@@ -588,7 +593,14 @@ are IN but NOT yet runtime-tested end-to-end.
    `[ROUTER]` log lines for the escalation.
 5. ~~`TAVILY_API_KEY` on Render~~ — ✅ **DONE (Kaustav, 2026-07-11): keys added in the
    Render dashboard, mirroring the desk .env.** Verify on next cloud lookup.
-6. **Electron packaging** (single exe, notch → takeover overlay) — after gestures.
+6. **Electron packaging** (single exe, notch → takeover overlay) — the last milestone,
+   after the G4 gates. ⚠️ PARKED MID-BUILD: `jarvis-frontend/package.json` lost its
+   electron config (no `main`, no electron-builder block, no electron deps) in the Jul-4
+   git history rewrite, even though `node_modules` still has electron + electron-builder
+   and `jarvis-frontend/release/*.exe` is a stale Jun-28 build. `NotchView.jsx` /
+   `SidecarView.jsx` / `electron/` are untracked and predate the gesture work. To resume:
+   restore the package.json electron config, reconcile the stale Notch/Sidecar views with
+   the current HUD (now has the GESTURES button + GestureGuide + GestureChip), rebuild.
 
 ### 9.1 Token-trim (input-side, 2026-07-11 evening — DONE, see commit)
 
