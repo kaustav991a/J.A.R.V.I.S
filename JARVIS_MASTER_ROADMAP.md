@@ -40,6 +40,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.1** relative trackpad + accel + clutch + dwell right-click | ✅ DONE, live-gate owed | §3.3, §4 |
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
 | **Automatic test baseline** | ✅ 205/205 green | `TEST_PLAN.md` |
+| **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); voice click-to-talk = follow-up | §5 |
 | **G5.3** cursor-halo + edge-toast overlays | ⬜ TODO | §5 |
 | **G5.4** distance mitigation | ⬜ TODO | §5 |
 | **G5.5** precision / dual-target filtering | ⬜ TODO | §5 |
@@ -146,9 +147,12 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
 ## 5. What's LEFT — the roadmap (follow this order)
 
 ### TIER A — desktop G5 finish (buildable now, no hardware to *build*, live-gate after)
-1. **G5.7 mic / voice affordance** — *highest fluidity-per-effort.* A voice-first
-   product has NO visible mic button today (`startVoiceCommand` is dead code); add an
-   obvious "talk to me" control + listening animation. Pairs with the login IdentityPrompt.
+1. ✅ **G5.7 mic / voice affordance** — DONE (`3d3063d`). `MicIndicator.jsx` in the
+   command terminal mirrors real voice state (READY/LISTENING/THINKING/SPEAKING/OFF),
+   click focuses the command line. **Follow-up:** true voice click-to-talk needs the
+   backend to READ client WS messages — the `/ws` voice loop blocks on the server-side
+   mic and never consumes `START_LISTENING`; add a bidirectional trigger (or a
+   `POST /api/listen`) later. Pairs with the login IdentityPrompt.
 2. **G5.3 overlays** — separate always-on-top click-through process (like
    `lock_overlay.py`): cursor halo that tracks gesture state (grab/click/clutch) + edge
    toasts ("hand ready", "JARVIS driving"). Biggest *felt* gesture jump.
