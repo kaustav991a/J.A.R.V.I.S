@@ -703,7 +703,17 @@ overlays, distance) plus the **audit-found robustness fixes** below.
 - **Harness:** extend `test_gesture_engine.py` — delta math, accel buckets (slow→dampen, fast→amplify), clutch produces no jump on re-engage, mirror x-invert, deadzone still applies. Pure, no hardware.
 - **Risk:** behavior change. Absolute mode stays as fallback; Kaustav live-gates before default flip.
 
-### 10.3 — G5.2 Interactive calibration wizard
+### 10.3 — G5.2 Interactive calibration wizard (✅ DONE 2026-07-19, `3b9a68a`)
+
+> **Status:** NEW `calibrate_gesture.py` — pure derivation helpers (palm_sign
+> auto-detect, pinch-threshold derivation, reach→sensitivity/base_gain,
+> `derive_calibration` fold) + a guided live flow (palm→pinch→reach, W saves).
+> `test_calibrate_gesture.py` 14/14. Persists to the same `gesture_calibration.json`.
+> **LIVE GATE OWED (Kaustav):** `python calibrate_gesture.py [--relative] <url>`,
+> run the flow, `w` to save, restart the spike, confirm it persisted (palm_sign auto,
+> no more JARVIS_PALM_* fiddling).
+>
+> **Original plan (kept for reference):**
 
 **Problem:** `palm_sign` still needs manual `JARVIS_PALM_SIGN`; no per-user hand-size / reach; thresholds are one-size-fits-all.
 
@@ -781,12 +791,14 @@ Friendliness questions to decide **before** touching the engine:
 
 **Resume pointer (updated 2026-07-19):** ✅ **G5.0 DONE** (all 9,
 `4a2945b`/`b1771ff`/`31afe0d`/`54f47a0`). ✅ **G5.6 vocab DECIDED** (`bd54c0a`, §10.7).
-✅ **G5.1 DONE** (`644a750`, §10.2 — relative mapping + accel + clutch + dwell
-right-click, 49/49). All unpushed on `feat/cloud-gateway`. **NEXT buildable = `G5.2`
-interactive calibration wizard** (§10.3 — `calibrate_gesture.py`: measure palm_sign /
-hand-size / pinch min-max / reach instead of guessing; pure derivation helpers are
-harnessable, the flow is live-gated). Then G5.4 distance, G5.5 filtering, G5.3
-overlays, G5.7 backlog. **Kaustav-owed live gates (hardware):** G5.1 relative/clutch/
-dwell feel; G4 camera gates + Phase-4/5 smoke-tests (§9); G5.0-item-7 eyeball. Then
-push + merge. **Also queued (Kaustav asked 2026-07-19):** away→mobile presence — see
-NEW `MOBILE_PRESENCE_PLAN.md` (B: phone-WiFi probe, no app; C: dedicated app scope).
+✅ **G5.1 DONE** (`644a750`, §10.2). ✅ **G5.2 DONE** (`3b9a68a`, §10.3 — calibration
+wizard, 14/14). All unpushed on `feat/cloud-gateway`. **Automatic-test baseline
+2026-07-19: 205/205 green** (see `TEST_PLAN.md`). **NEXT buildable (no hardware),
+recommended order (see `UPGRADES_AND_FLUIDITY.md` §4):** G5.7 mic/voice affordance
+(highest fluidity-per-effort — voice product has NO mic button today) → G5.3 overlays
+(cursor halo + toasts) → G5.4 distance → G5.5 precision → G5.7 robustness backlog →
+Track B presence probe. Then the full `TEST_PLAN.md` pass → Electron → mobile app.
+**Kaustav-owed live gates (hardware):** G5.1 relative/clutch/dwell feel; G5.2 wizard;
+G4 camera gates + Phase-4/5 smoke-tests (§9); G5.0-#7 eyeball. Then push + merge.
+**Docs added 2026-07-19:** `TEST_PLAN.md` (auto+manual), `UPGRADES_AND_FLUIDITY.md`,
+`MOBILE_PRESENCE_PLAN.md` (away→mobile: B phone-WiFi probe, C app).
