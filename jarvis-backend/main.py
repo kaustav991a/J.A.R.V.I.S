@@ -2838,9 +2838,13 @@ async def websocket_endpoint(websocket: WebSocket):
                                 await safe_send({"status": "error", "message": f"EXECUTION FAULT: {e}"})
                                 print(f"[ERROR] WS EXECUTION FAULT: {e}", flush=True)
                                 import traceback
-                                with open("error.log", "a") as errf:
-                                    errf.write(traceback.format_exc() + "\n")
-                                asyncio.create_task(speaker.speak_text(f"I encountered an execution fault: {e}"))
+                                try:
+                                    with open("error.log", "a", encoding="utf-8") as errf:
+                                        errf.write(traceback.format_exc() + "\n")
+                                except Exception:
+                                    pass
+                                _fault_title = "Madam" if active_user == "MOUSUMI" else "Sir"
+                                asyncio.create_task(speaker.speak_text(f"I encountered an execution fault, {_fault_title}."))
                         # No else needed here, the loop naturally continues to `AWAITING INPUT...`
                             
     except WebSocketDisconnect:
