@@ -1,0 +1,87 @@
+// Voice affordance pill — sits in the command terminal, mirrors voice state.
+.mic-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  margin-right: 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 229, 255, 0.35);
+  background: rgba(0, 20, 30, 0.55);
+  color: #7fdfff;
+  font: 600 11px/1 "Orbitron", "Rajdhani", monospace;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease,
+    box-shadow 0.2s ease;
+
+  &__icon { display: inline-flex; }
+  &__label { text-transform: uppercase; }
+
+  &:hover { box-shadow: 0 0 10px rgba(0, 229, 255, 0.35); }
+  &:focus-visible { outline: 2px solid rgba(0, 229, 255, 0.6); outline-offset: 2px; }
+
+  // ---- states ----
+  &.is-off {
+    color: #6b7785;
+    border-color: rgba(120, 135, 150, 0.3);
+    background: rgba(20, 24, 28, 0.5);
+    cursor: default;
+  }
+  &.is-ready { color: #7fdfff; border-color: rgba(0, 229, 255, 0.35); }
+
+  &.is-listening {
+    color: #6bffb0;
+    border-color: rgba(50, 255, 150, 0.6);
+    box-shadow: 0 0 14px rgba(50, 255, 150, 0.35);
+    .mic-indicator__icon { animation: mic-pulse 1s ease-in-out infinite; }
+  }
+  &.is-busy {
+    color: #ffcf6b;
+    border-color: rgba(255, 190, 60, 0.55);
+    .mic-indicator__icon { animation: mic-spin 1s linear infinite; }
+  }
+  &.is-speaking {
+    color: #8fb8ff;
+    border-color: rgba(90, 150, 255, 0.6);
+    box-shadow: 0 0 12px rgba(90, 150, 255, 0.3);
+    .mic-indicator__icon { animation: mic-pulse 0.7s ease-in-out infinite; }
+  }
+
+  // live waveform bars (listening only)
+  &__wave {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 12px;
+    i {
+      width: 2px;
+      background: currentColor;
+      border-radius: 1px;
+      animation: mic-wave 0.9s ease-in-out infinite;
+    }
+    i:nth-child(1) { animation-delay: 0s; }
+    i:nth-child(2) { animation-delay: 0.15s; }
+    i:nth-child(3) { animation-delay: 0.3s; }
+    i:nth-child(4) { animation-delay: 0.45s; }
+  }
+}
+
+@keyframes mic-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.75; }
+}
+@keyframes mic-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes mic-wave {
+  0%, 100% { height: 3px; }
+  50% { height: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mic-indicator__icon,
+  .mic-indicator__wave i { animation: none !important; }
+}

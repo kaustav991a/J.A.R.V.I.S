@@ -24,6 +24,7 @@ import DataOverlay from "./components/DataOverlay";
 import ChatPanel from "./components/ChatPanel";
 import GestureGuide from "./components/GestureGuide";
 import GestureChip from "./components/GestureChip";
+import MicIndicator from "./components/MicIndicator";
 import TaskHud from "./components/TaskHud";
 import { API_BASE, WS_BASE, API_HOST } from "./api";
 import "./App.scss";
@@ -206,6 +207,7 @@ function App() {
   const [taskRefresh, setTaskRefresh] = useState(0);
 
   const socket = useRef(null);
+  const commandInputRef = useRef(null);
   const reconnectTimer = useRef(null);
   const reconnectDelay = useRef(1000);   // backoff, 1s -> 30s
   const wsWantOpen = useRef(true);        // false once the effect unmounts
@@ -582,6 +584,14 @@ function App() {
       setLogTextRaw("INITIALIZING MIC OVERRIDE...");
       socket.current.send("START_LISTENING");
     }
+  };
+
+  // Mic affordance click: focus the command line (works today) and fire the
+  // (future) voice trigger — harmless no-op until the backend reads WS input.
+  const handleMicClick = () => {
+    if (status === "offline") return;
+    startVoiceCommand();
+    commandInputRef.current?.focus();
   };
 
   const sendBackdoorCommand = async () => {
@@ -986,10 +996,12 @@ function App() {
           className={`hud-command-terminal hud-command-terminal--phase-${hudPhase} backdoor-panel`}
           tabIndex={-1}
         >
+          <MicIndicator status={status} onClick={handleMicClick} />
           <span className="hud-command-terminal__prompt" aria-hidden>
             &gt;
           </span>
           <input
+            ref={commandInputRef}
             type="text"
             placeholder="COMMAND LINE // ENTER DIRECTIVE"
             value={backdoorCommand}
