@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import "./CameraFeedWidget.scss";
+import { API_BASE } from "../api";
 
-const API_BASE = "http://127.0.0.1:8000";
 const POLL_MS = 800; // detection overlay refresh (the ambient daemon itself updates ~6s)
 
 // Box colour by what JARVIS sees: intruder/unknown = red, known person = gold, object = cyan.

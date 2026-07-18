@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Calendar, Clock, RefreshCw } from "lucide-react";
+import { API_BASE } from "../api";
 
 const CalendarWidget = () => {
   const [data, setData] = useState({ configured: false, events: [] });
@@ -8,7 +9,7 @@ const CalendarWidget = () => {
   const fetchCalendar = async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/calendar/today");
+      const res = await fetch(`${API_BASE}/api/calendar/today`);
       if (res.ok) setData(await res.json());
     } catch (e) { /* silent */ }
     setLoading(false);

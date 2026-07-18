@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Mail, MailOpen, RefreshCw } from "lucide-react";
+import { API_BASE } from "../api";
 
 const EmailWidget = () => {
   const [data, setData] = useState({ configured: false, unread: 0, previews: [] });
@@ -8,7 +9,7 @@ const EmailWidget = () => {
   const fetchEmails = async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/email/summary");
+      const res = await fetch(`${API_BASE}/api/email/summary`);
       if (res.ok) setData(await res.json());
     } catch (e) { /* silent */ }
     setLoading(false);

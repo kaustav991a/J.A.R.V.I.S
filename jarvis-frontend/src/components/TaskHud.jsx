@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import "./TaskHud.scss";
+import { API_BASE } from "../api";
 
 const HUD_EASE = [0.16, 1, 0.3, 1];
-const API = "http://localhost:8000/api/tasks";
+const API = `${API_BASE}/api/tasks`;
 
 const STATUS_META = {
   running: { label: "RUNNING", cls: "is-running" },

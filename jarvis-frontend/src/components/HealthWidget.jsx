@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Activity, Heart, RefreshCw } from "lucide-react";
+import { API_BASE } from "../api";
 
 const HealthWidget = () => {
   const [data, setData] = useState({ configured: false, steps: 0, heart_rate: 0 });
@@ -8,7 +9,7 @@ const HealthWidget = () => {
   const fetchHealth = async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/health/summary");
+      const res = await fetch(`${API_BASE}/api/health/summary`);
       if (res.ok) setData(await res.json());
     } catch (e) { /* silent */ }
     setLoading(false);

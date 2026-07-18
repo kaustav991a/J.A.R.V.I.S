@@ -93,6 +93,8 @@ class GestureDaemon:
     OWNER_GRACE_S = 3.5      # gestures allowed this long after the last owner sighting
     ALERT_COOLDOWN_S = 60.0  # min gap between stranger Telegram alerts
     DENY_TOAST_S = 8.0       # min gap between UNAUTHORIZED HUD toasts
+    HUD_HEARTBEAT_S = 2.0    # re-send gesture_state even if unchanged, so the HUD can
+                             # tell "state is stable" apart from "daemon is dead" (silence)
 
     def __init__(self, loop=None):
         self.loop = loop                    # asyncio loop for the phone-alert leg
@@ -107,6 +109,7 @@ class GestureDaemon:
         self._last_alert_t = -1e9
         self._last_toast_t = -1e9
         self._last_hud: dict | None = None
+        self._last_hud_beat = -1e9   # wall-clock of the last gesture_state frame sent
         self._last_face_t = -1e9
 
     # ---- public toggles (voice fast-path / API) ------------------------- #
@@ -157,8 +160,11 @@ class GestureDaemon:
             "ts": time.time(),
         })
         key = {k: v for k, v in gate.items() if k != "ts"}
-        if force or key != self._last_hud:
+        now_wall = time.time()
+        stale = (now_wall - self._last_hud_beat) >= self.HUD_HEARTBEAT_S
+        if force or key != self._last_hud or stale:
             self._last_hud = key
+            self._last_hud_beat = now_wall
             schedule_ui_update({"type": "gesture_state", **gate})
 
     # ---- lock / unlock --------------------------------------------------- #

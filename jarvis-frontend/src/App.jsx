@@ -25,6 +25,7 @@ import ChatPanel from "./components/ChatPanel";
 import GestureGuide from "./components/GestureGuide";
 import GestureChip from "./components/GestureChip";
 import TaskHud from "./components/TaskHud";
+import { API_BASE, WS_BASE, API_HOST } from "./api";
 import "./App.scss";
 
 // Background-worker lifecycle events broadcast by the Overnight Worker / Autopilot.
@@ -78,14 +79,39 @@ const Widget = ({
   const savedPos = localStorage.getItem(`widget_pos_v3_${title}`);
   const initialPos = savedPos ? JSON.parse(savedPos) : defaultPos;
 
+  // Keep the widget inside the viewport — a position saved on a big monitor must
+  // not render off-screen (unrecoverable) on a smaller one. Leaves >=60px on-screen.
+  const clampPos = (p) => {
+    const margin = 60;
+    const maxX = Math.max(0, window.innerWidth - margin);
+    const maxY = Math.max(0, window.innerHeight - margin);
+    return {
+      x: Math.min(Math.max(p?.x ?? 0, 0), maxX),
+      y: Math.min(Math.max(p?.y ?? 0, 0), maxY),
+    };
+  };
+
+  const [pos, setPos] = useState(() => clampPos(initialPos));
+
+  // Re-clamp on window resize so a shrink can't strand a widget off-screen.
+  useEffect(() => {
+    const onResize = () => setPos((p) => clampPos(p));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   const handleContextMenu = (e) => {
     e.preventDefault();
     setIsMoveMode(!isMoveMode);
   };
 
+  const handleDrag = (e, data) => setPos({ x: data.x, y: data.y });
+
   const handleStop = (e, data) => {
+    const next = { x: data.x, y: data.y };
+    setPos(next);
     if (title) {
-      localStorage.setItem(`widget_pos_v3_${title}`, JSON.stringify({ x: data.x, y: data.y }));
+      localStorage.setItem(`widget_pos_v3_${title}`, JSON.stringify(next));
     }
   };
 
@@ -97,8 +123,9 @@ const Widget = ({
     <Draggable
       nodeRef={nodeRef}
       disabled={!isMoveMode}
-      defaultPosition={initialPos}
+      position={pos}
       useCSSTransforms={false}
+      onDrag={handleDrag}
       onStop={handleStop}
     >
       <div
@@ -179,6 +206,9 @@ function App() {
   const [taskRefresh, setTaskRefresh] = useState(0);
 
   const socket = useRef(null);
+  const reconnectTimer = useRef(null);
+  const reconnectDelay = useRef(1000);   // backoff, 1s -> 30s
+  const wsWantOpen = useRef(true);        // false once the effect unmounts
 
   // --- Keep ref in sync with state ---
   useEffect(() => {
@@ -231,11 +261,32 @@ function App() {
     return () => clearInterval(chatterTimer);
   }, [status, logSpeaker]);
 
-  // --- WEBSOCKET LOGIC ---
+  // --- WEBSOCKET LOGIC (auto-reconnecting) ---
   useEffect(() => {
-    socket.current = new WebSocket("ws://127.0.0.1:8000/ws");
+    wsWantOpen.current = true;
+
+    const scheduleReconnect = () => {
+      if (!wsWantOpen.current || reconnectTimer.current) return;
+      const delay = reconnectDelay.current;
+      reconnectTimer.current = setTimeout(() => {
+        reconnectTimer.current = null;
+        connect();
+      }, delay);
+      reconnectDelay.current = Math.min(delay * 2, 30000); // exponential backoff, cap 30s
+    };
+
+    const connect = () => {
+      if (!wsWantOpen.current) return;
+      try {
+        socket.current = new WebSocket(`${WS_BASE}/ws`);
+      } catch (e) {
+        setBackendUnreachable(true);
+        scheduleReconnect();
+        return;
+      }
 
     socket.current.onopen = () => {
+      reconnectDelay.current = 1000;   // reset backoff on a healthy connection
       setBackendUnreachable(false);
       setStatus("online");
     };
@@ -245,7 +296,13 @@ function App() {
     };
 
     socket.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (err) {
+        console.warn("[WS] dropped non-JSON frame", err);
+        return;
+      }
 
       // --- Structured data overlay (files / processes) — bypass chat + system log ---
       if (data.ui_action) {
@@ -257,8 +314,10 @@ function App() {
       }
 
       // --- G3: live gesture/presence state (HUD chip + Gesture Guide practice mode) ---
+      // Stamp receive-time so a staleness watcher can hide the chip if the daemon
+      // goes silent (daemon sends a ~2s heartbeat, so real silence == daemon dead).
       if (data.type === "gesture_state") {
-        setGestureState(data);
+        setGestureState({ ...data, _rxAt: Date.now() });
         return;
       }
 
@@ -487,9 +546,33 @@ function App() {
       setIsCameraOpen(false);
       setIsMapOpen(false);
       setOverlayData(null);
+      setGestureState(null);   // clear the gesture chip so it can't latch after a drop
+      scheduleReconnect();     // keep trying until the backend comes back
     };
+    };  // end connect()
 
-    return () => socket.current.close();
+    connect();
+
+    return () => {
+      wsWantOpen.current = false;
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = null;
+      }
+      try { socket.current && socket.current.close(1000); } catch (e) { /* noop */ }
+    };
+  }, []);
+
+  // --- Gesture chip staleness watcher: if the daemon stops heartbeating (~2s),
+  //     hide the chip after 6s of silence so it never latches a dead state. ---
+  useEffect(() => {
+    const GESTURE_STALE_MS = 6000;
+    const t = setInterval(() => {
+      setGestureState((prev) =>
+        prev && prev._rxAt && Date.now() - prev._rxAt > GESTURE_STALE_MS ? null : prev
+      );
+    }, 2000);
+    return () => clearInterval(t);
   }, []);
 
   const startVoiceCommand = () => {
@@ -505,7 +588,7 @@ function App() {
     const cmd = backdoorCommand.trim();
     if (!cmd) return;
     try {
-      const res = await fetch("http://localhost:8000/api/backdoor", {
+      const res = await fetch(`${API_BASE}/api/backdoor`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command: cmd }),
@@ -870,7 +953,7 @@ function App() {
 
       {backendUnreachable && (
         <div className="backend-offline-banner" role="status">
-          <strong>API unreachable</strong> (127.0.0.1:8000). Start the backend from{' '}
+          <strong>API unreachable</strong> ({API_HOST}). Start the backend from{' '}
           <code className="backend-offline-banner__code">jarvis-backend</code>:{' '}
           <code className="backend-offline-banner__code">
             venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
