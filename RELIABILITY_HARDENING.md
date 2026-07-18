@@ -549,9 +549,12 @@ are IN but NOT yet runtime-tested end-to-end.
 > pushed). Full gesture detail in `HAND_GESTURE_CONTROL_PLAN.md`. Harnesses green: arbiter
 > 28/28, enroll 17/17, calibration 31/31, engine 38/38, face-gate 5/5.
 >
-> **➡ RESUME AT: Kaustav's live camera gates for G4 (item 1 below), then push + merge the
-> PR (`feat/cloud-gateway`). Electron packaging (single exe, notch → takeover) is the last
-> milestone. The Phase-4/5 manual smoke-tests below are still owed.**
+> **➡ RESUME AT: two tracks. (1) Buildable now, no hardware — Phase G5 (§10), a
+> full-project smoothness/UX/robustness plan from the 2026-07-18 audit + Kaustav's
+> gesture-UX proposal; start at G5.0 (§10.1), whose item 1 is the only hard crash
+> (`brain.py` briefing `health_context` unbound — one-line fix). (2) Kaustav-owed manual —
+> the G4 live camera gates + the Phase-4/5 smoke-tests below. Push + merge `feat/cloud-gateway`
+> after the G4 gates pass. Electron packaging is the final milestone.**
 
 **Uncommitted working-tree changes from Phase 4 (branch `feat/cloud-gateway`):**
 - `jarvis-backend/modules/owner_notify.py` — NEW: owner-notify fan-out (desk HUD + TTS + phone)
@@ -617,3 +620,118 @@ Two cuts in `brain.py` + `memory.py`, both harness-verified:
   "none found" labels + instruction boilerplate every turn (~85 tokens/turn).
 Verified: py_compile OK; window cap 30→12 with summary preserved; empty vs full
 prompt comparison (filler dropped when empty, sections kept when present).
+
+---
+
+## 10. Phase G5 — Smoothness, UX & Robustness (PLAN — 2026-07-18)
+
+**Goal (Kaustav):** JARVIS should run *smoothly* and feel *user-friendly*. Two inputs
+fed this plan: (a) a full-project flaw audit run 2026-07-18 (backend + frontend, findings
+verified against current code, gesture + cloud-gateway excluded from that pass and covered
+here); (b) Kaustav's gesture-UX proposal (relative mapping, clutch, calibration wizard,
+visual feedback, distance mitigation).
+
+**Execute top-down. Each item is its own commit, harness-gated where logic is pure,
+live-gated by Kaustav where hardware is involved.** Sub-phases are ordered by value ÷ risk:
+G5.0 (crash + resilience quick wins) first, then the big gesture-ergonomics change, then
+polish, then the lower-priority backlog.
+
+### 10.0 Already shipped — do NOT re-implement (Kaustav's "hardening" list is mostly done)
+
+| Proposal item | Already in the codebase |
+|---|---|
+| One-Euro jitter filter (speed-adaptive) | `gesture_engine.OneEuroFilter` |
+| Dynamic deadzone | `GestureConfig.deadzone=0.004`, enforced in `_update_move` |
+| Pinch hysteresis w/ separated thresholds | `_PinchTracker`, `pinch_down 0.40 / pinch_up 0.60` + 2-frame debounce |
+| Cursor ownership arbitration (mutual-exclusion lock) | `modules/gesture_arbiter.py` (G4, `cc27156`) |
+| Loss-of-tracking grace (hold-state buffer) | `_on_lost`: `lost_drag_grace_s 0.2` / `lost_disengage_s 2.0` |
+
+The genuinely-new work is the **ergonomics/UX layer** (relative mapping, clutch, wizard,
+overlays, distance) plus the **audit-found robustness fixes** below.
+
+### 10.1 — G5.0 Crash & resilience quick wins (DO FIRST — low risk, high value)
+
+**Backend:**
+1. **[HARD CRASH] `brain.py` (`health_context` assigned ~L2180 inside the `try`, used ~L2235 outside).** If Gmail/Calendar/Health raises during `generate_briefing` (expired token, network blip, partial Google setup), `health_context` is never bound → `NameError` → propagates through `_smart_briefing` → the wake handler (no surrounding try) → HTTP 500 / WS teardown → **JARVIS never boots**. Fix: initialize `health_context = "Health integration offline."` beside `email_context`/`calendar_context` *before* the `try`. One line.
+2. **[FREEZES AUDIO/UI] `action_engine.py` `execute()` — blocking I/O on the event loop.** `read_screen` (~664), `run_terminal_command` (~705), `gmail_send`/`gmail_reply` (~683-685), `workspace_read/write/patch` (~709-714), `github_*` (~716-725), `os_control` (~483-484) run synchronously while their neighbors correctly use `asyncio.to_thread`. During each, TTS + WS sends + daemons freeze. Fix: wrap these in `await asyncio.to_thread(...)`.
+3. **[SOCKET TEARDOWN] `main.py` ~L2841 — WS execution-fault handler.** Opens `error.log` without `encoding="utf-8"` and outside a try; a traceback containing `→`/`—` raises `UnicodeEncodeError` *inside* the except → whole WS session drops. Also speaks raw `{e}` to TTS. Fix: mirror the backdoor path (L1387-1391): `encoding="utf-8"` + inner try/except + clean persona line.
+4. **[RAW TTS] `main.py` L1821 vs L2629 — divergent `DATA_ACTIONS` sets.** The voice/WS set omits `web_browse` + `search_documents`, so RAG chunks / DOM text get spoken raw via `str(result)` instead of synthesized. Fix: hoist one shared `DATA_ACTIONS` constant used by both dispatch paths.
+
+**Frontend:**
+5. **[DEAD-UNTIL-RELOAD] `App.jsx` WS effect (~L235).** No auto-reconnect; any drop (backend restart, laptop sleep, transient blip) bricks the HUD until manual page reload. Fix: reconnect loop with exponential backoff (1s→30s), clear `backendUnreachable` on success.
+6. **[FRAME CRASH] `App.jsx` ~L248 — `JSON.parse(event.data)` unguarded.** One non-JSON frame aborts that message's handling. Fix: try/catch + return on parse failure.
+7. **[G4 BUG I INTRODUCED] `App.jsx` `onclose` + `GestureChip`/`GestureGuide`.** `gestureState` is never cleared on disconnect and there's no staleness timeout, so the chip latches "HAND ACTIVE" forever after the daemon dies (only the never-connected case is handled). Fix: `setGestureState(null)` on `onclose`; stamp each frame with receive-time and show the chip stale/hidden after ~N s of silence.
+8. **[OTHER-HOST] hard-coded `localhost:8000` / `127.0.0.1:8000` in 6 files** (`App.jsx` + TaskHud/Health/Email/Calendar/CameraFeed widgets), mixed host spellings, no Vite proxy. Fix: one `import.meta.env.VITE_API_BASE` constant (default `127.0.0.1:8000`).
+9. **[OFF-SCREEN] `App.jsx` widget positions** from `localStorage`/`window.innerWidth` are never clamped → a position saved on a big monitor renders off-screen on a small one with no recovery. Fix: clamp x/y into viewport on mount + resize.
+
+*Effort:* all small. Backend 1-4 have existing harness patterns (add cheap regressions); frontend 5-9 verified by `npm run build` + a manual drop/reconnect check.
+
+### 10.2 — G5.1 Relative trackpad mapping + acceleration + clutch (the big ergonomics change)
+
+**Problem:** the engine maps the palm centroid to an *absolute* screen band (`_update_move` → `PointerBackend.move` with `MOUSEEVENTF_ABSOLUTE`) — arm-in-the-air "gorilla arm."
+
+**Plan (keeps `gesture_engine.py` pure — engine emits intents, pointer does ctypes):**
+- New `GestureConfig.mapping_mode` = `"absolute" | "relative"`, plus `base_gain`, `accel_slow`/`accel_fast` velocity knobs. Ship behind `JARVIS_GESTURE_RELATIVE=1` first; flip the default after the live gate.
+- **Engine (relative mode):** track previous palm-centroid; `Δ = cur − prev`; velocity `V = ‖Δ‖`; acceleration curve `A(V)` — dampen (`A<1`) when slow (precision for tiny targets), amplify (`A>1`) when fast (flick across screen); emit `("move_delta", dx, dy)` with `dx,dy = Δ·base_gain·A`. Keep the mirror-aware x handling (frame flip is upstream). One-Euro on Δ.
+- **Clutch:** the cursor already freezes the instant the raw pose leaves `palm` (incl. palm-not-facing → `back_palm`). In relative mode, while frozen **keep updating `prev` centroid every frame** so re-engaging doesn't jump — true "lift the mouse, reposition, set down." Surface a `CLUTCH` state in `.pose` / HUD.
+- **Pointer:** add `move_rel(dx, dy)` using `MOUSEEVENTF_MOVE` **without** `MOUSEEVENTF_ABSOLUTE`; new `execute()` branch for `("move_delta", …)`.
+- **Harness:** extend `test_gesture_engine.py` — delta math, accel buckets (slow→dampen, fast→amplify), clutch produces no jump on re-engage, mirror x-invert, deadzone still applies. Pure, no hardware.
+- **Risk:** behavior change. Absolute mode stays as fallback; Kaustav live-gates before default flip.
+
+### 10.3 — G5.2 Interactive calibration wizard
+
+**Problem:** `palm_sign` still needs manual `JARVIS_PALM_SIGN`; no per-user hand-size / reach; thresholds are one-size-fits-all.
+
+**Plan:** new `calibrate_gesture.py` (or a `--calibrate` mode of `gesture_spike.py`) — ~30 s guided flow that **measures instead of guessing**:
+1. hold open palm → auto-detect `palm_sign` from the live cross-product sign (removes the env fiddling entirely); measure `hand_size` baseline.
+2. pinch twice → sample pinch min/max → derive `pinch_down`/`pinch_up` for this hand.
+3. make a fist → confirm the grab classifier fires.
+4. reach to screen corners → measure comfortable reach → set `sensitivity` / band (or `base_gain` in relative mode).
+
+Writes `models/gesture_calibration.json` (the G4 `gesture_calibration.py` module already persists + is honored by daemon/spike/`from_env`). Optional frontend wizard panel later.
+- **Harness:** pure derivation helpers (palm_sign detection, threshold derivation from samples) tested with synthetic 21-landmark hands; live-gate the flow.
+
+### 10.4 — G5.3 Visual feedback: cursor halo + edge toasts
+
+**Problem:** mid-air control has no tactile feedback; the web HUD chip isn't always visible/focused over other windows.
+
+**Plan:** a separate always-on-top, **click-through**, layered overlay process (pattern like `lock_overlay.py` — `WS_EX_LAYERED | WS_EX_TRANSPARENT`):
+- **Cursor halo** following the OS cursor: a ring whose shape/color tracks state — solid ring in GRAB, pulse on CLICK, dim in CLUTCH/suspended. Reads daemon `gesture_state` (small local IPC — the daemon can write state to a file/socket, or reuse the existing `gesture_state` dict via a tiny endpoint).
+- **Edge toasts:** small floating "🔒 Hand Control Locked" / "JARVIS driving" / "hand ready" at a screen corner on mode change; auto-fade.
+- **Risk:** overlay redraw cost on the CPU-only box (throttle to state-change only, not per-frame); click-through must be correct so it never eats input. Bigger item; separate process; live-gate.
+
+### 10.5 — G5.4 Distance mitigation (control from across the room)
+
+**Problem:** far from the camera the hand is a tiny speck → palm detector misses it, landmark pixel density collapses (can't tell open vs pinch), tracking confidence drops → disengage.
+
+**Plan:**
+- **Crop-around-face:** `face_gate` already runs YuNet on the SAME frames — reuse its face box to crop an upper-body ROI, upscale, and feed *that* to `HandLandmarker`, inflating the hand's apparent size.
+- **Resolution:** allow 1280×720 via the already-plumbed `JARVIS_CAM_RES` for distance use; document the CPU cost tradeoff (640×480 stays the close-range default).
+- **Confidence knobs:** expose `min_hand_detection_confidence` / `min_tracking_confidence` on the `HandLandmarker` options (daemon + spike) and lower them for distance.
+- **Harness:** ROI-crop math is pure-testable; live-gate detection range.
+
+### 10.6 — G5.5 Filtering polish (dual-target / precision mode)
+
+One-Euro is already speed-adaptive. Add an explicit **precision mode**: when velocity stays below a threshold for K frames, drop `min_cutoff` further (or clamp harder) so tiny close-buttons (×) and text lines are selectable; re-tune `beta`. Pure engine change + harness.
+
+### 10.7 — G5.6 Vocabulary refresh (PROPOSAL — needs Kaustav sign-off + live-gate, like G3)
+
+Current committed vocabulary (recap): index-up 1 s = START · open palm = MOVE · thumb+index tap = CLICK (fires on pinch-land) · 2nd tap ≤1 s = DOUBLE · thumb+middle tap = RIGHT-CLICK · fist = GRAB/DRAG · index+middle = SCROLL · back-of-hand 1.5 s = STOP.
+
+Friendliness questions to decide **before** touching the engine:
+- Make **CLUTCH** first-class (palm tilt = pause + reposition) — pairs with G5.1.
+- Default to relative "trackpad" move so open-palm feels like a laptop trackpad.
+- `thumb+middle` right-click is finicky — evaluate an alternative.
+- Keep or unify the two different holds (index-up start / back-of-hand stop)?
+
+**Do NOT change the vocabulary unilaterally** — the G3 vocab was decided with Kaustav via an explicit choice. Present these as options (AskUserQuestion), then implement the approved set + live-gate.
+
+### 10.8 — G5.7 Lower-priority audit backlog (after the above)
+
+**Backend:** barge-in leaks the synthesis producer thread + upstream LLM stream on interrupt (`main.py` ~L540-576/645-677); no boot config preflight — half-configured `.env` degrades silently with no "what's missing" signal (`main.py` ~L792-793 + all `/api/*`); `llm_router._call_ollama` (~L228) returns `""` on an empty-200 instead of failing over; module-global `working_memory` mutated from worker threads without a lock (`memory.py` L18-100); ~40 fire-and-forget `create_task(speak_text(...))` swallow TTS errors; `watchdog.py` (~L247-254) respawns a permanently-broken process every ~30 s forever with no give-up/alert.
+
+**Frontend:** `startVoiceCommand` is dead code — **no visible mic button / voice affordance at all** for a voice-first product (`App.jsx` L495); boot log is time-based not connection-based so it claims readiness while the backend is down (~L189-209); command-terminal failures are console-only + input unlabeled (~L504-522/909); `BrowserWidget` iframe has no fallback for framing-blocked sites (Google etc.); `DataOverlay` modal has no Escape/focus-trap; `CalculatorWidget` uses `eval()` on live input; widget drag is right-click-only with no discoverable hint.
+
+### 10.9 — Suggested order & tracking
+
+`G5.0` → `G5.6` vocab decision (gates G5.1's vocab) → `G5.1` relative+clutch → `G5.2` wizard → `G5.4` distance → `G5.5` filtering → `G5.3` overlays → `G5.7` backlog. One commit per item; harness green + Kaustav live-gate before moving on. **Resume pointer:** start at **G5.0 item 1** (the `brain.py` briefing crash) — it's the only hard crash and a one-line fix.
