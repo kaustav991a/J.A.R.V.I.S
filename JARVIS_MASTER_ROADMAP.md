@@ -41,7 +41,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
 | **Automatic test baseline** | ✅ 205/205 green | `TEST_PLAN.md` |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); voice click-to-talk = follow-up | §5 |
-| **G5.3** cursor-halo + edge-toast overlays | ⬜ TODO | §5 |
+| **G5.3** cursor-halo + edge-toast overlays | ✅ code done, live-gate owed | §5 |
 | **G5.4** distance mitigation | ⬜ TODO | §5 |
 | **G5.5** precision / dual-target filtering | ⬜ TODO | §5 |
 | **G5.7** backlog (mic affordance + robustness) | ⬜ TODO | §5 |
@@ -153,9 +153,17 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
    backend to READ client WS messages — the `/ws` voice loop blocks on the server-side
    mic and never consumes `START_LISTENING`; add a bidirectional trigger (or a
    `POST /api/listen`) later. Pairs with the login IdentityPrompt.
-2. **G5.3 overlays** — separate always-on-top click-through process (like
-   `lock_overlay.py`): cursor halo that tracks gesture state (grab/click/clutch) + edge
-   toasts ("hand ready", "JARVIS driving"). Biggest *felt* gesture jump.
+2. ✅ **G5.3 overlays** — DONE (code). `cursor_overlay.py` = separate always-on-top
+   **click-through** process (WS_EX_TRANSPARENT + WS_EX_NOACTIVATE — the gesture cursor
+   still clicks the app beneath; the overlay only draws). Cursor halo recolours by pose
+   (palm=cyan move · fist=amber grab · two_finger=cyan scroll · back_palm=dim clutch) +
+   edge toasts on transitions (HAND READY / JARVIS DRIVING / YOU HAVE CONTROL /
+   UNAUTHORIZED / CONTROL OFF). `gesture_daemon` spawns it (`JARVIS_GESTURE_OVERLAY=1`
+   default, win32-only), streams state frames to its stdin each `_hud`, kills on stop;
+   overlay polls its own cursor pos (~60fps) so smoothness is IPC-independent, exits on
+   stdin EOF like `lock_overlay.py`. Live-gate owed (see §7). **Follow-up:** click-flash
+   (engine exposes no pinch pose — click is an intent, not `pose`; add a click pulse when
+   state carries the click event). Biggest *felt* gesture jump.
 3. **G5.4 distance mitigation** — crop-around-face ROI (reuse `face_gate` detection),
    720p option, tracking-confidence knobs → control from across the room.
 4. **G5.5 precision / dual-target filtering** — when the hand is slow, clamp harder so
@@ -254,6 +262,11 @@ All gesture/UX code is committed but UNPUSHED on `feat/cloud-gateway`. Owed befo
 - **G5.2 wizard:** `calibrate_gesture.py [--relative] <url>` → palm/pinch/reach → `w`
   saves → restart → confirm persisted.
 - **G5.0 #7:** kill the gesture daemon → HUD chip disappears within ~6 s.
+- **G5.3 overlay:** START control → cyan halo tracks the cursor; fist → amber, index+middle
+  → scroll dashes, back-of-hand → dim clutch ring. Toasts fire on engage (HAND READY),
+  automation takeover (JARVIS DRIVING), and hand-off back (YOU HAVE CONTROL). Confirm the
+  halo is **click-through** (clicks still land on the app beneath, focus never stolen) and
+  that it vanishes on lock/disable. `JARVIS_GESTURE_OVERLAY=0` disables the whole process.
 - **Phase-4 phone smoke-tests + Phase-5 failover** — see `TEST_PLAN.md` §B5/B6.
 - Then **push + merge** `feat/cloud-gateway`.
 

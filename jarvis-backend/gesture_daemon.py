@@ -39,6 +39,7 @@ state="suspended" via gesture_state["suspended"/"suspend_reason"].
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -104,6 +105,11 @@ class GestureDaemon:
         self.auto_lock = os.getenv("JARVIS_AUTO_LOCK", "1") == "1"
         self.absent_after = float(os.getenv("JARVIS_LOCK_AFTER", "6"))
         self._overlay: subprocess.Popen | None = None
+        # G5.3 cursor-halo + edge-toast overlay (separate click-through process)
+        self._cursor_overlay: subprocess.Popen | None = None
+        self._cursor_overlay_enabled = (
+            os.getenv("JARVIS_GESTURE_OVERLAY", "1") == "1" and sys.platform == "win32")
+        self._cursor_overlay_next_try = 0.0
         self._locked = False
         self._last_owner_t = -1e9
         self._last_alert_t = -1e9
@@ -140,6 +146,56 @@ class GestureDaemon:
         if self.thread:
             self.thread.join(timeout=3.0)
         self._kill_overlay()
+        self._kill_cursor_overlay()
+
+    # ---- cursor overlay (G5.3) ------------------------------------------ #
+
+    def _ensure_cursor_overlay(self) -> None:
+        """Lazily (re)spawn the click-through halo/toast process, rate-limited."""
+        if not self._cursor_overlay_enabled:
+            return
+        if self._cursor_overlay is not None and self._cursor_overlay.poll() is None:
+            return
+        now = time.monotonic()
+        if now < self._cursor_overlay_next_try:
+            return
+        self._cursor_overlay_next_try = now + 10.0
+        try:
+            self._cursor_overlay = subprocess.Popen(
+                [sys.executable, "cursor_overlay.py"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                stdin=subprocess.PIPE,
+                creationflags=0x08000000 if sys.platform == "win32" else 0)
+        except Exception as e:  # noqa: BLE001
+            print(f"[GESTURE] cursor overlay spawn failed: {e}", flush=True)
+            self._cursor_overlay = None
+
+    def _feed_cursor_overlay(self, frame: dict) -> None:
+        """Push one gesture-state frame to the overlay's stdin (best-effort)."""
+        if not self._cursor_overlay_enabled:
+            return
+        self._ensure_cursor_overlay()
+        ov = self._cursor_overlay
+        if ov is None or ov.stdin is None:
+            return
+        try:
+            ov.stdin.write((json.dumps(frame) + "\n").encode("utf-8"))
+            ov.stdin.flush()
+        except Exception:
+            # overlay died / pipe broke — drop it; _ensure respawns (rate-limited)
+            try:
+                ov.terminate()
+            except Exception:
+                pass
+            self._cursor_overlay = None
+
+    def _kill_cursor_overlay(self) -> None:
+        if self._cursor_overlay is not None:
+            try:
+                self._cursor_overlay.terminate()
+            except Exception:
+                pass
+            self._cursor_overlay = None
 
     # ---- HUD ------------------------------------------------------------ #
 
@@ -167,6 +223,12 @@ class GestureDaemon:
             self._last_hud = key
             self._last_hud_beat = now_wall
             schedule_ui_update({"type": "gesture_state", **gate})
+            self._feed_cursor_overlay({
+                "state": gate["state"], "engaged": gate["engaged"],
+                "clutch": gate.get("clutch", False), "suspended": gate["suspended"],
+                "denied": gate["denied"], "pose": gate["pose"],
+                "locked": gate["locked"],
+            })
 
     # ---- lock / unlock --------------------------------------------------- #
 
