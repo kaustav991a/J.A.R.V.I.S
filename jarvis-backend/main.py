@@ -2148,18 +2148,27 @@ async def websocket_endpoint(websocket: WebSocket):
             # STAGE 1B: BIOMETRIC & GUEST BOOT 
             # ==========================================
             else:
-                # --- NEW: OPTICAL SCANNER ACTIVATION ---
+                # --- OPTICAL SCANNER ACTIVATION (G6.1 synced face-auth contract) ---
+                from modules import auth_status
+                # Legacy frame kept: it drives the security barrier and is the
+                # fallback for an un-updated frontend. The auth_face_* frames drive
+                # the new synced FaceAuthOverlay.
                 await safe_send({"status": "security_locked", "message": "ACTIVATING OPTICAL SENSORS..."})
-                
+                await safe_send(auth_status.face_frame("start"))
+
                 # Fire and forget speech so he talks while the camera boots up
                 asyncio.create_task(speaker.speak_text("Scanning biometrics."))
-                
+
+                # The overlay HOLDS on this stage until success/fail arrives, so
+                # the animation never outruns the real (up to 10s) scan.
+                await safe_send(auth_status.face_frame("scanning"))
                 # Turn on the IP stream for up to 10 seconds to look for a face
                 detected_face = await asyncio.to_thread(vision.scan_for_faces, 10)
                 
                 # --- BIOMETRIC SUCCESS BRANCHES ---
                 if detected_face == "KAUSTAV":
                     active_user = "KAUSTAV"
+                    await safe_send(auth_status.face_frame("success", user="KAUSTAV"))
                     welcome_msg = "Facial biometrics recognized. Welcome back, Sir. All primary systems online."
                     await safe_send({"status": "security_locked", "message": welcome_msg})
                     await speaker.speak_text(welcome_msg)
@@ -2171,7 +2180,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     await speaker.speak_text(briefing_text)
                     
                 elif detected_face == "KINSHUK":
-                    active_user = "KINSHUK" 
+                    active_user = "KINSHUK"
+                    await safe_send(auth_status.face_frame("success", user="KINSHUK"))
                     success_msg = "Biometric match. A very warm welcome to you, Mr. Kinshuk. Master Kaustav mentioned you would be logging in today. It is a distinct privilege to serve the Administrator's brother. I am unlocking the interface for you now, Sir."
                     
                     await safe_send({"status": "security_locked", "message": success_msg})
@@ -2184,6 +2194,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                 elif detected_face == "MOUSUMI":
                     active_user = "MOUSUMI"
+                    await safe_send(auth_status.face_frame("success", user="MOUSUMI"))
                     # --- CINEMATIC INTRODUCTION CEREMONY ---
                     await safe_send({"status": "security_locked", "message": "Biometric match confirmed. Initiating V.I.P. Protocol..."})
                     await speaker.speak_text("Biometric match confirmed.")
@@ -2225,6 +2236,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # --- FALLBACK: VOICE PROTOCOL ---
                 else:
+                    await safe_send(auth_status.face_frame("fail", reason="no_match"))
                     challenge_msg = "Optical scan inconclusive. Please state your name."
                     await safe_send({"status": "security_locked", "message": challenge_msg})
                     await speaker.speak_text(challenge_msg)

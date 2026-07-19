@@ -17,6 +17,7 @@ import { MinimalHudClock } from "./components/ClockWidget";
 import IntroductionCeremony from "./components/IntroductionCeremony";
 import FirstBootSequence from "./components/FirstBootSequence";
 import FaceScanOverlay from "./components/FaceScanOverlay";
+import FaceAuthOverlay from "./components/FaceAuthOverlay";
 import UplinkOverlay from "./components/UplinkOverlay";
 import LockdownOverlay from "./components/LockdownOverlay";
 import ScreenScanOverlay from "./components/ScreenScanOverlay";
@@ -181,6 +182,8 @@ function App() {
   const [isCeremonyActive, setIsCeremonyActive] = useState(false);
   const [isFirstBoot, setIsFirstBoot] = useState(false);
   const [isFaceScanning, setIsFaceScanning] = useState(false);
+  // G6.1 synced face-auth overlay: { stage, user, reason } | null
+  const [authFace, setAuthFace] = useState(null);
   const [isScreenScanning, setIsScreenScanning] = useState(false);
   const [isLockdown, setIsLockdown] = useState(false);
 
@@ -406,6 +409,22 @@ function App() {
           setIsFaceScanning(true);
         } else if (data.status !== "security_locked" || !data.message?.includes("OPTICAL SENSORS")) {
           setIsFaceScanning(false);
+        }
+
+        // G6.1 synced face-auth (auth_face_start/scanning/matching/success/fail):
+        // holds the overlay on the scanning stage until success/fail actually
+        // arrives, then clears once the flow advances (booting/listening/etc.).
+        if (data.status.startsWith("auth_face_")) {
+          setAuthFace({
+            stage: data.status.slice("auth_face_".length),
+            user: data.user,
+            reason: data.reason,
+          });
+        } else if (
+          ["booting", "waking", "online", "offline", "security_listening",
+           "introduction_ceremony", "introduce_yourself"].includes(data.status)
+        ) {
+          setAuthFace(null);
         }
 
         if (data.status === "scanning_screen") {
@@ -678,7 +697,11 @@ function App() {
               setLogTextRaw("SYSTEM OFFLINE // AWAITING WAKE COMMAND");
             }}
           />
-          <FaceScanOverlay isActive={isFaceScanning} />
+          {/* G6.1: the synced overlay supersedes the legacy self-timed one; the
+              old FaceScanOverlay stays only as a fallback when no auth_face_* frame
+              arrives (an un-updated backend). */}
+          <FaceScanOverlay isActive={isFaceScanning && !authFace} />
+          <FaceAuthOverlay auth={authFace} />
           <ScreenScanOverlay isActive={isScreenScanning} />
           <UplinkOverlay isActive={status === "processing_llm" || status === "searching"} />
           <LockdownOverlay isActive={isLockdown} />

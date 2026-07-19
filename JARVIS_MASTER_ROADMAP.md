@@ -45,7 +45,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.4** distance mitigation | ✅ code done, live-gate owed | §5 |
 | **G5.5** precision / dual-target filtering | ✅ code done, live-gate owed | §5 |
 | **G5.7** robustness backlog | 🟡 backend 5/6 done (barge-in deferred); frontend TODO | §5 |
-| **Login/wake revamp** | ⬜ TODO (spec ready, §6) | §6 |
+| **Login/wake revamp** | 🟡 face-auth contract + FaceAuthOverlay done; BootSequence/IdentityPrompt TODO | §6 |
 | **Away→mobile presence (Track B probe)** | ⬜ TODO | §5, §6 |
 | **Smart-home / IoT agent** | ⬜ MISSING | §5 |
 | **Guarded self-improvement loop** | ⬜ MISSING | §5 |
@@ -269,6 +269,22 @@ Three weak spots and the fix:
   respect `prefers-reduced-motion`.
 - Build order: backend status contract → `FaceAuthOverlay` (highest impact) →
   `BootSequence` → `IdentityPrompt` → transition polish → live-gate.
+- ✅ **DONE (code):** backend status contract + `FaceAuthOverlay`. NEW pure
+  `modules/auth_status.py` `face_frame(stage, user, reason)` → additive
+  `{"status":"auth_face_start|scanning|success|fail", ...}` frames wired around the
+  `vision.scan_for_faces` call in `main.py` (legacy `security_locked`+"OPTICAL
+  SENSORS" kept for the security barrier + as fallback). NEW
+  `FaceAuthOverlay.jsx`/`.scss` — driven entirely by those frames: **holds** the
+  scan animation (looping laser+ring) until success/fail actually arrives (never
+  outruns the real scan), green lock-on on success + matched user, red reject on
+  fail; `prefers-reduced-motion` respected. `App.jsx` sets `authFace` from
+  `auth_face_*`, clears it when the flow advances; the new overlay supersedes the
+  self-timed `FaceScanOverlay` (kept only as a fallback for an un-updated backend).
+  `test_auth_status.py` 9/9; `npm run build` passes.
+  **Follow-ups:** real `auth_face_matching` phase (needs an `on_phase` callback +
+  face-box coords inside `scan_for_faces`) + live camera feed in the overlay (needs
+  the cam URL exposed to the frontend); then `BootSequence`, `IdentityPrompt`,
+  `ScanlineTransition`. **Live-gate owed** (§7).
 
 ### 6.2 Away→mobile presence
 - **Track B (near-term, no app):** `modules/presence_probe.py` — detect phone on home
@@ -302,6 +318,11 @@ All gesture/UX code is committed but UNPUSHED on `feat/cloud-gateway`. Owed befo
   automation takeover (JARVIS DRIVING), and hand-off back (YOU HAVE CONTROL). Confirm the
   halo is **click-through** (clicks still land on the app beneath, focus never stolen) and
   that it vanishes on lock/disable. `JARVIS_GESTURE_OVERLAY=0` disables the whole process.
+- **G6.1 face-auth overlay:** wake JARVIS with a biometric boot (not "admin override").
+  The FaceAuthOverlay must HOLD on the scanning animation for the full real scan (up to
+  10s) — not finish early and vanish. On a recognized face → green lock-on + "IDENTITY
+  CONFIRMED — <USER>"; on no match → red reject before the voice challenge. Confirm it
+  never "outruns" the scan, and that an un-updated path still shows the legacy overlay.
 - **G5.5 precision:** engage, then move the hand VERY slowly onto a tiny target (a window
   × button, a text caret between two characters) — the cursor should hold steady and let
   you land it, not wobble past. A fast flick must feel unchanged (no lag). Confirm the

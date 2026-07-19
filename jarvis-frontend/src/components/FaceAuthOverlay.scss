@@ -1,0 +1,123 @@
+// G6.1 — synced face-auth overlay. Cyan while scanning (loops, holds), green on
+// success lock-on, red on reject. Driven by the backend auth_face_* contract.
+
+$fa-cyan: #00ffcc;
+$fa-green: #22ff88;
+$fa-red: #ff3b3b;
+
+.face-auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  background: radial-gradient(circle at center, rgba(2, 10, 12, 0.55), rgba(1, 4, 6, 0.9));
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+
+  --fa: #{$fa-cyan};
+  &.is-success { --fa: #{$fa-green}; }
+  &.is-fail { --fa: #{$fa-red}; }
+}
+
+.fa-reticle {
+  position: relative;
+  width: min(46vmin, 380px);
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+}
+
+.fa-bracket {
+  position: absolute;
+  width: 46px;
+  height: 46px;
+  border: 3px solid var(--fa);
+  transition: border-color 0.3s ease;
+
+  &.tl { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+  &.tr { top: 0; right: 0; border-left: 0; border-bottom: 0; }
+  &.bl { bottom: 0; left: 0; border-right: 0; border-top: 0; }
+  &.br { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+}
+
+// sweeping scan line — loops while the backend HOLDS on the scanning stage
+.fa-laser {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--fa), transparent);
+  box-shadow: 0 0 12px var(--fa);
+  animation: fa-sweep 1.8s ease-in-out infinite;
+}
+
+.fa-ring {
+  position: absolute;
+  inset: 22%;
+  border: 2px solid var(--fa);
+  border-radius: 50%;
+  opacity: 0.5;
+  animation: fa-pulse 1.6s ease-in-out infinite;
+}
+
+.fa-mark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: min(20vmin, 160px);
+  font-weight: 700;
+  color: var(--fa);
+  text-shadow: 0 0 24px var(--fa);
+  animation: fa-lockon 0.45s ease-out;
+}
+
+.fa-status {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 1.15rem;
+  letter-spacing: 2px;
+  color: var(--fa);
+  text-shadow: 0 0 10px var(--fa);
+}
+
+.fa-sub {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 0.8rem;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-top: -14px;
+}
+
+.is-fail .fa-reticle { animation: fa-shake 0.4s ease; }
+
+@keyframes fa-sweep {
+  0% { top: 8%; }
+  50% { top: 88%; }
+  100% { top: 8%; }
+}
+@keyframes fa-pulse {
+  0%, 100% { transform: scale(0.94); opacity: 0.35; }
+  50% { transform: scale(1.04); opacity: 0.7; }
+}
+@keyframes fa-lockon {
+  0% { transform: scale(1.6); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes fa-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-10px); }
+  40% { transform: translateX(10px); }
+  60% { transform: translateX(-6px); }
+  80% { transform: translateX(6px); }
+}
+
+// respect reduced-motion: keep the states, drop the motion
+@media (prefers-reduced-motion: reduce) {
+  .fa-laser, .fa-ring, .fa-mark, .is-fail .fa-reticle {
+    animation: none;
+  }
+}
