@@ -611,6 +611,78 @@ def test_pointer_move_rel_clamps_at_edges():
     assert dx == to_absolute(1.0) and dy == to_absolute(0.0)
 
 
+# ------------------------------------------------------------------ #
+# G5.5 precision / fine-target damping
+# ------------------------------------------------------------------ #
+
+def test_precision_gain_ramp():
+    e = GestureEngine(GestureConfig())
+    c = e.cfg
+    assert e._precision_gain(0.0) == c.precision_gain
+    assert e._precision_gain(c.precision_v_lo) == c.precision_gain
+    assert e._precision_gain(c.precision_v_hi) == 1.0
+    assert e._precision_gain(1e9) == 1.0
+    mid = e._precision_gain((c.precision_v_lo + c.precision_v_hi) / 2.0)
+    assert c.precision_gain < mid < 1.0          # monotonic ramp
+    assert c.precision_gain < 1.0                 # slow speed is damped
+
+
+def test_precision_disabled_is_unity():
+    e = GestureEngine(GestureConfig(precision=False))
+    assert e._precision_gain(0.0) == 1.0
+    assert e._precision_gain(1e9) == 1.0
+
+
+def test_precision_env_toggle():
+    import os
+    keys = ("JARVIS_GESTURE_PRECISION", "JARVIS_PRECISION_GAIN")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        os.environ["JARVIS_GESTURE_PRECISION"] = "0"
+        assert GestureConfig.from_env().precision is False
+        os.environ["JARVIS_GESTURE_PRECISION"] = "1"
+        os.environ["JARVIS_PRECISION_GAIN"] = "0.2"
+        c = GestureConfig.from_env()
+        assert c.precision is True and abs(c.precision_gain - 0.2) < 1e-9
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_precision_dampens_slow_relative_move():
+    # a slow drift travels LESS far with precision on than off, but still tracks
+    def total(precision):
+        e = GestureEngine(GestureConfig(mapping_mode="relative", precision=precision))
+        sim = Sim(e)
+        assert sim.feed(INDEX_UP, 35) == [("engaged",)]
+        sim.feed(PALM, 5)                       # anchor sync (no emit)
+        out = []
+        for i in range(1, 15):                  # steady slow rightward drift
+            out += sim.feed(palm_at(0.006 * i), 1)
+        return sum(d[1] for d in out if d[0] == "move_delta")
+    on, off = total(True), total(False)
+    assert off > on > 0, f"precision should dampen slow drift (on={on}, off={off})"
+
+
+def test_precision_leaves_target_unbiased_absolute():
+    # precision only eases the APPROACH — a settled cursor lands on the same
+    # target with precision on or off (the easing fixed point is the target).
+    def endpos(precision):
+        e = GestureEngine(GestureConfig(precision=precision))
+        sim = Sim(e)
+        assert sim.feed(INDEX_UP, 35) == [("engaged",)]
+        sim.feed(PALM, 40)
+        out = sim.feed(palm_at(0.2), 40)        # big shift, then settle
+        moves = [m for m in out if m[0] == "move"]
+        return moves[-1][1] if moves else None
+    on, off = endpos(True), endpos(False)
+    assert on is not None and off is not None
+    assert abs(on - off) < 0.01, f"precision must not bias the target (on={on}, off={off})"
+
+
 if __name__ == "__main__":  # plain-python runner, same no-pytest pattern as the other harnesses
     import sys
     import traceback

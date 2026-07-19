@@ -43,7 +43,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); voice click-to-talk = follow-up | §5 |
 | **G5.3** cursor-halo + edge-toast overlays | ✅ code done, live-gate owed | §5 |
 | **G5.4** distance mitigation | ✅ code done, live-gate owed | §5 |
-| **G5.5** precision / dual-target filtering | ⬜ TODO | §5 |
+| **G5.5** precision / dual-target filtering | ✅ code done, live-gate owed | §5 |
 | **G5.7** backlog (mic affordance + robustness) | ⬜ TODO | §5 |
 | **Login/wake revamp** | ⬜ TODO (spec ready, §6) | §6 |
 | **Away→mobile presence (Track B probe)** | ⬜ TODO | §5, §6 |
@@ -177,8 +177,18 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
    farther reach), ROI crop/remap in the hot loop gated by `JARVIS_GESTURE_ROI=1`.
    `test_gesture_roi.py` 29/29 (incl. the no-jump crop-invariance proof); adjacent
    harnesses green (baseline 205 → **234**). Live-gate owed (see §7).
-4. **G5.5 precision / dual-target filtering** — when the hand is slow, clamp harder so
-   tiny targets (×, text lines) are selectable.
+4. ✅ **G5.5 precision / dual-target filtering** — DONE (code). A velocity-gated
+   *precision gain* (`GestureEngine._precision_gain`): below `precision_v_lo` palm speed
+   the cursor is clamped to `precision_gain` (0.35), above `precision_v_hi` no damping,
+   linear between — a second stage on top of the relative accel curve, and the **only**
+   precision lever absolute mode has. Applies to both modes; velocity measured in
+   palm-centroid frame-units/s (same units as accel) so one threshold set covers both.
+   Absolute mode EASES toward the target with the deadzone tested on the RAW target, so
+   it converges to the **same landing point** as precision-off (no settling bias) — just
+   a gentler, tremor-proof approach. Env `JARVIS_GESTURE_PRECISION=0` disables,
+   `JARVIS_PRECISION_GAIN` tunes the floor; thresholds are calibration-JSON fields.
+   `test_gesture_engine.py` +5 → 54/54 (ramp, disabled=unity, env toggle, slow-drift
+   dampening, target-unbiased). Full suite 234 → **239**. Live-gate owed (see §7).
 5. **G5.7 robustness backlog:**
    - Backend: barge-in thread/stream leak on interrupt; boot config preflight ("what's
      missing" from `.env`); `_call_ollama` empty-200 should fail over, not return `""`;
@@ -278,6 +288,11 @@ All gesture/UX code is committed but UNPUSHED on `feat/cloud-gateway`. Owed befo
   automation takeover (JARVIS DRIVING), and hand-off back (YOU HAVE CONTROL). Confirm the
   halo is **click-through** (clicks still land on the app beneath, focus never stolen) and
   that it vanishes on lock/disable. `JARVIS_GESTURE_OVERLAY=0` disables the whole process.
+- **G5.5 precision:** engage, then move the hand VERY slowly onto a tiny target (a window
+  × button, a text caret between two characters) — the cursor should hold steady and let
+  you land it, not wobble past. A fast flick must feel unchanged (no lag). Confirm the
+  cursor still reaches the exact target (no settling short of it). `JARVIS_PRECISION_GAIN`
+  lower = steadier-but-slower fine control; `JARVIS_GESTURE_PRECISION=0` disables.
 - **G5.4 distance:** set `JARVIS_CAM_RES=1280x720`, step back across the room, engage —
   cursor should still track (ROI crops around the hand). Near hand must behave exactly as
   before (crop ≈ full frame, no jump). Sweep `JARVIS_HAND_DET_CONF`/`_TRACK_CONF` down

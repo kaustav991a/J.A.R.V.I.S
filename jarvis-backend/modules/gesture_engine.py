@@ -185,6 +185,17 @@ class GestureConfig:
     # left pinch held at least this long -> RIGHT CLICK on release ("dwell").
     # A shorter pinch is a normal left click. Replaces thumb+middle right-click.
     dwell_right_click_s: float = 0.5
+    # ---- G5.5 precision: fine-target damping when the hand is nearly still --- #
+    # A SECOND-STAGE gain applied to BOTH mapping modes (absolute has no accel
+    # curve, so this is its only precision lever). Below precision_v_lo palm
+    # speed the cursor is clamped to precision_gain — steady enough to hit a ×
+    # button or set a text caret; above precision_v_hi no damping (normal
+    # targeting); linear between. Speed is the palm-centroid velocity in
+    # normalised frame-units/second, the same units the accel curve uses.
+    precision: bool = True
+    precision_gain: float = 0.35
+    precision_v_lo: float = 0.08
+    precision_v_hi: float = 0.6
 
     @staticmethod
     def from_env() -> "GestureConfig":
@@ -223,6 +234,15 @@ class GestureConfig:
         rel = os.getenv("JARVIS_GESTURE_RELATIVE")
         if rel is not None:
             cfg.mapping_mode = "relative" if rel == "1" else "absolute"
+        pr = os.getenv("JARVIS_GESTURE_PRECISION")
+        if pr is not None:
+            cfg.precision = pr == "1"
+        pg = os.getenv("JARVIS_PRECISION_GAIN")
+        if pg is not None:
+            try:
+                cfg.precision_gain = float(pg)
+            except (TypeError, ValueError):
+                pass
         return cfg
 
 
@@ -310,6 +330,8 @@ class GestureEngine:
         self._last_emit: tuple[float, float] | None = None   # absolute mode last target
         self._rel_prev: tuple[float, float] | None = None    # relative: prev smoothed centroid
         self._rel_prev_t: float | None = None
+        self._move_prev_c: tuple[float, float] | None = None  # G5.5: prev centroid (speed for precision)
+        self._move_prev_t: float | None = None
         self._scroll_y: float | None = None
         self._scroll_acc = 0.0
         self._last_seen_t: float | None = None
@@ -496,9 +518,12 @@ class GestureEngine:
         intents.append(("disengaged",))
 
     def _reset_rel(self) -> None:
-        """Drop the relative-mapping anchor so the next move re-syncs (no jump)."""
+        """Drop the mapping anchors so the next move re-syncs (no jump / no stale
+        velocity). Called on every non-move frame (clutch, pinch, scroll, loss)."""
         self._rel_prev = None
         self._rel_prev_t = None
+        self._move_prev_c = None
+        self._move_prev_t = None
 
     def _reset_motion_state(self) -> None:
         self._fx.reset()
@@ -583,10 +608,27 @@ class GestureEngine:
         span = 2.0 * half
         nx = min(max((driver[0] - lo) / span, 0.0), 1.0)
         ny = min(max((driver[1] - lo) / span, 0.0), 1.0)
-        nx = self._fx(nx, t)
-        ny = self._fy(ny, t)
+        tx = self._fx(nx, t)   # filtered target
+        ty = self._fy(ny, t)
+        # G5.5 precision: when the palm is moving slowly (centroid speed, the same
+        # units the accel curve uses), EASE toward the target instead of snapping,
+        # so a tremor can't knock the cursor off a tiny target. The deadzone is
+        # tested against the RAW target (not the eased step), so the cursor keeps
+        # inching until it is within deadzone of the target — same landing point
+        # as with precision off, just a gentler approach (no settling bias). The
+        # first frame after a (re)sync has no prior centroid, so no easing.
+        nx, ny = tx, ty
+        if self._move_prev_c is not None and self._move_prev_t is not None \
+                and self._last_emit is not None:
+            v = _dist(driver, self._move_prev_c) / max(t - self._move_prev_t, 1e-6)
+            p = self._precision_gain(v)
+            if p < 1.0:
+                nx = self._last_emit[0] + p * (tx - self._last_emit[0])
+                ny = self._last_emit[1] + p * (ty - self._last_emit[1])
+        self._move_prev_c = driver
+        self._move_prev_t = t
         if self._last_emit is not None \
-                and _dist((nx, ny), self._last_emit) < self.cfg.deadzone:
+                and _dist((tx, ty), self._last_emit) < self.cfg.deadzone:
             return
         self._last_emit = (nx, ny)
         intents.append(("move", nx, ny))
@@ -607,6 +649,22 @@ class GestureEngine:
             return self.cfg.accel_fast
         f = (v - lo) / (hi - lo)          # 0..1
         return self.cfg.accel_slow + f * (self.cfg.accel_fast - self.cfg.accel_slow)
+
+    def _precision_gain(self, v: float) -> float:
+        """G5.5 fine-target damping (both mapping modes). Extra gain reduction at
+        low palm speed v (frame-units/s) so a tremor can't knock the cursor off a
+        tiny target: below precision_v_lo -> precision_gain, above precision_v_hi
+        -> 1.0 (no damping), linear between. Transient only — it eases the
+        approach, it does not shift where the cursor lands (see _update_move)."""
+        if not self.cfg.precision:
+            return 1.0
+        lo, hi = self.cfg.precision_v_lo, self.cfg.precision_v_hi
+        if v <= lo:
+            return self.cfg.precision_gain
+        if v >= hi or hi <= lo:
+            return 1.0
+        f = (v - lo) / (hi - lo)
+        return self.cfg.precision_gain + f * (1.0 - self.cfg.precision_gain)
 
     def _update_move_relative(self, centroid, t, intents) -> None:
         """Trackpad mapping: emit a signed screen-fraction DELTA from the change
@@ -632,6 +690,9 @@ class GestureEngine:
         dist = math.hypot(dx_n, dy_n)
         if dist < self.cfg.deadzone:
             return
-        a = self._accel(dist / dt)
-        gain = self.cfg.base_gain * a
+        v = dist / dt
+        # accel handles the mid/high range (flick vs precision); the G5.5
+        # precision gain adds a harder clamp in the ultra-slow fine-targeting
+        # regime so tiny targets are selectable. The two multiply.
+        gain = self.cfg.base_gain * self._accel(v) * self._precision_gain(v)
         intents.append(("move_delta", dx_n * gain, dy_n * gain))
