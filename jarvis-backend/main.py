@@ -716,6 +716,14 @@ async def lifespan(app: FastAPI):
 
     set_app_loop(asyncio.get_running_loop())
 
+    # G5.7: report missing keys/models up front so a misconfig shows as a clear
+    # boot line, not a confusing runtime failure later. Never blocks startup.
+    try:
+        from modules import boot_preflight
+        boot_preflight.log_preflight()
+    except Exception as e:  # noqa: BLE001
+        print(f"[PREFLIGHT] check skipped: {e}", flush=True)
+
     async def safe_send_all(payload):
         await send_ui_update(payload)
                 

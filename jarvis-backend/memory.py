@@ -3,6 +3,7 @@ import datetime
 import chromadb
 import uuid
 import os
+import threading
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -16,27 +17,40 @@ DB_PATH = "jarvis_memory.db"
 # When memory exceeds 30, the oldest 15 messages are summarized by the LLM
 # into a single context message to preserve information without flooding the prompt.
 working_memory = []
+# G5.7: working_memory is touched from several threads (main turn loop, background
+# monitors, worker loop, streaming daemon). A bare list whose head is slice-assigned
+# by _compress racing an append corrupts it or raises mid-iteration. One re-entrant
+# lock guards every mutate/read; getters return COPIES so callers iterate a snapshot.
+# The LLM summarize call is made OUTSIDE the lock so it never stalls other threads.
+_wm_lock = threading.RLock()
 
 def add_to_working_memory(role, content):
     """Adds a message to the short-term memory queue (keeps the last 30 messages)."""
-    working_memory.append({"role": role, "content": content})
-    if len(working_memory) > 30:
-        _compress_oldest_memories()
+    with _wm_lock:
+        working_memory.append({"role": role, "content": content})
+        over = len(working_memory) > 30
+    if over:
+        _compress_oldest_memories()   # self-locking; the LLM call runs unlocked
 
 def _compress_oldest_memories():
-    """Summarizes the oldest 15 messages into a single context message using the LLM."""
+    """Summarizes the oldest 15 messages into a single context message using the LLM.
+    Snapshots the head under the lock, summarizes UNLOCKED (network), then applies the
+    replacement under the lock — appends from other threads only touch the tail, so the
+    leading 15 we're replacing stay put."""
     global working_memory
-    
-    # Extract the oldest 15 messages to compress
-    old_messages = working_memory[:15]
-    
-    # Build a transcript for summarization
+
+    with _wm_lock:
+        old_messages = list(working_memory[:15])
+    if not old_messages:
+        return
+
+    # Build a transcript for summarization (outside the lock)
     transcript_lines = []
     for msg in old_messages:
         role_label = "User" if msg["role"] == "user" else "JARVIS"
-        transcript_lines.append(f"{role_label}: {msg['content'][:200]}")
+        transcript_lines.append(f"{role_label}: {str(msg['content'])[:200]}")
     transcript = "\n".join(transcript_lines)
-    
+
     try:
         from modules.groq_key_manager import run_with_key_rotation
 
@@ -56,21 +70,24 @@ def _compress_oldest_memories():
             )
         )
         summary = completion.choices[0].message.content.strip()
-        
+
         # Replace the oldest 15 messages with a single summary
-        working_memory[:15] = [{
-            "role": "system", 
-            "content": f"[CONTEXT SUMMARY] {summary}"
-        }]
+        with _wm_lock:
+            working_memory[:15] = [{
+                "role": "system",
+                "content": f"[CONTEXT SUMMARY] {summary}"
+            }]
         print(f"[MEMORY] Compressed 15 messages into context summary")
     except Exception as e:
         # Fallback: just trim if LLM fails
         print(f"[MEMORY] Compression failed ({e}), falling back to simple trim")
-        working_memory[:15] = []
+        with _wm_lock:
+            working_memory[:15] = []
 
 def get_working_memory():
-    """Returns the FULL short-term buffer (used for consolidation/compression)."""
-    return working_memory
+    """Returns a COPY of the FULL short-term buffer (snapshot, safe to iterate)."""
+    with _wm_lock:
+        return list(working_memory)
 
 
 # Token-trim: how many recent messages the LLM actually sees per turn. The full
@@ -89,20 +106,22 @@ def get_context_window(limit: int | None = None):
     compressed older history isn't dropped). Falls back to the full buffer when
     limit is None or the buffer is already small."""
     n = _HISTORY_TURNS if limit is None else limit
-    if n <= 0 or len(working_memory) <= n:
-        return working_memory
-    tail = working_memory[-n:]
-    head = working_memory[0]
-    if (head not in tail
-            and head.get("role") == "system"
-            and str(head.get("content", "")).startswith("[CONTEXT SUMMARY]")):
-        return [head] + tail
-    return tail
+    with _wm_lock:
+        if n <= 0 or len(working_memory) <= n:
+            return list(working_memory)
+        tail = working_memory[-n:]
+        head = working_memory[0]
+        if (head not in tail
+                and head.get("role") == "system"
+                and str(head.get("content", "")).startswith("[CONTEXT SUMMARY]")):
+            return [head] + list(tail)
+        return list(tail)
 
 def clear_working_memory():
     """Wipes the short-term memory (useful for a reset command)."""
     global working_memory
-    working_memory = []
+    with _wm_lock:
+        working_memory = []
 
 # ==========================================
 # TIER 1.5: SESSION DIGEST (Sleep/Wake Continuity)
@@ -146,8 +165,10 @@ def consolidate_working_memory(user: str = "KAUSTAV") -> str | None:
     Returns the digest string if one was produced, else None.
     """
     # Only consolidate genuine conversation turns; ignore system recaps/stubs.
+    with _wm_lock:
+        snapshot = list(working_memory)
     real_turns = [
-        m for m in working_memory
+        m for m in snapshot
         if m.get("role") in ("user", "assistant")
         and m.get("content")
         and not str(m.get("content", "")).startswith(SESSION_RECAP_PREFIX)
@@ -199,7 +220,9 @@ def seed_from_last_digest(user: str = "KAUSTAV") -> str | None:
     if not digest:
         return None
     # Guard against double-seeding the same recap.
-    for m in working_memory:
+    with _wm_lock:
+        snapshot = list(working_memory)
+    for m in snapshot:
         if str(m.get("content", "")).startswith(SESSION_RECAP_PREFIX):
             return digest
     add_to_working_memory(

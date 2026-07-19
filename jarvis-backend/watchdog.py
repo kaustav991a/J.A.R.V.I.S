@@ -78,6 +78,10 @@ HOST = os.getenv("JARVIS_HOST", "127.0.0.1")
 PORT = os.getenv("JARVIS_PORT", "8000")
 MAX_RAPID_FAILS = int(os.getenv("WATCHDOG_MAX_RAPID_FAILS", "5"))
 RAPID_WINDOW = int(os.getenv("WATCHDOG_RAPID_WINDOW", "60"))
+# After this many consecutive rapid-crash BACKOFF cycles with no healthy run in
+# between, stop respawning and alert the owner: the server is permanently broken
+# (bad config, missing dep, corrupt state) and blind respawning just spins the CPU.
+MAX_GIVEUP_CYCLES = int(os.getenv("WATCHDOG_MAX_GIVEUP_CYCLES", "3"))
 
 # A token is mandatory for shutdown. If the operator didn't set one, generate a
 # session token and print it loudly — that way the endpoint is never wide open.
@@ -167,6 +171,65 @@ def _server_command() -> list[str]:
     ]
 
 
+class RespawnPolicy:
+    """Pure respawn / give-up bookkeeping (no processes) so it is unit-testable.
+
+    Feed each child death via record_death(uptime, now); it returns whether to
+    back off (rapid flapping) and whether to GIVE UP (too many backoff cycles
+    with no healthy run in between). A run that survived >= rapid_window resets
+    the give-up strike count — a server that ran fine for a while and then died
+    is a transient crash, not a startup fault.
+    """
+
+    def __init__(self, max_rapid: int = 5, rapid_window: int = 60, max_giveup: int = 3):
+        self.max_rapid = max_rapid
+        self.rapid_window = rapid_window
+        self.max_giveup = max_giveup
+        self.crash_times: list[float] = []
+        self.giveup_strikes = 0
+
+    def record_death(self, uptime: float, now: float) -> dict:
+        if uptime >= self.rapid_window:
+            self.giveup_strikes = 0          # healthy run — reset the strike count
+        self.crash_times.append(now)
+        self.crash_times = [t for t in self.crash_times if now - t <= self.rapid_window]
+        recent = len(self.crash_times)
+        rapid = recent >= self.max_rapid
+        give_up = False
+        if rapid:
+            self.giveup_strikes += 1
+            give_up = self.giveup_strikes >= self.max_giveup
+            if not give_up:
+                self.crash_times.clear()     # fresh window after a backoff
+        return {"rapid_backoff": rapid, "give_up": give_up,
+                "recent": recent, "strikes": self.giveup_strikes}
+
+
+def _notify_owner_down(reason: str) -> None:
+    """Best-effort owner alert when the watchdog gives up — sent from THIS
+    standalone process with the stdlib only (urllib), so it works even if the
+    FastAPI app that owns owner_notify is the very thing that won't start."""
+    import urllib.parse
+    import urllib.request
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_USER_ID", "").strip()
+    msg = ("🛑 J.A.R.V.I.S. WATCHDOG: the server keeps crashing on startup and I "
+           f"have stopped restarting it. {reason} It needs manual attention, Sir.")
+    log(msg)
+    if not (token and chat_id):
+        log("   (No TELEGRAM_BOT_TOKEN / TELEGRAM_USER_ID — owner alert not sent.)")
+        return
+    try:
+        data = urllib.parse.urlencode({"chat_id": chat_id, "text": msg}).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage", data=data)
+        urllib.request.urlopen(req, timeout=10).read()
+        log("   Owner alerted via Telegram.")
+    except Exception as e:  # noqa: BLE001 — alerting must never crash the watchdog
+        log(f"   Owner alert failed to send: {e}")
+
+
 def _terminate_child(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
@@ -209,10 +272,11 @@ def main() -> None:
     if os.name == "nt":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
-    crash_times: list[float] = []
+    policy = RespawnPolicy(MAX_RAPID_FAILS, RAPID_WINDOW, MAX_GIVEUP_CYCLES)
     restart_count = 0
+    gave_up = False
 
-    while not _shutdown_event.is_set():
+    while not _shutdown_event.is_set() and not gave_up:
         log(f"Launching FastAPI server (start #{restart_count + 1})…")
         try:
             proc = subprocess.Popen(
@@ -225,6 +289,7 @@ def main() -> None:
             if _shutdown_event.wait(5):
                 break
             continue
+        child_start = time.time()
 
         # Block until the child exits OR a shutdown is requested.
         while True:
@@ -237,21 +302,28 @@ def main() -> None:
                 # Child died on its own.
                 if _shutdown_event.is_set():
                     break
-                log(f"💥 Server process exited with code {ret}. Restarting…")
-                crash_times.append(time.time())
+                uptime = time.time() - child_start
+                log(f"💥 Server process exited with code {ret} after {uptime:.0f}s. Restarting…")
                 restart_count += 1
-                # Rapid-crash circuit breaker: if it's flapping, back off hard so
-                # we don't spin the CPU restarting a server that can't start.
-                recent = [t for t in crash_times if time.time() - t <= RAPID_WINDOW]
-                crash_times[:] = recent
-                if len(recent) >= MAX_RAPID_FAILS:
-                    log(
-                        f"⚠️  {len(recent)} crashes within {RAPID_WINDOW}s — likely a "
-                        f"startup fault, not a transient crash. Backing off 30s before retry."
-                    )
+                d = policy.record_death(uptime, time.time())
+                if d["give_up"]:
+                    # Permanently broken: too many rapid-crash cycles, no healthy
+                    # run in between. Stop respawning and alert the owner.
+                    log(f"🛑 Gave up after {d['strikes']} rapid-crash cycles — "
+                        f"the server cannot start. No more restarts.")
+                    _notify_owner_down(
+                        f"{d['strikes']} rapid-crash cycles "
+                        f"({MAX_RAPID_FAILS}+ crashes / {RAPID_WINDOW}s each), last exit code {ret}.")
+                    gave_up = True
+                    break
+                if d["rapid_backoff"]:
+                    # Flapping: back off hard so we don't spin the CPU restarting a
+                    # server that can't start.
+                    log(f"⚠️  {d['recent']} crashes within {RAPID_WINDOW}s "
+                        f"(give-up strike {d['strikes']}/{MAX_GIVEUP_CYCLES}) — "
+                        f"likely a startup fault. Backing off 30s before retry.")
                     if _shutdown_event.wait(30):
                         return
-                    crash_times.clear()
                 else:
                     time.sleep(2)  # brief breather before respawn
                 break

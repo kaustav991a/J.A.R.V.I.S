@@ -44,7 +44,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.3** cursor-halo + edge-toast overlays | ✅ code done, live-gate owed | §5 |
 | **G5.4** distance mitigation | ✅ code done, live-gate owed | §5 |
 | **G5.5** precision / dual-target filtering | ✅ code done, live-gate owed | §5 |
-| **G5.7** backlog (mic affordance + robustness) | ⬜ TODO | §5 |
+| **G5.7** robustness backlog | 🟡 backend 5/6 done (barge-in deferred); frontend TODO | §5 |
 | **Login/wake revamp** | ⬜ TODO (spec ready, §6) | §6 |
 | **Away→mobile presence (Track B probe)** | ⬜ TODO | §5, §6 |
 | **Smart-home / IoT agent** | ⬜ MISSING | §5 |
@@ -190,11 +190,25 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
    `test_gesture_engine.py` +5 → 54/54 (ramp, disabled=unity, env toggle, slow-drift
    dampening, target-unbiased). Full suite 234 → **239**. Live-gate owed (see §7).
 5. **G5.7 robustness backlog:**
-   - Backend: barge-in thread/stream leak on interrupt; boot config preflight ("what's
-     missing" from `.env`); `_call_ollama` empty-200 should fail over, not return `""`;
-     `working_memory` cross-thread lock; log swallowed `speak_text` TTS errors;
-     `watchdog.py` give-up + owner alert on a permanently-broken respawn loop.
-   - Frontend: `BrowserWidget` iframe fallback for framing-blocked sites;
+   - Backend — ✅ **5 of 6 DONE** (code, harnessed):
+     - ✅ `_call_ollama` empty-200 now RAISES (both stream + non-stream) so the cascade
+       escalates to cloud instead of returning `""` (a silent false success).
+     - ✅ boot config preflight — NEW `modules/boot_preflight.py` (pure, injectable),
+       logged once at the top of `main.py` `lifespan`: required LLM key + model files vs
+       recommended keys/files, `ok` flag; never blocks boot.
+     - ✅ `working_memory` cross-thread lock — `memory._wm_lock` (RLock) guards every
+       mutate/read; getters return COPIES; the LLM summarize runs OUTSIDE the lock.
+     - ✅ `speak_text` TTS errors logged + swallowed (no turn crash, no unhandled-task
+       vanish).
+     - ✅ `watchdog.py` give-up — pure `RespawnPolicy` (harnessable) stops respawning
+       after `WATCHDOG_MAX_GIVEUP_CYCLES` rapid-crash cycles + `_notify_owner_down`
+       (stdlib-urllib Telegram, works even when the app won't start); a healthy run
+       resets the strike count.
+     - ⬜ **barge-in thread/stream leak on interrupt** — DEFERRED (needs live audio
+       threads/device to exercise; not safely harnessable headless).
+     - Harnesses: `test_llm_failover` 7, `test_watchdog_policy` 9, `test_boot_preflight`
+       14, `test_working_memory_lock` 4, `test_speaker_errors` 5. Suite 239 → **278**.
+   - Frontend — ⬜ TODO: `BrowserWidget` iframe fallback for framing-blocked sites;
      `DataOverlay` Escape/focus-trap; `CalculatorWidget` `eval()` → safe parser;
      connection-based (not time-based) boot log; command-terminal error surfacing +
      labeled input.

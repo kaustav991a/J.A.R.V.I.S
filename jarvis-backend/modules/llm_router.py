@@ -225,7 +225,16 @@ def _call_ollama(messages, temperature, max_tokens, stream, json_mode, model, ti
     if not stream:
         resp = requests.post(OLLAMA_URL, json=payload, timeout=timeout)
         resp.raise_for_status()
-        return resp.json().get("message", {}).get("content", "").strip()
+        content = resp.json().get("message", {}).get("content", "").strip()
+        if not content:
+            # Ollama can answer HTTP 200 with an EMPTY message (model still
+            # loading, num_predict starvation, an OOM-killed generation). Handing
+            # "" back reads downstream as "no answer / zero actions" and gets
+            # narrated as a false "Done, Sir" — raise so universal_llm_call trips
+            # the breaker and escalates to a cloud provider instead of succeeding
+            # silently with nothing.
+            raise RuntimeError("ollama returned an empty 200 response")
+        return content
 
     # Streaming: eagerly pull the first chunk so a connection failure raises HERE
     # (inside the try in universal_llm_call) and triggers cloud escalation.
@@ -242,10 +251,14 @@ def _call_ollama(messages, temperature, max_tokens, stream, json_mode, model, ti
 
     g = _gen()
     first = next(g, "")
+    if not first:
+        # empty 200 stream (same failure modes as the non-stream path) — escalate
+        # rather than hand back a silently-empty generator. This raises inside
+        # universal_llm_call's try, so the breaker trips and cloud takes over.
+        raise RuntimeError("ollama returned an empty 200 stream")
 
     def _safe():
-        if first:
-            yield first
+        yield first
         yield from g
     return _safe()
 

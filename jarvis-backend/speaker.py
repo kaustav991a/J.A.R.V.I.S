@@ -176,10 +176,17 @@ async def speak_text(text):
                 await _speak_local(text)
             else:
                 await _speak_cloud(text)
+        except Exception as e:
+            # G5.7: a TTS failure must never crash the turn or silently vanish as
+            # an unhandled asyncio task exception (speak_text is often fired via
+            # create_task). Log it loudly and stay silent for this line — the
+            # conversation continues; only this utterance is lost.
+            print(f"[SPEAKER] speak_text failed — staying silent this line: "
+                  f"{type(e).__name__}: {e}", flush=True)
         finally:
             # --- FIX 1: The Echo Buffer ---
             # Give the physical headset 0.5 seconds to go silent before opening the mic
-            await asyncio.sleep(0.5) 
+            await asyncio.sleep(0.5)
             is_system_speaking = False
 
 async def _speak_local(text):
