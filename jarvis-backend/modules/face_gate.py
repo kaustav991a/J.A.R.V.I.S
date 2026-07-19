@@ -56,6 +56,7 @@ class GateResult:
     stranger_present: bool = False   # a face that is NOT the owner
     owner_score: float = -1.0
     faces: int = 0
+    face_box: tuple | None = None    # (x, y, w, h) px of the largest face (G5.4 ROI seed)
 
 
 class AbsenceTracker:
@@ -173,6 +174,7 @@ class FaceGate:
                 faces = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
                 res.faces = len(faces)
                 res.any_face = True
+                res.face_box = tuple(float(v) for v in faces[0][:4])  # largest, (x,y,w,h) px
                 for f in faces[: self.max_faces]:
                     aligned = self._recognizer.alignCrop(frame_bgr, f)
                     feat = self._recognizer.feature(aligned).flatten()

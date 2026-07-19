@@ -23,6 +23,13 @@ Env:
     JARVIS_CAM / JARVIS_CAM_RES / JARVIS_CAM_MIRROR /
     JARVIS_PALM_FACING / JARVIS_PALM_SIGN — same as gesture_spike.py
     JARVIS_UNLOCK_CODE  blind-typed overlay escape hatch (optional)
+    JARVIS_GESTURE_OVERLAY  0 disables the G5.3 cursor-halo overlay (default 1, win32)
+    JARVIS_GESTURE_ROI      0 disables the G5.4 distance ROI crop (default 1)
+    JARVIS_CAM_RES          capture/stream WxH, e.g. 1280x720 for reach (default 640x480)
+    JARVIS_HAND_DET_CONF / JARVIS_HAND_PRESENCE_CONF / JARVIS_HAND_TRACK_CONF
+                            MediaPipe confidence floors (default 0.5; lower = farther reach)
+    JARVIS_ROI_EXPAND / JARVIS_ROI_MIN_FRAC / JARVIS_ROI_FOLLOW /
+    JARVIS_ROI_WIDEN_AFTER / JARVIS_ROI_RESET_AFTER — ROI crop tuning (see gesture_roi.py)
 
 Voice fast-path: "hand control on/off" -> set_gestures_enabled() (fast_path.py).
 HUD: broadcasts {"type": "gesture_state", ...} via socket_manager (thread-safe)
@@ -48,9 +55,28 @@ import time
 
 from modules import gesture_arbiter  # G4: hand vs JARVIS-GUI cursor referee
 from modules import gesture_calibration  # G4: persisted live-tuned gesture knobs
+from modules import gesture_roi  # G5.4: crop-around-hand distance ROI
 
 MODEL_PATH = os.path.join("models", "hand_landmarker.task")
-FRAME_W, FRAME_H = 640, 480
+FRAME_W, FRAME_H = 640, 480   # legacy default; per-session res now via _cam_res()
+
+
+def _cam_res() -> tuple[int, int, str]:
+    """(width, height, raw) from JARVIS_CAM_RES (e.g. '1280x720'); default 640x480.
+    720p gives the G5.4 ROI crop real pixels for across-the-room control."""
+    raw = os.getenv("JARVIS_CAM_RES", "640x480") or "640x480"
+    try:
+        w, h = raw.lower().split("x")
+        return int(w), int(h), raw
+    except Exception:  # noqa: BLE001
+        return 640, 480, "640x480"
+
+
+def _envf(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, ""))
+    except (TypeError, ValueError):
+        return default
 
 # Live state mirror for GET /api/gesture/state (single-writer: daemon thread).
 gesture_state: dict = {
@@ -337,9 +363,9 @@ class GestureDaemon:
         _src = os.getenv("JARVIS_CAM", "0").strip()
         source = int(_src) if _src.isdigit() else _src
         gesture_state["camera"] = str(source)
+        cam_w, cam_h, cam_res = _cam_res()
         try:
-            fs = FrameSource(source, FRAME_W, FRAME_H,
-                             url_res=os.getenv("JARVIS_CAM_RES", "640x480") or None)
+            fs = FrameSource(source, cam_w, cam_h, url_res=cam_res)
         except CameraError as e:
             gesture_state["state"] = "camera_error"
             print(f"[GESTURE] camera unavailable [{e.kind}] — retry in 30s", flush=True)
@@ -354,7 +380,11 @@ class GestureDaemon:
                 vision.HandLandmarkerOptions(
                     base_options=BaseOptions(model_asset_path=MODEL_PATH),
                     running_mode=vision.RunningMode.VIDEO,
-                    num_hands=1))
+                    num_hands=1,
+                    # G5.4: lower these (env) to lock onto a faint distant hand
+                    min_hand_detection_confidence=_envf("JARVIS_HAND_DET_CONF", 0.5),
+                    min_hand_presence_confidence=_envf("JARVIS_HAND_PRESENCE_CONF", 0.5),
+                    min_tracking_confidence=_envf("JARVIS_HAND_TRACK_CONF", 0.5)))
             mp_image_fmt = mp.ImageFormat.SRGB
             mp_image = mp.Image
         except Exception as e:  # noqa: BLE001
@@ -367,6 +397,8 @@ class GestureDaemon:
         absence = AbsenceTracker(absent_after_s=self.absent_after)
         mirror = gesture_calibration.load().get(
             "mirror", os.getenv("JARVIS_CAM_MIRROR", "1") == "1")
+        roi_enabled = os.getenv("JARVIS_GESTURE_ROI", "1") == "1"  # G5.4 distance ROI
+        roi = gesture_roi.RoiTracker.from_env()
 
         seq = 0
         try:
@@ -441,15 +473,39 @@ class GestureDaemon:
                     self._hud(engine, state)
                     continue
 
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                # G5.4 distance ROI: crop around the tracked hand (or, before a
+                # hand is seen, around/below the owner's face) so a far hand fills
+                # MediaPipe's ~192px model input. Landmarks are remapped back to
+                # full-frame space so the cursor never jumps when the crop moves.
+                fh_px, fw_px = frame.shape[0], frame.shape[1]
+                crop = None
+                if roi_enabled:
+                    face_box_norm = None
+                    if res.face_box is not None:
+                        bx, by, bw, bh = res.face_box
+                        face_box_norm = (bx / fw_px, by / fh_px, bw / fw_px, bh / fh_px)
+                    crop = roi.next_crop(fw_px, fh_px, face_box_norm)
+
+                if crop is not None:
+                    rx, ry, rw, rh = crop
+                    rgb = cv2.cvtColor(frame[ry:ry + rh, rx:rx + rw], cv2.COLOR_BGR2RGB)
+                else:
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
                 result = landmarker.detect_for_video(
                     mp_image(image_format=mp_image_fmt, data=rgb), int(now * 1000))
                 if result.hand_landmarks:
-                    pts = [(p.x, p.y, p.z) for p in result.hand_landmarks[0]]
+                    raw = [(p.x, p.y, p.z) for p in result.hand_landmarks[0]]
+                    pts = (gesture_roi.remap_landmarks(raw, crop, fw_px, fh_px)
+                           if crop is not None else raw)
                     handedness = (result.handedness[0][0].category_name
                                   if result.handedness else "Right")
+                    if roi_enabled:
+                        roi.update(gesture_roi.hand_box(pts))
                 else:
                     pts, handedness = None, "Right"
+                    if roi_enabled:
+                        roi.miss()
 
                 intents = engine.process(pts, now, handedness)
 

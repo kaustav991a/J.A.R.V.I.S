@@ -42,7 +42,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **Automatic test baseline** | ✅ 205/205 green | `TEST_PLAN.md` |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); voice click-to-talk = follow-up | §5 |
 | **G5.3** cursor-halo + edge-toast overlays | ✅ code done, live-gate owed | §5 |
-| **G5.4** distance mitigation | ⬜ TODO | §5 |
+| **G5.4** distance mitigation | ✅ code done, live-gate owed | §5 |
 | **G5.5** precision / dual-target filtering | ⬜ TODO | §5 |
 | **G5.7** backlog (mic affordance + robustness) | ⬜ TODO | §5 |
 | **Login/wake revamp** | ⬜ TODO (spec ready, §6) | §6 |
@@ -164,8 +164,19 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
    stdin EOF like `lock_overlay.py`. Live-gate owed (see §7). **Follow-up:** click-flash
    (engine exposes no pinch pose — click is an intent, not `pose`; add a click pulse when
    state carries the click event). Biggest *felt* gesture jump.
-3. **G5.4 distance mitigation** — crop-around-face ROI (reuse `face_gate` detection),
-   720p option, tracking-confidence knobs → control from across the room.
+3. ✅ **G5.4 distance mitigation** — DONE (code). Key insight: MediaPipe downscales
+   any input to its ~192px model, so a distant hand in a full frame is lost regardless
+   of capture res — **cropping the hand ROI** (not upscaling) makes it fill the model
+   input. NEW pure `modules/gesture_roi.py` (`RoiTracker` + `hand_box`/`expand_box`/
+   `to_px`/`remap_landmarks`/`face_anchored_box`): follows the tracked hand, crops around
+   it (seeds from `face_gate`'s new `GateResult.face_box` before a hand is seen), and
+   **remaps landmarks crop→full-frame** so the cursor never jumps when the crop moves.
+   Self-adaptive — a near hand's box clamps to ≈full frame (no zoom), a far hand tightens
+   to `min_frac`, so it's safe defaulted on. Daemon wiring: `JARVIS_CAM_RES=1280x720`
+   capture, MediaPipe confidence floors (`JARVIS_HAND_{DET,PRESENCE,TRACK}_CONF`, lower =
+   farther reach), ROI crop/remap in the hot loop gated by `JARVIS_GESTURE_ROI=1`.
+   `test_gesture_roi.py` 29/29 (incl. the no-jump crop-invariance proof); adjacent
+   harnesses green (baseline 205 → **234**). Live-gate owed (see §7).
 4. **G5.5 precision / dual-target filtering** — when the hand is slow, clamp harder so
    tiny targets (×, text lines) are selectable.
 5. **G5.7 robustness backlog:**
@@ -267,6 +278,13 @@ All gesture/UX code is committed but UNPUSHED on `feat/cloud-gateway`. Owed befo
   automation takeover (JARVIS DRIVING), and hand-off back (YOU HAVE CONTROL). Confirm the
   halo is **click-through** (clicks still land on the app beneath, focus never stolen) and
   that it vanishes on lock/disable. `JARVIS_GESTURE_OVERLAY=0` disables the whole process.
+- **G5.4 distance:** set `JARVIS_CAM_RES=1280x720`, step back across the room, engage —
+  cursor should still track (ROI crops around the hand). Near hand must behave exactly as
+  before (crop ≈ full frame, no jump). Sweep `JARVIS_HAND_DET_CONF`/`_TRACK_CONF` down
+  (~0.3) if a far hand won't lock; tune `JARVIS_ROI_MIN_FRAC` (smaller = more zoom, but
+  clips the hand on fast moves). Confirm cursor doesn't jump as the crop re-anchors, and
+  that `JARVIS_GESTURE_ROI=0` restores plain full-frame detection. Watch per-frame CPU at
+  720p on the 17GB box (motion/face run cadenced; detect runs on the small crop).
 - **Phase-4 phone smoke-tests + Phase-5 failover** — see `TEST_PLAN.md` §B5/B6.
 - Then **push + merge** `feat/cloud-gateway`.
 
