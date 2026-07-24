@@ -49,6 +49,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **Away→mobile presence (Track B probe)** | ⬜ TODO | §5, §6 |
 | **Smart-home / IoT agent** | ⬜ MISSING | §5 |
 | **Guarded self-improvement loop** | ⬜ MISSING | §5 |
+| **Agentic core (Claude-Code-grade tool loop)** | ⬜ MISSING — foundational for self-improvement | §5 (Tier B #12) |
 | **Presence/context state machine** | 🟡 partial | §5 |
 | **Electron packaging** | ⬜ PARKED (after all desktop) | §5 |
 | **Mobile app (Track C)** | ⬜ FUTURE (after Electron) | §6 |
@@ -246,6 +247,28 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
     hierarchical sub-plans; richer cross-task worker memory; per-session state for the
     pending-decision singletons; Telegram push + remote file search; PDF/docx RAG parsing
     + incremental re-index; life integrations (Spotify, Notion/Obsidian, banking, maps).
+12. **Agentic core — "Claude-Code-grade" tool loop for JARVIS (NEW 2026-07-25).**
+    Goal: give JARVIS the same agentic superpowers this Claude Code session has —
+    decide → call tool → observe → repeat, with sub-agents, MCP, and skills — not the
+    current one-shot `process_command`. JARVIS already has the *pieces* scattered
+    (tools: `gui_agent`/`human_gui_agent` computer-use, `action_engine`, browser; memory:
+    `jarvis_longterm.db`/Chroma/`memory_manager`; governance). The MISSING thing is the
+    **loop that wires them into a real tool-calling agent.**
+    - **Native path: Claude Agent SDK** (Anthropic's lib — gives an app the exact
+      Claude-Code capabilities: agentic tool loop, sub-agents, MCP client, skills, context
+      compaction). JARVIS already runs Anthropic cloud (cloud_first reasoning) so this is
+      native. Alt: hand-roll the same with the Messages API **tool-use loop** + own registry.
+    - **Wrap existing JARVIS tools as tool defs** (a registry): `gui_agent`, `action_engine`,
+      memory read/write, browser, file ops — so the model can call them.
+    - **Sub-agents / fan-out** for decomposed tasks; **consume the same MCP servers**
+      (codebase-memory graph, chrome) via the SDK.
+    - Reuse existing DBs for **agent memory** (mirror the fact-memory discipline used in the
+      Claude Code `memory/` dir). Route through **governance** — the safety spine — so the
+      agent loop respects AUTO/CONFIRM tiers, especially for computer-use + writes.
+    - **Foundational**: this is the substrate item #10 (guarded self-improvement) needs.
+      Design first (load `claude-api` + `claude-code-guide` skills for exact SDK wiring +
+      model IDs), then a thin `jarvis-agent` core, then migrate `brain.process_command` onto
+      it incrementally. Governance-gated from day one — NEVER an ungoverned tool loop.
 
 ### TIER D — packaging & mobile (LAST, in this order)
 12. **Full `TEST_PLAN.md` pass** — automatic (Claude) + manual (Kaustav). Gate to Electron.
