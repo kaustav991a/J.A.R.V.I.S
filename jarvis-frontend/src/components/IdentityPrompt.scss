@@ -1,0 +1,170 @@
+// G6.1 — visual identity challenge: three name cards + live mic pulse.
+@use "./loginTokens" as *;
+
+.ident-prompt {
+  position: fixed;
+  inset: 0;
+  z-index: 9050; // between FaceAuthOverlay (9000) and BootSequence (9100)
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  background: $login-scrim;
+  backdrop-filter: blur(2px);
+  pointer-events: none; // identification is answered by voice, not a click
+  color: $login-cyan;
+  animation: ident-fade-in 0.45s $login-ease both;
+}
+
+.ident-prompt__grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0, 255, 204, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 204, 0.06) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(circle at center, #000 30%, transparent 72%);
+}
+
+// --- live mic pulse (the missing mic affordance) ---
+.ident-prompt__mic {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ident-prompt__mic-core {
+  width: 20px;
+  height: 30px;
+  border-radius: 10px;
+  background: $login-cyan;
+  box-shadow: 0 0 18px $login-cyan;
+  animation: ident-mic-throb 1.2s $login-ease infinite;
+}
+
+.ident-prompt__mic-ring {
+  position: absolute;
+  inset: 0;
+  border: 2px solid rgba(0, 255, 204, 0.5);
+  border-radius: 50%;
+  animation: ident-mic-ripple 2s $login-ease infinite;
+
+  &--2 {
+    animation-delay: 1s;
+  }
+}
+
+.ident-prompt__title {
+  font-family: $login-mono;
+  font-size: 1.3rem;
+  letter-spacing: 3px;
+  text-shadow: 0 0 12px $login-cyan;
+}
+
+.ident-prompt__sub {
+  font-family: $login-mono;
+  font-size: 0.85rem;
+  letter-spacing: 2px;
+  color: $login-dim;
+}
+
+// --- identity cards ---
+.ident-prompt__cards {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.ident-card {
+  width: 128px;
+  height: 156px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  border: 1.5px solid rgba(0, 255, 204, 0.3);
+  border-radius: 12px;
+  background: rgba(0, 255, 204, 0.03);
+  transition: border-color 0.35s $login-ease, box-shadow 0.35s $login-ease,
+    transform 0.35s $login-ease, background 0.35s $login-ease;
+
+  &.is-lit {
+    border-color: $login-cyan;
+    background: rgba(0, 255, 204, 0.09);
+    box-shadow: 0 0 26px rgba(0, 255, 204, 0.35);
+    transform: translateY(-4px);
+  }
+}
+
+.ident-card__initial {
+  width: 58px;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  font-family: $login-mono;
+  font-size: 1.7rem;
+  font-weight: 700;
+  color: $login-cyan;
+}
+
+.ident-card__name {
+  font-family: $login-mono;
+  font-size: 0.9rem;
+  letter-spacing: 2px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+@keyframes ident-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ident-mic-throb {
+  0%, 100% {
+    transform: scaleY(0.7);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+@keyframes ident-mic-ripple {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+// reduced motion: keep the lit-card state + fade, drop the pulses/roving motion
+@media (prefers-reduced-motion: reduce) {
+  .ident-prompt__mic-core,
+  .ident-prompt__mic-ring {
+    animation: none;
+  }
+  .ident-card {
+    transition: border-color 0.35s $login-ease, box-shadow 0.35s $login-ease;
+  }
+  .ident-card.is-lit {
+    transform: none;
+  }
+}

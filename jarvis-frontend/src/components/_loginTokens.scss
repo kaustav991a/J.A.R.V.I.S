@@ -1,0 +1,15 @@
+// G6.1 — shared easing + palette tokens for the login / wake overlays.
+// Consumed by BootSequence + IdentityPrompt. FaceAuthOverlay predates this and
+// inlines the same cyan/green/red palette; left as-is to avoid re-touching
+// already-shipped code, but the values here match it so the overlays feel of a
+// single system.
+
+$login-cyan: #00ffcc;
+$login-green: #22ff88;
+$login-red: #ff3b3b;
+$login-dim: rgba(255, 255, 255, 0.55);
+$login-scrim: radial-gradient(circle at center, rgba(2, 10, 12, 0.6), rgba(1, 4, 6, 0.94));
+
+// mirrors App.jsx HUD_EASE = [0.16, 1, 0.3, 1] so overlays share the HUD's motion feel
+$login-ease: cubic-bezier(0.16, 1, 0.3, 1);
+$login-mono: "Consolas", "Courier New", monospace;

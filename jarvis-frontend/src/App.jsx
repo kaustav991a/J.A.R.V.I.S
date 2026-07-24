@@ -16,6 +16,8 @@ import TypewriterText from "./components/TypewriterText";
 import { MinimalHudClock } from "./components/ClockWidget";
 import IntroductionCeremony from "./components/IntroductionCeremony";
 import FirstBootSequence from "./components/FirstBootSequence";
+import BootSequence from "./components/BootSequence";
+import IdentityPrompt from "./components/IdentityPrompt";
 import FaceScanOverlay from "./components/FaceScanOverlay";
 import FaceAuthOverlay from "./components/FaceAuthOverlay";
 import UplinkOverlay from "./components/UplinkOverlay";
@@ -184,6 +186,12 @@ function App() {
   const [isFaceScanning, setIsFaceScanning] = useState(false);
   // G6.1 synced face-auth overlay: { stage, user, reason } | null
   const [authFace, setAuthFace] = useState(null);
+  // G6.1 staged power-on: bootActive during a real wake, bootReady once the
+  // backend confirms waking/online (BootSequence holds CALIBRATING until then).
+  const [bootActive, setBootActive] = useState(false);
+  const [bootReady, setBootReady] = useState(false);
+  // G6.1 visual identity challenge (voice-answered): { hint } | null
+  const [identityPrompt, setIdentityPrompt] = useState(null);
   const [isScreenScanning, setIsScreenScanning] = useState(false);
   const [isLockdown, setIsLockdown] = useState(false);
 
@@ -427,6 +435,32 @@ function App() {
           setAuthFace(null);
         }
 
+        // G6.1 staged power-on: play the boot sequence on a real wake
+        // ("booting"), then let it advance past CALIBRATING only once reality
+        // confirms (waking/online). A plain WS reconnect emits "online" too, but
+        // bootActive is false then so BootSequence stays dormant.
+        if (data.status === "booting") {
+          setBootActive(true);
+          setBootReady(false);
+        }
+        if (data.status === "waking" || data.status === "online") {
+          setBootReady(true);
+        }
+
+        // G6.1 visual identity challenge — the voice-only "state your name" step.
+        // Only the IDENTIFICATION prompt shows the name cards; the RELATION /
+        // PASSKEY prompts (also security_listening) and any advancing status
+        // close it.
+        if (data.status === "security_listening") {
+          setIdentityPrompt(
+            (data.message || "").toUpperCase().includes("IDENTIFICATION")
+              ? { hint: "SPEAK YOUR NAME" }
+              : null,
+          );
+        } else {
+          setIdentityPrompt(null);
+        }
+
         if (data.status === "scanning_screen") {
           setIsScreenScanning(true);
         } else if (["executing", "complete", "speaking", "error"].includes(data.status)) {
@@ -613,6 +647,16 @@ function App() {
     commandInputRef.current?.focus();
   };
 
+  // Surface a transient error in the system log so a failed command is never
+  // silent — pins the log line, then auto-unpins after a few seconds.
+  const surfaceTerminalError = (msg) => {
+    setLogSpeaker("SYSTEM");
+    setLogTextRaw(msg);
+    setUiBridgeLogPinned(true);
+    if (surfaceTerminalError._t) clearTimeout(surfaceTerminalError._t);
+    surfaceTerminalError._t = setTimeout(() => setUiBridgeLogPinned(false), 6000);
+  };
+
   const sendBackdoorCommand = async () => {
     const cmd = backdoorCommand.trim();
     if (!cmd) return;
@@ -625,11 +669,13 @@ function App() {
       if (!res.ok) {
         const t = await res.text();
         console.error("[Backdoor] HTTP", res.status, t);
+        surfaceTerminalError(`COMMAND REJECTED // HTTP ${res.status}`);
         return;
       }
       setBackdoorCommand("");
     } catch (e) {
       console.error("Backdoor error (is the API running on :8000?):", e);
+      surfaceTerminalError("API UNREACHABLE // COMMAND FAILED — BACKEND OFFLINE?");
     }
   };
 
@@ -702,6 +748,14 @@ function App() {
               arrives (an un-updated backend). */}
           <FaceScanOverlay isActive={isFaceScanning && !authFace} />
           <FaceAuthOverlay auth={authFace} />
+          {/* G6.1: staged power-on gated to the real boot, and the visual identity
+              challenge for the voice-only "state your name" step. */}
+          <IdentityPrompt active={!!identityPrompt} hint={identityPrompt?.hint} />
+          <BootSequence
+            active={bootActive}
+            ready={bootReady}
+            onComplete={() => setBootActive(false)}
+          />
           <ScreenScanOverlay isActive={isScreenScanning} />
           <UplinkOverlay isActive={status === "processing_llm" || status === "searching"} />
           <LockdownOverlay isActive={isLockdown} />

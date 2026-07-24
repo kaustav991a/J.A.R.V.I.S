@@ -1,0 +1,214 @@
+// G6.1 — staged power-on overlay. Holds on CALIBRATING until the backend confirms,
+// then scanline-wipes into the HUD.
+@use "./loginTokens" as *;
+
+$wipe: 0.85s; // WIPE_MS in the jsx
+
+.boot-seq {
+  position: fixed;
+  inset: 0;
+  z-index: 9100; // above the HUD, alongside FaceAuthOverlay (9000)
+  pointer-events: none;
+  color: $login-cyan;
+}
+
+// the visible panel — scrim + all content. This is what wipes away on exit so
+// the scanline beam (a sibling, unclipped) can ride the reveal edge.
+.boot-seq__inner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 34px;
+  background: $login-scrim;
+  backdrop-filter: blur(2px);
+  clip-path: inset(0 0 0 0);
+}
+
+.boot-seq--enter .boot-seq__inner {
+  animation: boot-fade-in 0.5s $login-ease both;
+}
+.boot-seq--exit .boot-seq__inner {
+  animation: boot-wipe $wipe $login-ease forwards; // reveals HUD top-to-bottom
+}
+
+// cyan scanline that sweeps down the reveal edge, mirroring ScanlineTransition
+.boot-seq__beam {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  top: 0;
+  background: $login-cyan;
+  box-shadow: 0 0 15px 3px rgba(0, 255, 204, 0.8);
+  animation: boot-beam $wipe $login-ease forwards;
+}
+
+.boot-seq__grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0, 255, 204, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 204, 0.06) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(circle at center, #000 30%, transparent 72%);
+}
+
+.boot-seq__ring {
+  position: relative;
+  width: min(34vmin, 260px);
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 255, 204, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: -6px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    border-top-color: $login-cyan;
+    border-right-color: $login-cyan;
+    box-shadow: 0 0 18px rgba(0, 255, 204, 0.5);
+    animation: boot-spin 1.15s linear infinite;
+  }
+
+  &.is-holding::before {
+    animation-duration: 2.2s; // slows while it waits on reality
+  }
+}
+
+.boot-seq__pct {
+  font-family: $login-mono;
+  font-size: 2.2rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-shadow: 0 0 16px $login-cyan;
+}
+
+.boot-seq__stages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: min(70vw, 300px);
+}
+
+.boot-seq__stage {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: $login-mono;
+  font-size: 1rem;
+  letter-spacing: 2px;
+  transition: color 0.3s $login-ease, opacity 0.3s $login-ease;
+
+  &.is-pending {
+    color: rgba(255, 255, 255, 0.28);
+  }
+  &.is-active {
+    color: $login-cyan;
+    text-shadow: 0 0 10px $login-cyan;
+  }
+  &.is-done {
+    color: $login-green;
+  }
+}
+
+.boot-seq__mark {
+  width: 1.2em;
+  text-align: center;
+}
+
+.boot-seq__label {
+  flex: 1;
+}
+
+.boot-seq__wait {
+  font-size: 0.72rem;
+  letter-spacing: 1px;
+  color: $login-dim;
+  animation: boot-blink 1s steps(2, start) infinite;
+}
+
+.boot-seq__status {
+  font-family: $login-mono;
+  font-size: 0.85rem;
+  letter-spacing: 3px;
+  color: $login-dim;
+}
+
+@keyframes boot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes boot-blink {
+  50% {
+    opacity: 0.2;
+  }
+}
+@keyframes boot-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+// panel wipes away from the top down, revealing the HUD top-to-bottom
+@keyframes boot-wipe {
+  from {
+    clip-path: inset(0 0 0 0);
+  }
+  to {
+    clip-path: inset(100% 0 0 0);
+  }
+}
+// beam rides the reveal edge in lockstep with the wipe, then fades at the bottom
+@keyframes boot-beam {
+  0% {
+    top: 0;
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
+}
+
+// reduced motion: keep the staged reveal, drop the spin/blink; the wipe becomes
+// a plain fade-out and the beam is dropped.
+@media (prefers-reduced-motion: reduce) {
+  .boot-seq__ring::before {
+    animation: none;
+  }
+  .boot-seq__wait {
+    animation: none;
+  }
+  .boot-seq--exit .boot-seq__inner {
+    animation: boot-reduced-out $wipe $login-ease forwards;
+  }
+  .boot-seq__beam {
+    display: none;
+  }
+}
+
+@keyframes boot-reduced-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}

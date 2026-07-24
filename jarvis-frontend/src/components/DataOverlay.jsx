@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { X } from "lucide-react";
 
@@ -100,7 +100,30 @@ function HudChart({ type = "bar", points = [] }) {
 }
 
 function DataOverlay({ data, onClose }) {
-  if (!data || !data.ui_action) return null;
+  const closeRef = useRef(null);
+  const isOpen = !!(data && data.ui_action);
+
+  // Escape closes + focus management: move focus into the dialog on open and
+  // restore it to the previously-focused element on close (keyboard a11y).
+  useEffect(() => {
+    if (!isOpen) return;
+    const prevFocus = document.activeElement;
+    closeRef.current?.focus();
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose?.();
+      }
+    };
+    // Capture phase so this fires before any inner element can stopPropagation.
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      if (prevFocus && typeof prevFocus.focus === "function") prevFocus.focus();
+    };
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
 
   const rows = Array.isArray(data.data) ? data.data : [];
 
@@ -161,10 +184,11 @@ function DataOverlay({ data, onClose }) {
             </p>
           </div>
           <button
+            ref={closeRef}
             type="button"
             onClick={onClose}
             className="rounded-md border border-cyan-400/30 bg-cyan-400/10 p-2 text-cyan-200 transition hover:bg-cyan-400/20 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/80"
-            aria-label="Dismiss data overlay"
+            aria-label="Dismiss data overlay (Escape)"
           >
             <X className="h-4 w-4" strokeWidth={2.25} />
           </button>

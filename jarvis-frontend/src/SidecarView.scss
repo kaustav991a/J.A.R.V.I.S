@@ -1,0 +1,142 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   SIDECAR VIEW — right-edge slim panel overlay
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Poppins:wght@300;400;500;600&display=swap');
+
+.sidecar-root {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background: rgba(4, 12, 24, 0.78);
+  backdrop-filter: blur(22px) saturate(1.3);
+  -webkit-backdrop-filter: blur(22px) saturate(1.3);
+  border-left: 1px solid rgba(0, 255, 204, 0.1);
+  border-top: 1px solid rgba(0, 255, 204, 0.06);
+  border-bottom: 1px solid rgba(0, 255, 204, 0.06);
+  overflow-y: auto;
+  overflow-x: hidden;
+  user-select: none;
+
+  /* Custom scrollbar */
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: rgba(0, 255, 204, 0.15);
+    border-radius: 2px;
+  }
+}
+
+/* ── Drag region ───────────────────────────────────────────────────────── */
+.sidecar-drag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+  -webkit-app-region: drag;
+  z-index: 10;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+.sidecar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid rgba(0, 255, 204, 0.08);
+  flex-shrink: 0;
+
+  &__title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: rgba(0, 255, 204, 0.9);
+  }
+
+  &__status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 9px;
+    font-weight: 400;
+    letter-spacing: 1.5px;
+    color: rgba(0, 255, 204, 0.6);
+
+    &.is-offline {
+      color: rgba(120, 120, 140, 0.5);
+    }
+  }
+
+  &__dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #00ffcc;
+    box-shadow: 0 0 5px rgba(0, 255, 204, 0.5);
+    animation: sidecar-dot-pulse 2.4s ease-in-out infinite;
+
+    .is-offline & {
+      background: #555;
+      box-shadow: none;
+      animation: none;
+    }
+  }
+}
+
+@keyframes sidecar-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+/* ── Sections ──────────────────────────────────────────────────────────── */
+.sidecar-section {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(0, 255, 204, 0.05);
+
+  &__label {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 2.5px;
+    color: rgba(0, 255, 204, 0.4);
+    margin-bottom: 10px;
+    text-transform: uppercase;
+  }
+}
+
+/* ── Clock section ─────────────────────────────────────────────────────── */
+.sidecar-clock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 16px;
+}
+
+/* ── Task section: override TaskHud positioning for embedded use ────── */
+.sidecar-tasks {
+  padding: 0;
+
+  /* The TaskHud renders as a positioned <aside>. Reset it for flow layout. */
+  .task-hud {
+    position: relative !important;
+    inset: unset !important;
+    transform: none !important;
+    width: 100% !important;
+    max-height: none !important;
+    border-radius: 0 !important;
+    border: none !important;
+    border-bottom: 1px solid rgba(0, 255, 204, 0.05) !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+  }
+}
