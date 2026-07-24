@@ -46,6 +46,9 @@ SCHEMA = {
     "deadzone": float,
     "pinch_down": float,
     "pinch_up": float,
+    # G6.2 click/grab tuning
+    "dwell_right_click_s": float,
+    "grab_after_pinch_s": float,
     "scroll_gain": float,
     "start_hold_s": float,
     "stop_hold_s": float,

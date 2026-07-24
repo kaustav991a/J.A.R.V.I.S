@@ -94,7 +94,19 @@ gesture_state: dict = {
     "start_progress": 0.0,
     "stop_progress": 0.0,
     "camera": None,
+    # G6.2: last discrete action (click/right_click/double_click/grab/drop) +
+    # wall-clock ts, so the HUD chip + cursor overlay can pulse when one fires —
+    # makes the click/right-click/grab bug diagnosable live.
+    "last_action": None,
+    "last_action_ts": 0.0,
     "ts": 0.0,
+}
+
+# discrete gesture intents -> a short label for the HUD/overlay action pulse.
+# Scroll is deliberately excluded (fires every frame — would spam broadcasts).
+_ACTION_LABEL = {
+    "click": "click", "double_click": "double", "right_click": "right",
+    "drag_start": "grab", "drag_end": "drop",
 }
 
 
@@ -242,7 +254,7 @@ class GestureDaemon:
             "stop_progress": round(getattr(engine, "stop_progress", 0.0), 2) if engine else 0.0,
             "ts": time.time(),
         })
-        key = {k: v for k, v in gate.items() if k != "ts"}
+        key = {k: v for k, v in gate.items() if k not in ("ts", "last_action_ts")}
         now_wall = time.time()
         stale = (now_wall - self._last_hud_beat) >= self.HUD_HEARTBEAT_S
         if force or key != self._last_hud or stale:
@@ -254,6 +266,8 @@ class GestureDaemon:
                 "clutch": gate.get("clutch", False), "suspended": gate["suspended"],
                 "denied": gate["denied"], "pose": gate["pose"],
                 "locked": gate["locked"],
+                "last_action": gate.get("last_action"),
+                "last_action_ts": gate.get("last_action_ts", 0.0),
             })
 
     # ---- lock / unlock --------------------------------------------------- #
@@ -356,21 +370,28 @@ class GestureDaemon:
     def _session(self) -> None:
         import cv2
         from modules.face_gate import AbsenceTracker, FaceGate, MotionDetector
-        from modules.gesture_camera import CameraError, FrameSource
+        from modules.gesture_camera import (
+            CameraError, make_frame_source, parse_sources)
         from modules.gesture_engine import GestureConfig, GestureEngine
         from modules.gesture_pointer import PointerBackend
 
-        _src = os.getenv("JARVIS_CAM", "0").strip()
-        source = int(_src) if _src.isdigit() else _src
-        gesture_state["camera"] = str(source)
+        # G6.3 camera auto-select: probe a prioritized list (JARVIS_CAM_SOURCES,
+        # comma-separated indices/URLs), use the first that opens + delivers a
+        # frame; falls back to the single legacy JARVIS_CAM.
+        sources = parse_sources(os.getenv("JARVIS_CAM_SOURCES"), os.getenv("JARVIS_CAM", "0"))
         cam_w, cam_h, cam_res = _cam_res()
         try:
-            fs = FrameSource(source, cam_w, cam_h, url_res=cam_res)
+            fs = make_frame_source(sources, cam_w, cam_h, url_res=cam_res)
         except CameraError as e:
             gesture_state["state"] = "camera_error"
-            print(f"[GESTURE] camera unavailable [{e.kind}] — retry in 30s", flush=True)
+            print(f"[GESTURE] camera unavailable [{e.kind}] — retry in 30s\n{e}",
+                  flush=True)
             time.sleep(30.0)
             return
+        gesture_state["camera"] = str(fs.source)
+        if len(sources) > 1:
+            print(f"[GESTURE] camera auto-select: chose {fs.source} "
+                  f"from {sources}", flush=True)
 
         landmarker = None
         try:
@@ -529,7 +550,13 @@ class GestureDaemon:
                             "state": "denied", "denied": True})
 
                 pointer.execute(intents)
-                self._hud(engine, "active" if engine.engaged else "idle", denied)
+                action = next((_ACTION_LABEL[i[0]] for i in intents
+                               if i[0] in _ACTION_LABEL), None)
+                if action:
+                    gesture_state["last_action"] = action
+                    gesture_state["last_action_ts"] = time.time()
+                self._hud(engine, "active" if engine.engaged else "idle", denied,
+                          force=bool(action))
         finally:
             try:
                 pointer.release_all()

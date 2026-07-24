@@ -21,8 +21,10 @@ Used by gesture_spike.py now; gesture_daemon.py adopts it in G3.
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
+from urllib.parse import urlparse
 
 import cv2
 
@@ -40,6 +42,54 @@ def decorate_url(url: str, res: str | None = "640x480") -> str:
     if res and "/video" in url and "?" not in url:
         return f"{url}?{res}"
     return url
+
+
+def parse_sources(sources_env: str | None, legacy_cam: str | None = None) -> list:
+    """Priority-ordered candidate list for camera auto-select (G6.3).
+
+    `sources_env` (JARVIS_CAM_SOURCES) is a comma list of device indices and/or
+    stream URLs, tried in order. Falls back to the single legacy `legacy_cam`
+    (JARVIS_CAM) when the list is empty/unset. Blanks and duplicates are dropped,
+    original order preserved. Digit entries become ints (device indices), the
+    rest stay URL strings.
+    """
+    raw = sources_env if sources_env and sources_env.strip() else legacy_cam
+    if not raw or not raw.strip():
+        return [0]
+    out: list = []
+    seen: set[str] = set()
+    for part in raw.split(","):
+        s = part.strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(int(s) if s.isdigit() else s)
+    return out or [0]
+
+
+def url_reachable(url: str, timeout: float = 1.5, connect=None) -> bool:
+    """Fast TCP reachability probe for a stream URL.
+
+    cv2.VideoCapture blocks for a long time on an unreachable host, which would
+    stall camera auto-select on every dead source. A cheap TCP connect to the
+    URL's host:port fails in ~`timeout` instead, so a dead source is skipped
+    quickly. `connect` is injectable for tests (defaults to socket).
+    """
+    parsed = urlparse(url if "://" in url else "http://" + url)
+    host = parsed.hostname
+    if not host:
+        return False
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    connect = connect or socket.create_connection
+    try:
+        conn = connect((host, port), timeout)
+    except OSError:
+        return False
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001 — best-effort close of a throwaway probe
+        pass
+    return True
 
 
 def _open_source(source, width: int, height: int, url_res: str | None):
@@ -84,13 +134,49 @@ def _open_source(source, width: int, height: int, url_res: str | None):
     return cap
 
 
+def open_first_available(sources, width: int = 640, height: int = 480,
+                         url_res: str | None = "640x480",
+                         probe_timeout: float = 1.5,
+                         reachable=None, opener=None):
+    """Camera auto-select (G6.3): open the FIRST source that works.
+
+    Tries each entry of `sources` in order. URL sources get a fast TCP
+    reachability probe first (`url_reachable`) so a dead host is skipped in
+    ~`probe_timeout` instead of blocking cv2; device indices go straight to the
+    opener. Returns ``(cap, chosen_source)`` for the first source that both
+    opens and delivers a frame. Raises ``CameraError("absent", ...)`` with a
+    per-source summary when none work. `reachable`/`opener` are injectable for
+    tests.
+    """
+    reachable = reachable or (lambda u: url_reachable(u, probe_timeout))
+    opener = opener or _open_source
+    errors: list[str] = []
+    for src in sources:
+        if isinstance(src, str) and not reachable(src):
+            errors.append(f"{src}: unreachable (no TCP connect in {probe_timeout}s)")
+            continue
+        try:
+            cap = opener(src, width, height, url_res)
+        except CameraError as e:
+            first_line = str(e).splitlines()[0] if str(e) else e.kind
+            errors.append(f"{src}: [{e.kind}] {first_line}")
+            continue
+        return cap, src
+    detail = "\n  - ".join(errors) if errors else "(no sources configured)"
+    raise CameraError(
+        "absent",
+        "no working camera among configured sources:\n  - " + detail,
+    )
+
+
 class FrameSource:
     """Threaded latest-frame camera reader — consumers never see backlog."""
 
     def __init__(self, source, width: int = 640, height: int = 480,
-                 url_res: str | None = "640x480"):
+                 url_res: str | None = "640x480", *, cap=None):
         self.source = source
-        self._cap = _open_source(source, width, height, url_res)
+        self._cap = cap if cap is not None else _open_source(
+            source, width, height, url_res)
         self._lock = threading.Condition()
         self._frame = None
         self._seq = 0
@@ -142,3 +228,17 @@ class FrameSource:
         self._stop.set()
         self._thread.join(timeout=2.0)
         self._cap.release()
+
+
+def make_frame_source(sources, width: int = 640, height: int = 480,
+                      url_res: str | None = "640x480",
+                      probe_timeout: float = 1.5, reachable=None):
+    """Auto-select a camera from `sources` and wrap it in a FrameSource (G6.3).
+
+    Opens the first working source via ``open_first_available`` (so the reader
+    thread never re-opens it) and records which one was chosen on
+    ``FrameSource.source``. Raises ``CameraError`` if none work.
+    """
+    cap, chosen = open_first_available(
+        sources, width, height, url_res, probe_timeout, reachable)
+    return FrameSource(chosen, width, height, url_res, cap=cap)

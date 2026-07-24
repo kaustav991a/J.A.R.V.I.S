@@ -40,6 +40,14 @@ WHITE = "#eafffb"       # cursor dot
 RING_R = 28             # halo outer radius (px)
 DOT_R = 4               # centre dot radius (px)
 TOAST_S = 1.9           # toast visible duration (s)
+PULSE_S = 0.45          # click/grab action ripple duration (s)
+PURPLE = "#b58cff"      # right-click ripple (distinct from grab/amber + denied/red)
+
+# G6.2: colour of the action ripple by the daemon's `last_action` label.
+_ACTION_COLOR = {
+    "click": CYAN, "double": CYAN, "right": PURPLE,
+    "grab": AMBER, "drop": AMBER,
+}
 
 # --- Win32 extended-style bits ------------------------------------------- #
 GWL_EXSTYLE = -20
@@ -100,6 +108,13 @@ class Overlay:
         # toast state, owned by the render loop
         self._prev: dict | None = None
         self._toast_until = 0.0
+        # G6.2 action ripple (click/right/grab) — pulses at the cursor when the
+        # daemon reports a fresh last_action_ts.
+        self._seen_action_ts = 0.0
+        self._pulse_start = 0.0
+        self._pulse_until = 0.0
+        self._pulse_xy = (0, 0)
+        self._pulse_color = CYAN
 
         self.canvas = tk.Canvas(root, width=self.vw, height=self.vh, bg=BG,
                                 highlightthickness=0, bd=0)
@@ -115,6 +130,9 @@ class Overlay:
         self.toast_tx = self.canvas.create_text(0, 0, text="", fill=CYAN,
                                                 font=("Consolas", 15, "bold"),
                                                 anchor="center", state="hidden")
+        # action ripple ring (expands + fades on a click/right-click/grab)
+        self.pulse = self.canvas.create_oval(0, 0, 0, 0, outline=CYAN, width=3,
+                                             state="hidden")
 
     # ---- stdin: newline-delimited JSON frames --------------------------- #
 
@@ -193,10 +211,38 @@ class Overlay:
 
     # ---- render loop ----------------------------------------------------- #
 
+    def _detect_pulse(self, f: dict) -> None:
+        """Arm an action ripple when the daemon reports a fresh last_action_ts."""
+        ats = f.get("last_action_ts") or 0.0
+        if ats <= self._seen_action_ts:
+            return
+        self._seen_action_ts = ats
+        self._pulse_start = time.monotonic()
+        self._pulse_until = self._pulse_start + PULSE_S
+        self._pulse_xy = _cursor_pos()
+        self._pulse_color = _ACTION_COLOR.get(f.get("last_action"), CYAN)
+
+    def _render_pulse(self) -> None:
+        now = time.monotonic()
+        if not self._pulse_until or now >= self._pulse_until:
+            self.canvas.itemconfig(self.pulse, state="hidden")
+            self._pulse_until = 0.0
+            return
+        prog = (now - self._pulse_start) / PULSE_S     # 0..1
+        r = DOT_R + prog * (RING_R * 2.0)              # expands outward
+        w = max(1, int(4 * (1.0 - prog)))             # fades by thinning
+        cx, cy = self._pulse_xy
+        x, y = cx - self.vx, cy - self.vy
+        self.canvas.coords(self.pulse, x - r, y - r, x + r, y + r)
+        self.canvas.itemconfig(self.pulse, outline=self._pulse_color, width=w,
+                               state="normal")
+        self.canvas.tag_raise(self.pulse)
+
     def tick(self) -> None:
         with self._lock:
             f = dict(self._frame)
         self._detect_toast(f)
+        self._detect_pulse(f)
 
         style = self._halo_style(f)
         if style is None:
@@ -214,6 +260,8 @@ class Overlay:
             self.canvas.itemconfig(self.dot, state="normal")
             self.canvas.tag_raise(self.ring)
             self.canvas.tag_raise(self.dot)
+
+        self._render_pulse()
 
         if self._toast_until and time.monotonic() >= self._toast_until:
             self._hide_toast()

@@ -173,9 +173,28 @@ def test_from_env_default_when_no_json_no_env():
         _clear_env()
 
 
+def test_g62_click_knobs_roundtrip_and_apply():
+    # G6.2 added dwell_right_click_s + grab_after_pinch_s to the persistable set;
+    # they must round-trip through the JSON and overlay onto a GestureConfig.
+    p = _tmp()
+    ok = gc.save({"dwell_right_click_s": 0.9, "grab_after_pinch_s": 0.4,
+                  "pinch_down": 0.28}, p)
+    check(ok, "G6.2 knobs save")
+    got = gc.load(p)
+    check(got.get("dwell_right_click_s") == 0.9, "dwell_right_click_s round-trips")
+    check(got.get("grab_after_pinch_s") == 0.4, "grab_after_pinch_s round-trips")
+    cfg = GestureConfig()
+    gc.apply_to(cfg, got)
+    check(abs(cfg.dwell_right_click_s - 0.9) < 1e-9, "dwell applied to config")
+    check(abs(cfg.grab_after_pinch_s - 0.4) < 1e-9, "grab cooldown applied to config")
+    check(abs(cfg.pinch_down - 0.28) < 1e-9, "pinch_down applied to config")
+    os.unlink(p)
+
+
 TESTS = [
     test_load_missing,
     test_save_load_roundtrip,
+    test_g62_click_knobs_roundtrip_and_apply,
     test_unknown_keys_dropped,
     test_type_coercion,
     test_corrupt_json_safe,

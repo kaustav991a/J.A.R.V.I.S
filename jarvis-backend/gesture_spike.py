@@ -5,13 +5,14 @@ gesture_spike.py — Phase G2 live driver (HAND_GESTURE_CONTROL_PLAN.md)
 G1 proved camera → landmarks → cursor (30–40 fps live, commit e1cc385).
 G3 natural-grab vocabulary (click and grab are separate gestures):
 
-    index up 1 s    START control (control starts OFF — safe)
-    open palm       move cursor (palm-knuckle centroid, One-Euro smoothed)
-    thumb+index tap left click (fires on pinch-land); 2nd tap <=1 s = double
-    closed fist     GRAB — mouse down, move to drag, open hand to drop
-    thumb+middle    right click
-    index+middle    scroll (hand up = scroll up)
-    back of hand    hold 1.5 s = STOP control
+    index up 1 s     START control (control starts OFF — safe)
+    open palm        move cursor (palm-knuckle centroid, One-Euro smoothed)
+    thumb+index tap  LEFT click (quick pinch, fires on release); 2nd tap <=1 s = double
+    thumb+index HOLD RIGHT click (pinch-and-hold >= dwell_right_click_s, on release; G5.1
+                     dwell replaced the retired thumb+middle right-click)
+    closed fist      GRAB — mouse down, move to drag, open hand to drop
+    index+middle     scroll (hand up = scroll up)
+    back of hand     brief = CLUTCH (freeze/reposition), hold 1.5 s = STOP control
 
 Run:   venv\Scripts\python.exe gesture_spike.py [index | http://ip:port/video]
        (or env JARVIS_CAM; phone IP Webcam must be on the SAME Wi-Fi as the PC)
@@ -128,9 +129,16 @@ def main() -> int:
             intents = engine.process(pts, now, handedness)
             pointer.execute(intents)
             for i in intents:
-                if i[0] not in ("move", "move_delta"):   # deltas would flood the log
-                    last_event = i[0]
-                    print(f"[{time.strftime('%H:%M:%S')}] {i[0]}")
+                if i[0] in ("move", "move_delta", "scroll"):  # would flood the log
+                    if i[0] == "scroll":
+                        last_event = "scroll"
+                    continue
+                last_event = i[0]
+                extra = ""
+                if i[0] in ("click", "double_click", "right_click"):
+                    extra = f"  (held {engine.last_pinch_held_s:.2f}s, " \
+                            f"dwell {engine.cfg.dwell_right_click_s:.2f}s)"
+                print(f"[{time.strftime('%H:%M:%S')}] {i[0]}{extra}")
 
             state = "ENGAGED" if engine.engaged else "off"
             if engine.clutch:

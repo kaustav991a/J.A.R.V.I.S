@@ -219,7 +219,7 @@ def test_pinch_hold_is_dwell_right_click():
     # release) — never a left click, never a drag (grab is the fist).
     sim = engaged_sim()
     sim.feed(PALM, 40)
-    out = sim.feed(pinched(), 30)         # held ~1s >= 0.5s dwell
+    out = sim.feed(pinched(), 50)         # held ~1.67s >= 1.5s dwell
     out += sim.feed(PALM, 8)              # release -> decision
     k = kinds(out)
     assert k.count("right_click") == 1
@@ -298,7 +298,7 @@ def test_quick_then_dwell_are_different_clicks():
     sim = engaged_sim()
     sim.feed(PALM, 40)
     out = sim.feed(pinched(), 4) + sim.feed(PALM, 40)      # quick -> left click
-    out += sim.feed(pinched(), 30) + sim.feed(PALM, 8)     # held  -> right click
+    out += sim.feed(pinched(), 50) + sim.feed(PALM, 8)     # held  -> right click
     k = kinds(out)
     assert k.count("click") == 1 and k.count("right_click") == 1
     assert k.index("click") < k.index("right_click")
@@ -377,6 +377,71 @@ def test_tracking_loss_releases_drag_then_disengages():
     assert k.count("drag_end") == 1 and k.count("disengaged") == 1
     assert k.index("drag_end") < k.index("disengaged")
     assert not sim.e.engaged
+
+
+# ------------------------------------------------------------------ #
+# G6.2 — click / right-click / grab reliability (live-run bug)
+# ------------------------------------------------------------------ #
+
+def test_slow_tap_is_left_click_not_right():
+    # A deliberate (slow) tap under the raised dwell is a LEFT click. At the old
+    # 0.5 s dwell an ~0.6 s pinch was misclassified as a right click.
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(pinched(), 18)   # ~0.6 s hold (18 frames @ 30 fps)
+    out += sim.feed(PALM, 8)        # release -> decision
+    k = kinds(out)
+    assert k.count("click") == 1 and "right_click" not in k
+
+
+def test_fist_thumb_near_index_grabs_not_right_clicks():
+    # A closed hand whose thumb rests NEAR the index (the old 0.30-0.40 overlap
+    # zone) is a GRAB, not a long pinch — previously it fired a spurious click /
+    # right click and the grab never engaged.
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(make_hand(ext=(), pinch=("left", 0.35)), 12)  # thumb near index
+    out += sim.feed(PALM, 6)
+    k = kinds(out)
+    assert k.count("drag_start") == 1 and k.count("drag_end") == 1
+    assert "right_click" not in k and "click" not in k
+
+
+def test_curled_click_does_not_bleed_into_grab():
+    # A curled-hand pinch tap must not turn into a drag as the hand reopens/closes
+    # through the fist-shaped zone (grab cooldown); a real grab a beat later still
+    # engages.
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(make_hand(ext=(), pinch=("left", 0.2)), 4)   # curled quick tap
+    early = sim.feed(FIST, 4)     # fist within the post-pinch cooldown
+    late = sim.feed(FIST, 14)     # fist past the cooldown -> real grab
+    assert kinds(out + early).count("click") == 1
+    assert "drag_start" not in kinds(early)   # cooldown suppressed the bleed
+    assert kinds(late).count("drag_start") == 1
+
+
+def test_g62_click_knobs_env_tunable():
+    import os
+    keys = ("JARVIS_PINCH_DOWN", "JARVIS_PINCH_UP",
+            "JARVIS_DWELL_RIGHT_CLICK_S", "JARVIS_GRAB_AFTER_PINCH_S")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        os.environ["JARVIS_PINCH_DOWN"] = "0.25"
+        os.environ["JARVIS_PINCH_UP"] = "0.55"
+        os.environ["JARVIS_DWELL_RIGHT_CLICK_S"] = "0.9"
+        os.environ["JARVIS_GRAB_AFTER_PINCH_S"] = "0.4"
+        c = GestureConfig.from_env()
+        assert abs(c.pinch_down - 0.25) < 1e-9
+        assert abs(c.pinch_up - 0.55) < 1e-9
+        assert abs(c.dwell_right_click_s - 0.9) < 1e-9
+        assert abs(c.grab_after_pinch_s - 0.4) < 1e-9
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 # ------------------------------------------------------------------ #

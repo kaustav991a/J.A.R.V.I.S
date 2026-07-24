@@ -140,7 +140,13 @@ class GestureConfig:
     deadzone: float = 0.004
     # pinch hysteresis, distances normalised by hand size (wrist->middle MCP):
     # DOWN below pinch_down, UP above pinch_up — the gap kills chatter.
-    pinch_down: float = 0.40
+    # G6.2: pinch_down is ALSO the pinch/fist boundary (see _classify). It was
+    # 0.40, which overlapped a fist whose thumb rests NEAR (not on) the index:
+    # such grabs registered as a long pinch -> spurious RIGHT CLICK, and slow
+    # taps crossed the dwell -> right click instead of left. Lowered to 0.30 so a
+    # click needs a genuine thumb-index TOUCH and a closed hand (thumb merely
+    # near the index) reads as a grab. Live-tunable (env/calibration).
+    pinch_down: float = 0.30
     pinch_up: float = 0.60
     # a pinch or pose flip must persist this many consecutive frames.
     debounce_frames: int = 2
@@ -184,7 +190,16 @@ class GestureConfig:
     accel_v_hi: float = 1.5
     # left pinch held at least this long -> RIGHT CLICK on release ("dwell").
     # A shorter pinch is a normal left click. Replaces thumb+middle right-click.
-    dwell_right_click_s: float = 0.5
+    # G6.2: was 0.5 s — too short, so a deliberate tap (slowed further by the
+    # pinch hysteresis + 2-frame debounce on both ends) routinely crossed it and
+    # every click became a right click. Live data (Kaustav, 2026-07-19): real taps
+    # held 0.2-1.4 s, intentional holds 2.9-4.5 s — a clean gap. 1.5 s makes any
+    # tap a left click and only a purposeful hold a right click.
+    dwell_right_click_s: float = 1.5
+    # G6.2: after a pinch release, suppress GRAB (fist) for this long so a
+    # curled-hand click doesn't bleed straight into a drag as the hand reopens
+    # through the fist-shaped zone. A real grab a beat later still engages.
+    grab_after_pinch_s: float = 0.25
     # ---- G5.5 precision: fine-target damping when the hand is nearly still --- #
     # A SECOND-STAGE gain applied to BOTH mapping modes (absolute has no accel
     # curve, so this is its only precision lever). Below precision_v_lo palm
@@ -224,7 +239,12 @@ class GestureConfig:
                 pass
         for env_name, attr in (("JARVIS_GESTURE_SENSITIVITY", "sensitivity"),
                                ("JARVIS_GESTURE_SMOOTH", "min_cutoff"),
-                               ("JARVIS_GESTURE_GAIN", "base_gain")):
+                               ("JARVIS_GESTURE_GAIN", "base_gain"),
+                               # G6.2 click/grab live-tuning
+                               ("JARVIS_PINCH_DOWN", "pinch_down"),
+                               ("JARVIS_PINCH_UP", "pinch_up"),
+                               ("JARVIS_DWELL_RIGHT_CLICK_S", "dwell_right_click_s"),
+                               ("JARVIS_GRAB_AFTER_PINCH_S", "grab_after_pinch_s")):
             v = os.getenv(env_name)
             if v is not None:
                 try:
@@ -325,7 +345,9 @@ class GestureEngine:
         self._stop_t: float | None = None    # back-of-hand hold start
         self._dragging = False
         self._pinch_down_t: float | None = None      # left-pinch land time (dwell timer)
+        self._pinch_up_t: float | None = None        # G6.2: last pinch release (grab cooldown)
         self._last_click_t = -1e9
+        self.last_pinch_held_s = 0.0    # G6.2 diagnostic: hold length of the last pinch
         self._last_click_pos: tuple[float, float] | None = None
         self._last_emit: tuple[float, float] | None = None   # absolute mode last target
         self._rel_prev: tuple[float, float] | None = None    # relative: prev smoothed centroid
@@ -388,7 +410,13 @@ class GestureEngine:
         self.clutch = False
 
         self._update_pinches(pose, d_left, centroid, t, intents)
-        if pose == "fist" and not self._dragging and not self._left.down:
+        # GRAB starts on a committed fist — but never while a pinch is active, and
+        # not in the brief cooldown right after a pinch release (G6.2: a curled
+        # click reopens through the fist-shaped zone; that must not become a drag).
+        grab_cool = (self._pinch_up_t is not None
+                     and t - self._pinch_up_t <= self.cfg.grab_after_pinch_s)
+        if pose == "fist" and not self._dragging and not self._left.down \
+                and not grab_cool:
             self._dragging = True
             intents.append(("drag_start",))
         scrolling = self._update_scroll(pose, lm, intents)
@@ -531,6 +559,7 @@ class GestureEngine:
         self._left.reset()
         self._dragging = False
         self._pinch_down_t = None
+        self._pinch_up_t = None
         self._last_emit = None
         self._reset_rel()
         self._scroll_y = None
@@ -556,17 +585,24 @@ class GestureEngine:
         inside a committed fist so a grab can't fire a click. `centroid` (palm
         knuckles) is the same-spot reference — stable and mapping-mode-agnostic.
         """
-        in_fist = pose == "fist"
+        # Suppress the pinch inside a committed fist so a grab can't fire a click —
+        # BUT never abort a pinch that is ALREADY down: as a curled-hand pinch
+        # RELEASES, d_left rises back through the fist-shaped zone and the pose can
+        # momentarily read "fist"; forcing the pinch open there would misclassify
+        # the hold length (G6.2). Once down, let real d_left decide the release.
+        in_fist = pose == "fist" and not self._left.down
         ev = self._left.update(d_left if not in_fist else 2.0, t)
         if ev == "down":
             self._pinch_down_t = t
             return
         if ev != "up":
             return
+        self._pinch_up_t = t   # G6.2: arm the grab cooldown
 
         down_t = self._pinch_down_t
         self._pinch_down_t = None
         held = (t - down_t) if down_t is not None else 0.0
+        self.last_pinch_held_s = held   # diagnostic readout (spike prints it)
 
         if held >= self.cfg.dwell_right_click_s:
             intents.append(("right_click",))

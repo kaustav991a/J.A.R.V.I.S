@@ -45,7 +45,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.4** distance mitigation | ✅ code done, live-gate owed | §5 |
 | **G5.5** precision / dual-target filtering | ✅ code done, live-gate owed | §5 |
 | **G5.7** robustness backlog | 🟡 backend 5/6 done (barge-in deferred); frontend TODO | §5 |
-| **Login/wake revamp** | 🟡 face-auth contract + FaceAuthOverlay done; BootSequence/IdentityPrompt TODO | §6 |
+| **Login/wake revamp** | 🟢 face-auth contract + FaceAuthOverlay + BootSequence + IdentityPrompt done (code); live-gate owed | §6 |
 | **Away→mobile presence (Track B probe)** | ⬜ TODO | §5, §6 |
 | **Smart-home / IoT agent** | ⬜ MISSING | §5 |
 | **Guarded self-improvement loop** | ⬜ MISSING | §5 |
@@ -216,6 +216,19 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
 ### TIER B — experience upgrades (after Tier A)
 6. **Login / wake revamp** (spec in §6) — staged boot, identity step, believable
    Kaustav face-auth.
+6a. ✅ **G6.2 gesture click reliability** (DONE code 2026-07-19) — spec §6.3. Root cause:
+    pinch detector overlapped the fist zone (`pinch_down=0.40`) so grabs-with-thumb-near-index
+    read as long pinches → right_click, and slow taps crossed the 0.5s dwell → right_click
+    (left/double never fired). Fix: pinch_down 0.40→0.30 (pinch=real touch, closed hand=grab),
+    dwell 0.5→1.5s, don't abort an active pinch on a transient fist misread, post-pinch grab
+    cooldown; all env+calibration tunable; click/grab action pulse on HUD+overlay for live
+    diagnosis. `test_gesture_engine` 54→58, suite 315→**325**. Live-gate owed.
+6b. ✅ **G6.3 camera source auto-select** (DONE code 2026-07-19) — spec §6.4. `JARVIS_CAM_SOURCES`
+    comma-list probed in priority order (fast TCP reachability skips a dead URL before cv2 can
+    hang), first that opens + delivers a frame wins; legacy single `JARVIS_CAM` fallback.
+    `test_gesture_camera.py` 28/28. `.env` `JARVIS_CAM_SOURCES` set. **USB DROPPED 2026-07-19
+    (Kaustav's call — WiFi only):** HyperOS never authorised adb (ADB Interface bound OK but
+    `adb devices` empty — MIUI security-settings toggle / RSA prompt / charge-only mode). Not chasing.
 7. **Away→mobile presence Track B** — `modules/presence_probe.py` (phone-on-WiFi
    ARP/TCP/ping + HOME/AWAY debounce) feeding `owner_notify` routing. No app. (Note:
    away→phone *already works* via Telegram; this adds *automatic* presence.)
@@ -283,8 +296,23 @@ Three weak spots and the fix:
   `test_auth_status.py` 9/9; `npm run build` passes.
   **Follow-ups:** real `auth_face_matching` phase (needs an `on_phase` callback +
   face-box coords inside `scan_for_faces`) + live camera feed in the overlay (needs
-  the cam URL exposed to the frontend); then `BootSequence`, `IdentityPrompt`,
-  `ScanlineTransition`. **Live-gate owed** (§7).
+  the cam URL exposed to the frontend). **Live-gate owed** (§7).
+- ✅ **DONE (code, 2026-07-19):** `BootSequence.jsx`/`.scss` — staged power-on POWER
+  CORE→NEURAL LINK→MEMORY BANKS→CALIBRATING→NOMINAL, GATED (holds CALIBRATING until
+  `ready`=backend `waking`/`online`, only then NOMINAL), then **scanline-wipes into the
+  HUD** (inner panel `clip-path` wipes top-down + a cyan beam rides the reveal edge,
+  mirroring `ScanlineTransition`'s motion — kept in-component to avoid that component's
+  z-900/children-clip semantics which are tuned for the satellite panel). NEW
+  `IdentityPrompt.jsx`/`.scss` — 3 name cards KAUSTAV/KINSHUK/MOUSUMI + live mic pulse
+  (the missing mic affordance), roving highlight, `pointer-events:none` (identification
+  is voice-answered). NEW shared `_loginTokens.scss` (`@use` partial — first in repo;
+  sass ^1.99) = palette + `$login-ease` (=HUD_EASE) + mono, used by both new files.
+  `App.jsx`: `bootActive`/`bootReady` set on `booting`/(`waking`|`online`),
+  `identityPrompt` shown only on `security_listening`+"IDENTIFICATION"; overlays mounted
+  (z: FaceAuth 9000 < IdentityPrompt 9050 < BootSequence 9100). `prefers-reduced-motion`
+  respected (wipe → plain fade, beam dropped). `npm run build` passes. **Live-gate owed**
+  (§7). Remaining §6.1: none blocking — only the deferred matching-phase + live-cam-feed
+  follow-ups above.
 
 ### 6.2 Away→mobile presence
 - **Track B (near-term, no app):** `modules/presence_probe.py` — detect phone on home
@@ -299,6 +327,71 @@ Three weak spots and the fix:
   (supersedes B), live agent-cam (WebRTC/MJPEG over the cloud bridge), inline
   CONFIRM/approve-task buttons, voice. Backend adds `/api/presence` + an FCM sender leg;
   device-token + shared-secret auth.
+
+### 6.3 Gesture click reliability (NEW 2026-07-19 — live-run bug, G6.2)
+Live symptoms (cursor MOVE is fine):
+- **Left click never fires; double-click never fires** — pinch/click intent not reaching
+  `mouse_down/up`, OR the click pose is never classified.
+- **Right click fires far too often** — dwell-right-click threshold too loose (fires on
+  any brief hover pause) and/or a pose is being mis-read as the right-click trigger.
+- **Grab (fist) intermittent** — fist classification flickers (confidence/threshold or
+  frame-to-frame jitter) so drag engages/drops.
+Root-cause candidates to inspect in `modules/gesture_engine.py` + `gesture_daemon.py`:
+pinch-distance click threshold + debounce; dwell-right-click radius/time; fist detection
+hysteresis; whether a distinct click *event* is emitted separate from `pose` (the G5.3
+follow-up noted the engine exposes no pinch pose — click is an intent, not a `pose`).
+Add click/right-click/grab state to the HUD + overlay pulse so it's diagnosable. Needs a
+live gate to tune thresholds (harness the pure classifier changes first).
+✅ **DONE (code, 2026-07-19).** ROOT CAUSE (all three symptoms, one bug): the pinch
+detector overlapped the fist zone. `pinch_down=0.40` (thumb–index dist / hand-size) is the
+pinch/fist boundary in `_classify`; a fist whose thumb rests NEAR the index sits at
+d≈0.3–0.5 → registered as a long pinch → **right_click** (grab fails), and any tap held ≥
+`dwell_right_click_s=0.5s` (easy — hysteresis 0.40/0.60 + 2-frame debounce inflate the
+measured hold) became right_click, so **left/double never fired**; grab only worked with the
+thumb held out (**intermittent**). FIX in `gesture_engine.py`: (1) `pinch_down` 0.40→**0.30**
+— a click needs a genuine thumb–index touch, a closed hand (thumb merely near) is a grab
+(one clean boundary shared by pinch + fist); (2) `dwell_right_click_s` 0.5→**1.5s**; (3)
+don't abort an ALREADY-down pinch when a release-transition frame misreads as "fist"
+(`in_fist = pose=="fist" and not self._left.down`); (4) new `grab_after_pinch_s=0.25` cooldown
+so a curled click can't bleed into a drag as the hand reopens. All live-tunable: env
+`JARVIS_PINCH_DOWN/PINCH_UP/DWELL_RIGHT_CLICK_S/GRAB_AFTER_PINCH_S` + calibration JSON.
+Diagnostics: `gesture_daemon` publishes `last_action`/`last_action_ts` (click/double/right/
+grab/drop) → HUD chip + `cursor_overlay` draws an expanding **ripple** (cyan click · purple
+right · amber grab) at the cursor when one fires. `test_gesture_engine` 54→58 (+slow-tap=left,
+thumb-near-index=grab, curled-click-no-bleed, env-tunable), `test_gesture_calibration` +knobs
+round-trip; **suite 315→325**. **Live-gate owed:** quick pinch=left, tight double=double,
+pinch-and-hold=right, fist=grab-drag; watch the ripple colour matches intent; tune
+`JARVIS_PINCH_DOWN`/`JARVIS_DWELL_RIGHT_CLICK_S` if his hand/camera need it.
+
+### 6.4 Camera source auto-select — DroidCam + IP Webcam (NEW 2026-07-19, G6.3)
+Today one source: `JARVIS_CAM` (int index or a single URL), no failover
+(`gesture_daemon.py:363`, `gesture_camera._open_source`). Goal: **try a prioritized list
+of sources, use the first that opens + delivers a frame.** Sources in play:
+- **IP Webcam** (Android) — `http://192.168.0.103:8080/video` (Kaustav's; same phone as DroidCam
+  — 192.168.0.103, IP Webcam :8080 vs DroidCam :4747; both use the phone cam so only one runs at a time).
+- **DroidCam WiFi** — `http://192.168.0.103:4747/video` (Kaustav's, works; MJPEG path `/video`).
+- **DroidCam USB** — NOT working; two fix paths: (a) DroidCam PC client's virtual-webcam
+  driver → shows up as a normal `cv2.VideoCapture` **index** (0/1) via CAP_DSHOW; (b) ADB
+  reverse: `adb forward tcp:4747 tcp:4747` then `http://127.0.0.1:4747/video`.
+Design: `JARVIS_CAM_SOURCES` = comma-list (index or URL), tried in order with a fast
+open+first-frame probe (short timeout, don't hang on a dead URL); fall back to legacy
+single `JARVIS_CAM`. Pure probe/ordering logic is harnessable; the actual open is live.
+✅ **DONE (code, 2026-07-19):** `modules/gesture_camera.py` — `parse_sources` (comma-list,
+dedup, order-preserving, digit→index, legacy fallback), `url_reachable` (TCP connect probe,
+injectable `connect`, so a dead host fails in ~timeout instead of blocking cv2),
+`open_first_available` (URL→reachability gate then `_open_source`; index→straight open;
+first working `(cap, source)` wins; all-fail → `CameraError("absent")` with a per-source
+summary), `make_frame_source` (auto-select + wrap, `FrameSource` now accepts a pre-opened
+`cap` so the reader thread never re-opens). `gesture_daemon._session` uses
+`make_frame_source(parse_sources(JARVIS_CAM_SOURCES, JARVIS_CAM), …)`, logs the chosen
+source, sets `gesture_state["camera"]` to it. `test_gesture_camera.py` 28/28; suite 287→315.
+Recommended `.env` for Kaustav (both apps on phone 192.168.0.103, one runs at a time):
+`JARVIS_CAM_SOURCES=http://192.168.0.103:4747/video,http://192.168.0.103:8080/video,0`
+(DroidCam WiFi first, IP Webcam second, local index last). **USB still owed** — needs from
+Kaustav: DroidCam PC client installed (→ USB = a webcam index) or ADB path
+(`adb forward tcp:4747 tcp:4747` → `127.0.0.1:4747/video`); + app version. **Live-gate:**
+kill the first source mid-run / start with only the 2nd app streaming → daemon picks the
+reachable one; confirm a fully-dead list logs the summary + retries in 30s.
 
 ---
 
@@ -323,6 +416,14 @@ All gesture/UX code is committed but UNPUSHED on `feat/cloud-gateway`. Owed befo
   10s) — not finish early and vanish. On a recognized face → green lock-on + "IDENTITY
   CONFIRMED — <USER>"; on no match → red reject before the voice challenge. Confirm it
   never "outruns" the scan, and that an un-updated path still shows the legacy overlay.
+- **G6.2 gesture click/grab:** engage, then: a QUICK thumb-index pinch → LEFT click (a
+  ripple should flash cyan at the cursor); two quick pinches same spot → DOUBLE; pinch-AND-
+  HOLD (~1s) → RIGHT click (purple ripple); close a FIST → grab-drag (amber ripple), open to
+  drop. Confirm left/double actually fire now, right-click NO LONGER fires on quick taps, and
+  a grab with the thumb tucked near the index still grabs (not a right-click). If his hand/
+  camera need it: `JARVIS_DWELL_RIGHT_CLICK_S` higher = harder to trigger right-click,
+  `JARVIS_PINCH_DOWN` lower = pinch needs a tighter touch (more of a closed hand reads as
+  grab). Tune live, then `w`-save via the calibration wizard.
 - **G5.5 precision:** engage, then move the hand VERY slowly onto a tiny target (a window
   × button, a text caret between two characters) — the cursor should hold steady and let
   you land it, not wobble past. A fast flick must feel unchanged (no lag). Confirm the
