@@ -186,8 +186,27 @@ JARVIS_CAM_MIRROR=                  # 1 to flip horizontally if the gesture curs
 JARVIS_GESTURE_OVERLAY=1            # cursor-halo/toast overlay (0 = off; the kill switch if
                                     # anything ever paints over the desktop)
 JARVIS_OVERLAY_DEADMAN_S=20         # overlay self-exits after this long with no state frame
+JARVIS_CAMERA_STREAM=1              # GET /api/camera/stream — MJPEG re-broadcast of the SHARED
+                                    # camera for the HUD's live face-auth feed. Never opens a
+                                    # camera itself (503 when nothing is publishing) and is
+                                    # LOOPBACK-ONLY; 0 disables it outright.
+JARVIS_FACE_UNCERTAIN_FLOOR=0.25    # a non-owner face scoring above this is treated as "probably
+                                    # the owner off-axis" and counts half towards a stranger alert
+JARVIS_STRANGER_CONFIRM=3           # evidence needed before asserting a stranger (per face check,
+                                    # ~0.5-1.5s apart) — stops one off-axis glance alerting on you
+JARVIS_STRANGER_WINDOW_S=3          # gap that breaks the stranger streak
 JARVIS_FULL_DUPLEX=1
 JARVIS_AEC=1
+
+# --- Presence (Track B: is he HOME even when not at the desk?) ---
+# With neither of the first two set the probe never runs. Pin a fixed (non-random)
+# MAC for the home SSID in Android WiFi settings — a MAC match survives DHCP moves.
+JARVIS_PHONE_IP=                    # phone's LAN IP
+JARVIS_PHONE_MAC=                   # phone's WiFi MAC (preferred signal)
+JARVIS_PRESENCE_PORTS=8080,4747     # phone ports to try (IP Webcam, DroidCam)
+JARVIS_PRESENCE_INTERVAL=60         # seconds between probes
+JARVIS_PRESENCE_AWAY_GRACE=180      # unbroken miss streak before declaring AWAY (phones sleep
+                                    # their WiFi radio — any hit means HOME immediately)
 
 # --- Integrations (optional) ---
 JARVIS_GOOGLE_CREDENTIALS=credentials/client_secret.json

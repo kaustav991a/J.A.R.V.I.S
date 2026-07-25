@@ -472,6 +472,11 @@ class GestureDaemon:
                     # control is still (correctly) allowed.
                     gesture_state["owner"] = (
                         (now - self._last_owner_t) <= self.OWNER_GRACE_S)
+                    # Track B: hand the desk verdict to presence_probe (push, not
+                    # pull — that module must never import the camera stack) so
+                    # owner_notify can route "he's right here" vs "he's home".
+                    from modules import presence_probe
+                    presence_probe.note_desk_presence(gesture_state["owner"])
                     if stranger.update(res.stranger_present, now,
                                        uncertain=res.uncertain):
                         gesture_state["stranger"] = True

@@ -769,6 +769,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[GESTURE] daemon failed to start: {e}", flush=True)
 
+    # --- Track B: phone-on-LAN presence probe (§6.2). Decides whether a
+    #     proactive alert talks to the room, buzzes the phone, or both. Self-
+    #     disables when neither JARVIS_PHONE_IP nor JARVIS_PHONE_MAC is set.
+    presence_monitor = None
+    try:
+        from modules.presence_probe import PresenceMonitor
+        presence_monitor = PresenceMonitor()
+        presence_monitor.start()
+    except Exception as e:
+        print(f"[PRESENCE] probe failed to start: {e}", flush=True)
+
     # --- Phase 7.2: Start Zero-CPU Proactive Scheduler ---
     from background_monitor import ScheduleDaemon
     scheduler_daemon = ScheduleDaemon(asyncio.get_running_loop(), active_user,
@@ -888,6 +899,8 @@ async def lifespan(app: FastAPI):
     try:
         from gesture_daemon import gesture_daemon
         gesture_daemon.stop()
+        if presence_monitor is not None:
+            presence_monitor.stop()
     except Exception:
         pass
     is_shutting_down.set()
@@ -989,6 +1002,15 @@ async def vision_state():
     except Exception as e:
         print(f"[API] Vision state error: {e}")
         return {"camera_active": False, "camera_url": None, "detections": [], "error": str(e)}
+
+@app.get("/api/presence/state")
+async def presence_state():
+    """Track B presence for the HUD: fused verdict + which signal carried it."""
+    try:
+        from modules import presence_probe
+        return presence_probe.snapshot()
+    except Exception as e:  # noqa: BLE001
+        return {"presence": "unknown", "error": str(e)}
 
 @app.get("/api/camera/stream")
 async def camera_stream_endpoint(request: Request, fps: float | None = None):

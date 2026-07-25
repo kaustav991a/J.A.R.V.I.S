@@ -71,13 +71,20 @@ async def send_to_phone(text: str) -> bool:
     return False
 
 
-async def notify_owner(message: str, *, speak: bool = True,
-                       phone: bool = True,
+async def notify_owner(message: str, *, speak: bool | None = None,
+                       phone: bool | None = None,
                        hud_payload: Optional[dict] = None) -> dict:
     """Fan one message out to desk HUD + desk TTS + phone.
 
     speak=False suppresses TTS (standby mode / owner known absent).
     phone=False keeps it desk-only (ambient chatter should never buzz a phone).
+    Leaving either as None (the default) asks Track B presence
+    (`modules/presence_probe`) where the owner actually is: AT_DESK = desk only,
+    HOME-not-at-desk = desk + phone, AWAY = phone only (don't talk to an empty
+    room). With presence unconfigured or not yet probed this resolves to
+    speak+phone — identical to the pre-Track-B behaviour, because silence is the
+    one failure mode an alert path must not have. An explicit True/False from the
+    caller always wins.
     hud_payload overrides the default HUD frame (e.g. security_override).
     Returns {"hud": bool, "tts": bool, "phone": bool} — what actually delivered.
     """
@@ -85,6 +92,15 @@ async def notify_owner(message: str, *, speak: bool = True,
     if not message or not message.strip():
         return report
     clean = message.strip()
+
+    if speak is None or phone is None:
+        try:
+            from modules import presence_probe
+            route = presence_probe.presence_routing()
+        except Exception:      # noqa: BLE001 — routing must never block an alert
+            route = {"speak": True, "phone": True}
+        speak = route["speak"] if speak is None else speak
+        phone = route["phone"] if phone is None else phone
 
     if _broadcast_fn is not None:
         try:
