@@ -427,6 +427,9 @@ function App() {
             stage: data.status.slice("auth_face_".length),
             user: data.user,
             reason: data.reason,
+            // normalised [x,y,w,h] of the face the recogniser actually found
+            // (matching stage only) — drawn over the live feed by the overlay
+            box: data.box,
           });
         } else if (
           ["booting", "waking", "online", "offline", "security_listening",

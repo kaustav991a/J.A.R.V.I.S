@@ -30,6 +30,34 @@ $fa-red: #ff3b3b;
   overflow: hidden;
 }
 
+// Live camera behind the scan graphics (MJPEG off the shared frame bus). Dimmed
+// + tinted so the cyan reticle stays the focus and a bright room can't wash the
+// brackets out; absent entirely when the endpoint 503s (no camera owner).
+.fa-feed {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.55;
+  filter: grayscale(0.5) contrast(1.1) brightness(0.8);
+  // the feed is mirrored so it reads like a mirror, matching what the gesture
+  // stack shows the owner (the recogniser sees the un-mirrored frame — this is
+  // presentation only)
+  transform: scaleX(-1);
+}
+
+// The face box the recogniser actually locked onto (matching stage). Its LEFT is
+// mirrored in JSX (1 - x - w) to match the mirrored feed — a scaleX(-1) here
+// would only flip the rectangle in place, leaving it beside the face.
+.fa-face-box {
+  position: absolute;
+  border: 2px solid var(--fa);
+  box-shadow: 0 0 12px var(--fa);
+  transition: left 0.18s ease, top 0.18s ease, width 0.18s ease, height 0.18s ease;
+  pointer-events: none;
+}
+
 .fa-bracket {
   position: absolute;
   width: 46px;

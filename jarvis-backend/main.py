@@ -990,6 +990,46 @@ async def vision_state():
         print(f"[API] Vision state error: {e}")
         return {"camera_active": False, "camera_url": None, "detections": [], "error": str(e)}
 
+@app.get("/api/camera/stream")
+async def camera_stream_endpoint(request: Request, fps: float | None = None):
+    """MJPEG re-broadcast of the SHARED camera, for the HUD's live face-auth feed.
+
+    Deliberately narrow (see modules/camera_stream.py): it never opens a camera,
+    it only re-serves frames an owner already published to `frame_bus`, so a
+    browser tab can't become the second consumer that kills the phone stream. No
+    owner publishing -> 503 and the overlay keeps its abstract animation.
+
+    Loopback-only + `JARVIS_CAMERA_STREAM=0` kill switch: unlike the rest of this
+    local API, the payload here is a live view of the owner's desk.
+    """
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
+
+    from modules import camera_stream, frame_bus
+
+    if not camera_stream.stream_enabled():
+        raise HTTPException(status_code=404, detail="camera stream disabled")
+    client_host = request.client.host if request.client else None
+    if not camera_stream.is_local_client(client_host):
+        print(f"[API] camera stream refused for non-loopback client {client_host}")
+        raise HTTPException(status_code=403, detail="camera stream is loopback-only")
+    if not frame_bus.active():
+        raise HTTPException(status_code=503, detail="no camera owner is publishing")
+
+    import cv2 as _cv2
+
+    def _encode(frame):
+        ok, buf = _cv2.imencode(".jpg", frame,
+                               [int(_cv2.IMWRITE_JPEG_QUALITY), 70])
+        return buf.tobytes() if ok else None
+
+    # Sync generator on purpose: Starlette iterates it in a threadpool, so the
+    # blocking pace-sleep can't stall the event loop.
+    gen = camera_stream.mjpeg_stream(
+        lambda after: frame_bus.latest(after_seq=after), _encode, fps=fps)
+    return StreamingResponse(gen, media_type=camera_stream.CONTENT_TYPE,
+                             headers={"Cache-Control": "no-store"})
+
 @app.get("/api/gesture/state")
 async def gesture_state_api():
     """Gesture/presence daemon state for the HUD (mirrors the ws gesture_state frames)."""
@@ -2162,8 +2202,23 @@ async def websocket_endpoint(websocket: WebSocket):
                 # The overlay HOLDS on this stage until success/fail arrives, so
                 # the animation never outruns the real (up to 10s) scan.
                 await safe_send(auth_status.face_frame("scanning"))
+
+                # Real mid-scan progress (G6.1 follow-up): scan_for_faces calls
+                # this from its worker thread the moment a face box is found and
+                # recognition starts, so the overlay lifts off the idle scan loop
+                # onto a "MATCHING" state with the actual box drawn over the live
+                # feed — instead of animating blind for the whole window.
+                # schedule_ui_update is the thread-safe leg (same one the gesture
+                # daemon uses); box arrives in pixels and travels normalised.
+                def _face_phase(stage, box=None, frame_size=None):
+                    from socket_manager import schedule_ui_update
+                    nbox = (auth_status.normalise_box(box, frame_size[0], frame_size[1])
+                            if box and frame_size else None)
+                    schedule_ui_update(auth_status.face_frame(stage, box=nbox))
+
                 # Turn on the IP stream for up to 10 seconds to look for a face
-                detected_face = await asyncio.to_thread(vision.scan_for_faces, 10)
+                detected_face = await asyncio.to_thread(
+                    vision.scan_for_faces, 10, _face_phase)
                 
                 # --- BIOMETRIC SUCCESS BRANCHES ---
                 if detected_face == "KAUSTAV":

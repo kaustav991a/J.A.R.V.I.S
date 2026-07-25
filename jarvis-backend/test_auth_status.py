@@ -65,9 +65,44 @@ def test_all_valid_stages_build():
     check(ok, "every VALID_STAGES entry builds a well-formed frame")
 
 
+def test_matching_carries_normalised_box():
+    fr = a.face_frame("matching", box=[0.25, 0.1, 0.5, 0.4])
+    check(fr == {"status": "auth_face_matching", "box": [0.25, 0.1, 0.5, 0.4]},
+          "matching frame carries the box only")
+    check("box" not in a.face_frame("matching"),
+          "matching without a box stays minimal")
+
+
+def test_normalise_box_maps_pixels_to_fractions():
+    # 640x480 frame, face at (160,120) sized 320x240 = the middle half
+    check(a.normalise_box((160, 120, 320, 240), 640, 480) == [0.25, 0.25, 0.5, 0.5],
+          "pixel box -> 0..1 fractions")
+
+
+def test_normalise_box_clamps_to_the_frame():
+    # a detector box running off the right/bottom edge must stay inside 0..1,
+    # or the overlay draws a rectangle outside the feed
+    got = a.normalise_box((500, 400, 300, 200), 640, 480)
+    check(got is not None and got[0] + got[2] <= 1.0 and got[1] + got[3] <= 1.0,
+          "overflowing box clamped inside the frame")
+
+
+def test_normalise_box_rejects_degenerate_input():
+    for bad, w, h in (((0, 0, 0, 0), 640, 480),      # empty rect
+                      ((0, 0, 10, 10), 0, 480),      # zero-width frame
+                      ((0, 0, 10, 10), 640, 0),      # zero-height frame
+                      (None, 640, 480),              # no box
+                      ((1, 2, 3), 640, 480)):        # wrong arity
+        check(a.normalise_box(bad, w, h) is None, f"degenerate box rejected: {bad} {w}x{h}")
+
+
 TESTS = [test_start_and_scanning_are_minimal, test_success_carries_user_only,
          test_fail_carries_reason_only, test_none_fields_omitted,
-         test_unknown_stage_rejected, test_all_valid_stages_build]
+         test_unknown_stage_rejected, test_all_valid_stages_build,
+         test_matching_carries_normalised_box,
+         test_normalise_box_maps_pixels_to_fractions,
+         test_normalise_box_clamps_to_the_frame,
+         test_normalise_box_rejects_degenerate_input]
 
 
 def main():

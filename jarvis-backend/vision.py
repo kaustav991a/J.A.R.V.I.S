@@ -54,25 +54,61 @@ class _BusFrames:
 
 
 class _CapFrames:
-    """Frames from a capture this scan opened itself."""
+    """Frames from a capture this scan opened itself.
 
-    def __init__(self, cap):
+    It PUBLISHES what it reads: owning the camera makes this scan the bus owner
+    for its duration, so anything else that wants frames (the HUD's live
+    face-auth feed, ambient vision) reads them here instead of opening a second
+    capture the phone stream can't serve. Symmetric with gesture_daemon.
+    """
+
+    def __init__(self, cap, source: str | None = None):
         self._cap = cap
+        self._source = source
 
     def read(self):
-        return self._cap.read()
+        ret, frame = self._cap.read()
+        if ret and frame is not None:
+            from modules import frame_bus
+            frame_bus.publish(frame, source=self._source)
+        return ret, frame
 
     def release(self):
         try:
             self._cap.release()
         except Exception:
             pass
+        # we were the owner — don't leave readers thinking a camera is live.
+        # (If the gesture daemon started mid-scan it re-publishes within a frame,
+        # so clearing here can only ever cost one frame of staleness.)
+        from modules import frame_bus
+        frame_bus.clear()
 
 
 # =========================
 # MAIN SCAN FUNCTION
 # =========================
-def scan_for_faces(timeout=10):
+def scan_for_faces(timeout=10, on_phase=None):
+    """Scan the shared camera for a known face.
+
+    `on_phase(stage, box=None, frame_size=None)` is an OPTIONAL progress callback
+    (G6.1): it fires with "matching" + the pixel face box the moment the Haar
+    pass finds a face and DeepFace verification starts, and with "scanning" again
+    if that face fails to match and the loop keeps looking. It exists so the
+    FaceAuthOverlay can show the real phases instead of a self-timed animation.
+    Called from THIS thread (the scan runs in to_thread), so the callback must be
+    thread-safe — main.py routes it through socket_manager.schedule_ui_update.
+    Any exception it raises is swallowed: progress reporting must never be able
+    to fail an authentication.
+    """
+
+    def phase(stage, box=None, frame_size=None):
+        if on_phase is None:
+            return
+        try:
+            on_phase(stage, box=box, frame_size=frame_size)
+        except Exception as e:      # noqa: BLE001 — never fail auth over a UI frame
+            print(f"[VISION] on_phase({stage}) failed: {e}")
 
     identities = get_known_identities()
     if not identities:
@@ -111,7 +147,7 @@ def scan_for_faces(timeout=10):
         except CameraError as e:
             print(f"[VISION] Camera unreachable, skipping facial scan. [{e.kind}] {e}")
             return None
-        provider = _CapFrames(cap)
+        provider = _CapFrames(cap, source=str(chosen))
         print(f"[VISION] camera source: {chosen}")
 
     # Haar Cascade (fast)
@@ -122,6 +158,7 @@ def scan_for_faces(timeout=10):
     detected_name = None
 
     frame_count = 0
+    matching_reported = False
 
     # 🔥 cache system
     last_detected = None
@@ -158,6 +195,7 @@ def scan_for_faces(timeout=10):
 
         if len(faces) > 0:
             print("[VISION] Face detected")
+            matching_reported = True
 
             # scale back to original frame
             (x, y, w, h) = faces[0]
@@ -167,6 +205,11 @@ def scan_for_faces(timeout=10):
 
             if face_crop.size == 0:
                 continue
+
+            # real "matching" phase: a face IS on camera and recognition is
+            # running. The overlay lifts off its idle scan loop here.
+            phase("matching", box=(x, y, w, h),
+                  frame_size=(frame.shape[1], frame.shape[0]))
 
             temp_path = "temp_face.jpg"
             cv2.imwrite(temp_path, face_crop)
@@ -214,6 +257,12 @@ def scan_for_faces(timeout=10):
                 last_time = time.time()
 
                 break
+
+            # a face was there but nobody we know — back to searching, so the
+            # overlay doesn't sit on "matching" for the rest of the window.
+            if matching_reported:
+                matching_reported = False
+                phase("scanning")
 
     provider.release()
     cv2.destroyAllWindows()
