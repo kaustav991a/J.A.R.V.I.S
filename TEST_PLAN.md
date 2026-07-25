@@ -4,7 +4,7 @@
 > Electron build. Split into **PART A — Automatic** (Claude runs, no human/hardware)
 > and **PART B — Manual** (Kaustav runs: voice / camera / phone / GUI). Run PART A
 > after every change; run PART B once, right before Electron. Roadmap: `JARVIS_MASTER_ROADMAP.md`.
-> Last automatic baseline: **2026-07-26 — 537/537 green, 23/23 harnesses, ~12 s.**
+> Last automatic baseline: **2026-07-26 — 616/616 green, 26/26 harnesses, ~11 s.**
 > Legend: ✅ pass · ⚠️ partial · ❌ fail · ☐ not yet run.
 
 ---
@@ -25,6 +25,8 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 | Harness | Checks | Covers | Status |
 |---|---:|---|---|
 | `test_action_parser.py` | 24 | LLM-reply → action parse spine (fences, prose, arrays, truncation) | ✅ |
+| `test_agent_core.py` | 24 | agentic loop: caps, one-repair, governance hook, honest stops | ✅ |
+| `test_agent_tools.py` | 27 | tool registry: curated sets, tier adapter, refusal sentinels | ✅ |
 | `test_ambient_camera.py` | 15 | `ambient_vision` resolves its camera off `JARVIS_CAM_SOURCES` | ✅ |
 | `test_auth_status.py` | 18 | face-auth WS frame contract + `normalise_box` (G6.1) | ✅ |
 | `test_boot_preflight.py` | 14 | boot preflight: required/recommended env + model files | ✅ |
@@ -45,9 +47,10 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 | `test_owner_notify.py` | 20 | owner fan-out (desk/TTS/phone) + presence-aware legs | ✅ |
 | `test_presence_probe.py` | 25 | ARP/TCP/ICMP ladder, asymmetric debounce, fuse + routing | ✅ |
 | `test_speaker_errors.py` | 5 | TTS failure logged + swallowed, flag still resets | ✅ |
+| `test_tool_call.py` | 28 | tool-turn normalisation + `universal_tool_call` cascade (fake HTTP) | ✅ |
 | `test_watchdog_policy.py` | 14 | respawn give-up policy + owner-down alert (live log untouched) | ✅ |
 | `test_working_memory_lock.py` | 4 | RLock concurrency + snapshot copies | ✅ |
-| **Total** | **537** | | **✅ 0 failed** |
+| **Total** | **616** | | **✅ 0 failed** |
 
 **A2 — semi-automatic (need the backend up; Claude can drive):** `test_ping.py`,
 `test_ui_bridge_e2e.py`. Start `uvicorn main:app --host 127.0.0.1 --port 8000`, then run.

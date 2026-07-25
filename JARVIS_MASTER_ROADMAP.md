@@ -39,7 +39,8 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.6** gesture vocab decision | ✅ DONE | §4 |
 | **G5.1** relative trackpad + accel + clutch + dwell right-click | ✅ DONE, live-gate owed | §3.3, §4 |
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
-| **Automatic test baseline** | ✅ **537 checks / 23 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted) | `TEST_PLAN.md` |
+| **Automatic test baseline** | ✅ **616 checks / 26 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted) | `TEST_PLAN.md` |
+| **Agentic core** (Tier C #12) | 🟡 phases 1–3 done (router tools path, loop, tool registry) — **nothing wired yet**, phase 4 next | §5 Tier C |
 | **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); **click-to-talk DONE 2026-07-26** (`POST /api/listen`), live-gate owed | §5 |
 | **G5.3** cursor-halo + edge-toast overlays | ✅ code done, live-gate owed | §5 |
@@ -391,6 +392,39 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
       validation + caps, fake-model harness; (3) tool registry wrapping ~8 existing
       `action_engine` handlers with a governance tier each; (4) wire ONE intent to the loop,
       everything else unchanged; (5) sub-agents (recursion) + compaction once 1–4 hold.
+    - ✅ **PHASES 1–3 DONE 2026-07-26** (`947785c` + the phase-3 commit). Nothing is wired
+      yet, so today's one-shot path is untouched. **P1** — NEW `modules/tool_calls.py`
+      (`ToolTurn`/`ToolCall` + `normalise_openai_*`, dependency-free) and
+      `llm_router.universal_tool_call()`: cascade groq → gemini → openrouter, **no ollama
+      and no local tail** (a hallucinated tool call is worse than a slow sentence; if every
+      cloud provider is out, an agent task fails honestly). Gemini goes through Google's
+      **OpenAI-compatibility endpoint** rather than the SDK's `FunctionDeclaration` dialect,
+      so all three providers share one request/response path. Separate `GROQ_TOOL_MODEL`
+      (`llama-3.3-70b-versatile`) and `OPENROUTER_TOOL_MODELS` — the 8B instant model cannot
+      hold a tool loop, and plenty of good free chat models reject `tools` outright.
+      Malformed arguments are FLAGGED with the raw string kept (never read as "no
+      arguments", which would run a tool with defaults nobody asked for); a turn with
+      neither text nor a call is a failure, not a success. **P2** — NEW
+      `modules/agent_core.py`: decide→act→observe with everything injected
+      (`call_model`/`execute`/`authorize`/`clock`). Caps report `stop_reason` + `ok=False`
+      and never narrate success; more than 8 tools is an explicit refusal rather than a
+      silent trim; ONE repair per bad call; tool errors are handed back to the model (a
+      missing file is information) but three in a row stops the run; truncation is
+      announced. **P3** — NEW `modules/agent_tools.py`: 10 curated tools over real
+      `action_engine` action_types in named sets (`research` — read-only by construction,
+      the safe first intent — plus `files` and `authoring`), `governance_manager.get_tier()`
+      as the single tier source, and CONFIRM **refused** in an unattended run (a
+      self-approving CONFIRM would defeat the tier system). `ActionEngine`'s
+      `GOVERNANCE_BLOCKED:` / `GOVERNANCE_CONFIRM:` / `TIER_BLOCKED:` sentinels **raise**
+      instead of being returned — handing a refusal back as a tool *result* reads to the
+      model as success. Two static cross-checks assert every registered action_type exists
+      in `governance.json` AND has a dispatch branch in `action_engine.py` (a typo would
+      fail-safe to BLOCK and look like policy rather than a bug). test_tool_call 28 +
+      test_agent_core 24 + test_agent_tools 27 → **SUITE 537 → 616, 26 harnesses.**
+      **NEXT = phase 4:** wire ONE intent (the `research` set) behind an opt-in flag, with a
+      `runner` that hands the coroutine to the MAIN event loop — the engine shares state
+      with the running app, so spinning a second loop is not a safe default. Phase 4 is the
+      first phase that changes live behaviour, so it ships with a live gate.
     - **Reference path (NOT chosen — paid): Claude Agent SDK** (Anthropic's lib — gives an app the exact
       Claude-Code capabilities: agentic tool loop, sub-agents, MCP client, skills, context
       compaction). JARVIS already runs Anthropic cloud (cloud_first reasoning) so this is

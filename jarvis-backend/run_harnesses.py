@@ -36,6 +36,7 @@ HERE = Path(__file__).resolve().parent
 HARNESSES = [
     "test_action_parser.py",
     "test_agent_core.py",
+    "test_agent_tools.py",
     "test_ambient_camera.py",
     "test_auth_status.py",
     "test_boot_preflight.py",
