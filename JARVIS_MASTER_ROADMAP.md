@@ -165,6 +165,36 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
    stdin EOF like `lock_overlay.py`. Live-gate owed (see §7). **Follow-up:** click-flash
    (engine exposes no pinch pose — click is an intent, not `pose`; add a click pulse when
    state carries the click event). Biggest *felt* gesture jump.
+   🚨 **BLACK-DESKTOP INCIDENT + HARDENING 2026-07-25.** Kaustav's whole screen went dark
+   and could not be dismissed; it only came back when he Alt+F4'd the terminal running the
+   backend. Diagnosis: this overlay. Three properties combined into a desk-killer — ONE
+   window spanning the entire virtual desktop, filled near-black (`BG=#010203`) and made
+   invisible *purely* by a colour-key; `WS_EX_NOACTIVATE`, so Alt+F4 can never target it
+   (it goes to whatever *is* focused) and `overrideredirect`+`WS_EX_TOOLWINDOW` keep it out
+   of the taskbar and Alt-Tab; and `keep_topmost()` re-lifting every second. When the
+   colour-key silently failed, that was an opaque black screen with no dismiss path — dying
+   only on stdin EOF, i.e. when the parent backend was killed. Not the G3 soft-lock: that
+   overlay calls `focus_force()`, so the first Alt+F4 would have closed it, and
+   monitor-power-off is undone by any keypress. THREE INDEPENDENT GUARDS now: (1) **no
+   fullscreen window** — halo (~72px, follows the cursor), ripple (~132px, pinned at the
+   action point) and toast (sized to its text) each get their own small window, so a
+   transparency failure is a floating square, not a dead desktop; `box_place` clamps the
+   window to the desktop while moving the *drawing* within it, so the ring still sits
+   exactly on the cursor at screen edges. (2) **the colour-key is verified, not assumed** —
+   we call `SetLayeredWindowAttributes` ourselves *after* the exstyle change (per Win32
+   docs, setting `WS_EX_LAYERED` via `SetWindowLong` invalidates layered attributes already
+   applied, so Tk's `-transparentcolor` can't be trusted to survive `_make_click_through` —
+   the suspected root cause) and check the return; can't confirm ⇒ the process refuses to
+   draw. (3) **deadman** — exits if no state frame arrives for `JARVIS_OVERLAY_DEADMAN_S`
+   (default 20s ≈ 10 missed 2s heartbeats), not just on EOF; `_ensure_cursor_overlay`
+   respawns it. Halo/toast/ripple logic pulled out of Tk methods into pure functions →
+   NEW `test_cursor_overlay.py` **61 checks**, suite 366→**427**. Live smoke re-verified
+   (frames→EOF exit 0 with the key confirmed; quiet-pipe→deadman exit). The deadman path
+   needs `os._exit` — the reader thread is still blocked in `readline()` on a live pipe, and
+   a normal shutdown dies with `_enter_buffered_busy: could not acquire lock for <stdin>`
+   (0xC0000005). **LIVE-GATE OWED (raised priority):** confirm the halo is actually
+   invisible-except-the-ring, still click-through, and that `JARVIS_GESTURE_OVERLAY=0`
+   remains the kill switch.
 3. ✅ **G5.4 distance mitigation** — DONE (code). Key insight: MediaPipe downscales
    any input to its ~192px model, so a distant hand in a full frame is lost regardless
    of capture res — **cropping the hand ROI** (not upscaling) makes it fill the model

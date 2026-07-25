@@ -183,6 +183,9 @@ JARVIS_CAMERA_URL=                  # pin ambient vision to one stream, ignoring
 JARVIS_CAM=                         # legacy single camera (device index or URL) — fallback when
                                     # JARVIS_CAM_SOURCES is unset
 JARVIS_CAM_MIRROR=                  # 1 to flip horizontally if the gesture cursor moves inverted
+JARVIS_GESTURE_OVERLAY=1            # cursor-halo/toast overlay (0 = off; the kill switch if
+                                    # anything ever paints over the desktop)
+JARVIS_OVERLAY_DEADMAN_S=20         # overlay self-exits after this long with no state frame
 JARVIS_FULL_DUPLEX=1
 JARVIS_AEC=1
 
