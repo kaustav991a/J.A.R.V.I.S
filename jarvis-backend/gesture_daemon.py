@@ -19,7 +19,7 @@ Security model (owner = enrolled face, models/owner_embeddings.npz):
 Env:
     JARVIS_GESTURE      0 disables the whole daemon (default 1)
     JARVIS_AUTO_LOCK    0 disables the away-lock (default 1)
-    JARVIS_LOCK_AFTER   seconds of no-face+no-motion before locking (default 6)
+    JARVIS_LOCK_AFTER   seconds of no-face+no-motion before locking (default 60)
     JARVIS_CAM / JARVIS_CAM_RES / JARVIS_CAM_MIRROR /
     JARVIS_PALM_FACING / JARVIS_PALM_SIGN — same as gesture_spike.py
     JARVIS_UNLOCK_CODE  blind-typed overlay escape hatch (optional)
@@ -141,7 +141,11 @@ class GestureDaemon:
         self.thread: threading.Thread | None = None
         self.gestures_enabled = os.getenv("JARVIS_GESTURE", "1") == "1"
         self.auto_lock = os.getenv("JARVIS_AUTO_LOCK", "1") == "1"
-        self.absent_after = float(os.getenv("JARVIS_LOCK_AFTER", "6"))
+        # 60s, NOT 6s: at 6 a glance away from the camera blanked the monitor
+        # (_lock spawns the lock overlay AND powers the display off), and a fresh
+        # setup gets this default the moment face enrollment makes the gate
+        # available. Kaustav's .env runs 120.
+        self.absent_after = float(os.getenv("JARVIS_LOCK_AFTER", "60"))
         self._overlay: subprocess.Popen | None = None
         # G5.3 cursor-halo + edge-toast overlay (separate click-through process)
         self._cursor_overlay: subprocess.Popen | None = None

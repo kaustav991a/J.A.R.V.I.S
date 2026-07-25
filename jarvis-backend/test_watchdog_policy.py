@@ -11,7 +11,11 @@ rapid window resets the strike count (transient crash, not a startup fault).
 Pure decision logic — no subprocess, no server.
 """
 
+import io
 import os
+import shutil
+import tempfile
+from contextlib import redirect_stdout
 
 import watchdog
 from watchdog import RespawnPolicy
@@ -77,13 +81,44 @@ def test_spaced_crashes_never_give_up():
 
 
 def test_notify_owner_down_unconfigured_is_safe():
+    """The alert must not raise or hit the network when Telegram is unconfigured.
+
+    `watchdog.LOG_PATH` is redirected to a temp file for the duration: this test
+    used to append real "the server keeps crashing" lines to the live
+    jarvis-backend/watchdog.log, which then reads as a genuine production
+    incident when someone opens the log. Asserting on the temp file turns that
+    leak into coverage of what the alert actually writes.
+    """
     saved = {k: os.environ.pop(k, None) for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_USER_ID")}
+    tmpdir = tempfile.mkdtemp(prefix="jarvis_watchdog_test_")
+    real_log = watchdog.LOG_PATH
+    real_before = os.path.getmtime(real_log) if os.path.exists(real_log) else None
+    watchdog.LOG_PATH = os.path.join(tmpdir, "watchdog.log")
+    buf = io.StringIO()
     try:
-        watchdog._notify_owner_down("test reason")   # must not raise, no network
+        with redirect_stdout(buf):       # log() also prints; keep it out of the report
+            watchdog._notify_owner_down("test reason")   # must not raise, no network
         check(True, "give-up alert with no Telegram config does not raise")
+
+        written = ""
+        if os.path.exists(watchdog.LOG_PATH):
+            with open(watchdog.LOG_PATH, encoding="utf-8") as f:
+                written = f.read()
+        check("stopped restarting it" in written, "give-up reason is logged")
+        check("test reason" in written, "the caller's reason is included")
+        check("owner alert not sent" in written,
+              "logs that no alert went out, so silence isn't mistaken for delivery")
+        check("stopped restarting it" in buf.getvalue(),
+              "the alert also reaches stdout for a console-attached operator")
+
+        real_after = os.path.getmtime(real_log) if os.path.exists(real_log) else None
+        check(real_after == real_before,
+              "the LIVE watchdog.log is untouched (no test lines in production logs)")
     except Exception as e:  # noqa: BLE001
         check(False, f"unconfigured alert raised: {e}")
     finally:
+        watchdog.LOG_PATH = real_log
+        shutil.rmtree(tmpdir, ignore_errors=True)
         for k, v in saved.items():
             if v is not None:
                 os.environ[k] = v
