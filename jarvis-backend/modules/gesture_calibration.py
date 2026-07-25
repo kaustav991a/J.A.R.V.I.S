@@ -58,6 +58,11 @@ SCHEMA = {
     # G5.1 relative-trackpad knobs
     "mapping_mode": _mapping_mode,
     "base_gain": float,
+    # G5.5 precision (fine-target damping) — env-only until 2026-07-25
+    "precision": _to_bool,
+    "precision_gain": float,
+    "precision_v_lo": float,
+    "precision_v_hi": float,
 }
 
 

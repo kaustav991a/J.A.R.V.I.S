@@ -191,10 +191,32 @@ def test_g62_click_knobs_roundtrip_and_apply():
     os.unlink(p)
 
 
+def test_g55_precision_knobs_roundtrip_and_apply():
+    # G5.5 shipped the precision knobs as env-only; they belong in the persistable
+    # set too, or the spike's `w` save silently drops whatever was tuned live.
+    p = _tmp()
+    ok = gc.save({"precision": False, "precision_gain": 0.2,
+                  "precision_v_lo": 0.05, "precision_v_hi": 0.8}, p)
+    check(ok, "G5.5 precision knobs save")
+    got = gc.load(p)
+    check(got.get("precision") is False, "precision flag round-trips")
+    check(got.get("precision_gain") == 0.2, "precision_gain round-trips")
+    cfg = GestureConfig()
+    gc.apply_to(cfg, got)
+    check(cfg.precision is False, "precision applied to config")
+    check(abs(cfg.precision_gain - 0.2) < 1e-9, "precision_gain applied to config")
+    check(abs(cfg.precision_v_lo - 0.05) < 1e-9, "precision_v_lo applied to config")
+    check(abs(cfg.precision_v_hi - 0.8) < 1e-9, "precision_v_hi applied to config")
+    snap = gc.from_config(GestureConfig(), mirror=False)
+    check("precision_gain" in snap, "from_config now snapshots precision knobs")
+    os.unlink(p)
+
+
 TESTS = [
     test_load_missing,
     test_save_load_roundtrip,
     test_g62_click_knobs_roundtrip_and_apply,
+    test_g55_precision_knobs_roundtrip_and_apply,
     test_unknown_keys_dropped,
     test_type_coercion,
     test_corrupt_json_safe,

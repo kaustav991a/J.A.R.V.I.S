@@ -223,7 +223,21 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
     (left/double never fired). Fix: pinch_down 0.40→0.30 (pinch=real touch, closed hand=grab),
     dwell 0.5→1.5s, don't abort an active pinch on a transient fist misread, post-pinch grab
     cooldown; all env+calibration tunable; click/grab action pulse on HUD+overlay for live
-    diagnosis. `test_gesture_engine` 54→58, suite 315→**325**. Live-gate owed.
+    diagnosis. `test_gesture_engine` 54→58, suite 315→**325**.
+    ✅ **LIVE-GATED 2026-07-25** (phone IP Webcam 192.168.0.105:8080, `sensitivity=3.0`,
+    `mirror=false`, `pinch_down=0.30`, absolute mapping): 48 events — left clicks measured
+    **0.23–1.27s**, right clicks **1.54–11.14s**, so `dwell=1.5` sits inside the gap with zero
+    misclassifications; 4 clean drag_start/drag_end pairs, double-click at 0.23s, 2 engage/
+    disengage cycles, no click→drag bleed. **The first attempt at this gate silently ran the
+    OLD bug:** `models/gesture_calibration.json` held `dwell_right_click_s: 0.75` from a
+    pre-fix save, and resolution order is defaults < JSON < env, so the stale JSON shadowed
+    the corrected 1.5 default — 16 of 33 left clicks fired as right clicks. Stale key dropped;
+    `gesture_spike.py` now prints the RESOLVED click knobs at startup so shadowing can't hide
+    again. **Never lower dwell below 1.4s on this rig** (see the comment at
+    `modules/gesture_engine.py:198`). Also fixed alongside: the G5.5 precision knobs
+    (`precision`, `precision_gain`, `precision_v_lo/hi`) were missing from
+    `gesture_calibration.SCHEMA`, so `w` silently dropped any live precision tuning —
+    added + round-tripped (`test_gesture_calibration` 37→**45**, suite **351**).
 6b. ✅ **G6.3 camera source auto-select** (DONE code 2026-07-19) — spec §6.4. `JARVIS_CAM_SOURCES`
     comma-list probed in priority order (fast TCP reachability skips a dead URL before cv2 can
     hang), first that opens + delivers a frame wins; legacy single `JARVIS_CAM` fallback.

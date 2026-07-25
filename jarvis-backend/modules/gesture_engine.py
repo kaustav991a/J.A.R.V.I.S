@@ -195,6 +195,11 @@ class GestureConfig:
     # every click became a right click. Live data (Kaustav, 2026-07-19): real taps
     # held 0.2-1.4 s, intentional holds 2.9-4.5 s — a clean gap. 1.5 s makes any
     # tap a left click and only a purposeful hold a right click.
+    # LIVE-GATED 2026-07-25 (48 events, phone cam @ sensitivity 3.0): left clicks
+    # measured 0.23-1.27 s, right clicks 1.54-11.14 s — 1.5 s lands inside the
+    # 1.27/1.54 gap with zero misclassifications. DO NOT LOWER: an intermediate
+    # 0.75 s (a stale calibration JSON was shadowing this default with it) turned
+    # 16 of those 33 left clicks into right clicks, reproducing the G6.2 bug.
     dwell_right_click_s: float = 1.5
     # G6.2: after a pinch release, suppress GRAB (fist) for this long so a
     # curled-hand click doesn't bleed straight into a drag as the hand reopens

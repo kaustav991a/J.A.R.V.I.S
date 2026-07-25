@@ -80,6 +80,16 @@ def main() -> int:
     pointer = PointerBackend()
     print("control starts OFF — hold your INDEX FINGER up for 1 s to start; "
           "show the BACK of your open hand for 1.5 s to stop. ESC quits.")
+    # Effective click knobs, AFTER defaults < calibration JSON < env resolution.
+    # A stale JSON silently shadowed a corrected code default once (2026-07-25:
+    # dwell 0.75 from an old save overrode the fixed 1.5, so every gate ran the
+    # old bug) — print what is actually in force so that can't hide again.
+    print(f"click knobs: pinch_down={engine.cfg.pinch_down:.2f} "
+          f"pinch_up={engine.cfg.pinch_up:.2f} "
+          f"dwell_right_click_s={engine.cfg.dwell_right_click_s:.2f} "
+          f"grab_after_pinch_s={engine.cfg.grab_after_pinch_s:.2f} "
+          f"mapping={engine.cfg.mapping_mode} gain={engine.cfg.base_gain:.2f} "
+          f"sensitivity={engine.cfg.sensitivity:.2f}")
 
     seq = 0
     stalls = 0
