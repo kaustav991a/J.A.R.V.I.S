@@ -93,6 +93,12 @@ class AmbientVisionDaemon:
         return identities
 
     def _check_camera(self):
+        # If the gesture daemon is publishing, the camera is provably alive and
+        # this HTTP ping is both redundant and a second connection to the phone.
+        from modules import frame_bus
+
+        if frame_bus.active():
+            return True
         try:
             import urllib.request
 
@@ -100,6 +106,26 @@ class AmbientVisionDaemon:
             return True
         except Exception:
             return False
+
+    def _grab_frame(self, cv2):
+        """One frame, preferring the shared bus over opening our own capture.
+
+        This used to build a fresh VideoCapture every interval — a third reader
+        on a phone MJPEG stream that only reliably serves one, which is what
+        killed the gesture daemon mid-session. Falls back to its own capture when
+        no owner is publishing (gesture daemon off / JARVIS_GESTURE=0).
+        """
+        from modules import frame_bus
+
+        got = frame_bus.latest()
+        if got is not None:
+            return got[0]
+        cap = cv2.VideoCapture(self.camera_url)
+        if not cap.isOpened():
+            return None
+        ret, frame = cap.read()
+        cap.release()
+        return frame if ret else None
 
     def start(self):
         if not self.running:
@@ -128,14 +154,8 @@ class AmbientVisionDaemon:
 
             shared_optical_cache["camera_active"] = True
 
-            cap = cv2.VideoCapture(self.camera_url)
-            if not cap.isOpened():
-                continue
-
-            ret, frame = cap.read()
-            cap.release()
-
-            if not ret or frame is None:
+            frame = self._grab_frame(cv2)
+            if frame is None:
                 continue
 
             detected_objects = set()

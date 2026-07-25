@@ -23,6 +23,53 @@ def get_known_identities(known_faces_dir="known_faces"):
 
 
 # =========================
+# FRAME SOURCES
+# =========================
+# Two ways to get frames, one `.read()` contract, so the scan loop below doesn't
+# branch: either the shared bus (the gesture daemon owns the camera) or our own
+# capture (nobody does). See modules/frame_bus.py for why sharing is mandatory.
+
+class _BusFrames:
+    """Frames off the shared bus — never opens a camera."""
+
+    def __init__(self, poll_s: float = 0.02):
+        from modules import frame_bus
+        self._bus = frame_bus
+        self._seq = 0          # only ever consume frames we haven't seen
+        self._poll_s = poll_s
+
+    def read(self):
+        got = self._bus.latest(after_seq=self._seq)
+        if got is None:
+            # no NEW frame yet (or the owner went away). Sleep briefly so the
+            # 10s scan window isn't burned spinning on a slow publisher — the
+            # daemon drops to ~2fps when the desk is locked.
+            time.sleep(self._poll_s)
+            return False, None
+        frame, self._seq = got
+        return True, frame
+
+    def release(self):
+        pass               # we never owned the camera, nothing to hand back
+
+
+class _CapFrames:
+    """Frames from a capture this scan opened itself."""
+
+    def __init__(self, cap):
+        self._cap = cap
+
+    def read(self):
+        return self._cap.read()
+
+    def release(self):
+        try:
+            self._cap.release()
+        except Exception:
+            pass
+
+
+# =========================
 # MAIN SCAN FUNCTION
 # =========================
 def scan_for_faces(timeout=10):
@@ -45,13 +92,27 @@ def scan_for_faces(timeout=10):
     from modules.gesture_camera import (CameraError, open_first_available,
                                         parse_sources)
 
-    sources = parse_sources(os.getenv("JARVIS_CAM_SOURCES"), os.getenv("JARVIS_CAM"))
-    try:
-        cap, chosen = open_first_available(sources, probe_timeout=1.5)
-    except CameraError as e:
-        print(f"[VISION] Camera unreachable, skipping facial scan. [{e.kind}] {e}")
-        return None
-    print(f"[VISION] camera source: {chosen}")
+    # PREFER THE SHARED BUS. If the gesture daemon already owns the camera, read
+    # its frames instead of opening a second capture: doing that killed the
+    # daemon's stream outright ("camera stream died (30 consecutive read
+    # failures)", measured 2026-07-25), and since face-auth runs at every wake it
+    # dropped gesture control precisely when the owner walked up. Only when no
+    # owner is publishing (daemon off, JARVIS_GESTURE=0, camera still coming up)
+    # do we open our own.
+    from modules import frame_bus
+
+    if frame_bus.active():
+        provider = _BusFrames()
+        print(f"[VISION] camera source: {frame_bus.source()} (shared with gesture daemon)")
+    else:
+        sources = parse_sources(os.getenv("JARVIS_CAM_SOURCES"), os.getenv("JARVIS_CAM"))
+        try:
+            cap, chosen = open_first_available(sources, probe_timeout=1.5)
+        except CameraError as e:
+            print(f"[VISION] Camera unreachable, skipping facial scan. [{e.kind}] {e}")
+            return None
+        provider = _CapFrames(cap)
+        print(f"[VISION] camera source: {chosen}")
 
     # Haar Cascade (fast)
     cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
@@ -70,7 +131,7 @@ def scan_for_faces(timeout=10):
     print("[VISION] Scanning...")
 
     while time.time() - start_time < timeout:
-        ret, frame = cap.read()
+        ret, frame = provider.read()
         if not ret:
             continue
 
@@ -154,7 +215,7 @@ def scan_for_faces(timeout=10):
 
                 break
 
-    cap.release()
+    provider.release()
     cv2.destroyAllWindows()
 
     if detected_name:

@@ -378,6 +378,7 @@ class GestureDaemon:
             CameraError, make_frame_source, parse_sources)
         from modules.gesture_engine import GestureConfig, GestureEngine
         from modules.gesture_pointer import PointerBackend
+        from modules import frame_bus
 
         # G6.3 camera auto-select: probe a prioritized list (JARVIS_CAM_SOURCES,
         # comma-separated indices/URLs), use the first that opens + delivers a
@@ -439,6 +440,15 @@ class GestureDaemon:
                 if frame is None:
                     engine.process(None, time.perf_counter())
                     continue
+                # This daemon OWNS the camera; scan_for_faces and ambient_vision
+                # read its frames off the bus instead of opening their own
+                # capture, which used to kill this stream mid-session (an IP
+                # Webcam MJPEG endpoint won't serve three readers). Published
+                # PRE-mirror: that is the orientation those two consumers saw
+                # from their own captures, so sharing changes contention only,
+                # never what they recognise. face_gate below keeps using the
+                # mirrored frame, as enroll_face does.
+                frame_bus.publish(frame, source=str(fs.source))
                 if mirror:
                     frame = cv2.flip(frame, 1)
                 now = time.perf_counter()
@@ -569,6 +579,9 @@ class GestureDaemon:
             if landmarker is not None:
                 landmarker.close()
             fs.release()
+            # camera is gone — drop the shared frame so no reader treats the last
+            # one as live and skips opening its own capture
+            frame_bus.clear()
 
 
 gesture_daemon = GestureDaemon()
