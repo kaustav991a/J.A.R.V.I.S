@@ -95,6 +95,7 @@ WS_EX_TRANSPARENT = 0x00000020   # whole window is click-through
 WS_EX_TOOLWINDOW = 0x00000080    # no taskbar entry
 WS_EX_NOACTIVATE = 0x08000000    # never steals focus
 LWA_COLORKEY = 0x00000001
+GA_ROOT = 2                      # GetAncestor: the real top-level window
 
 
 # =========================================================================== #
@@ -214,20 +215,52 @@ def _cursor_pos():
     return pt.x, pt.y
 
 
-def _make_click_through(hwnd: int) -> None:
-    """OR the layered / click-through / no-activate bits into the exstyle."""
+def _exstyle_fns():
     import ctypes
 
     u = ctypes.windll.user32
     try:
-        get = u.GetWindowLongPtrW
-        setl = u.SetWindowLongPtrW
+        return u.GetWindowLongPtrW, u.SetWindowLongPtrW
     except AttributeError:  # 32-bit Python
-        get = u.GetWindowLongW
-        setl = u.SetWindowLongW
+        return u.GetWindowLongW, u.SetWindowLongW
+
+
+def toplevel_hwnd(win) -> int:
+    """The REAL top-level HWND behind a Tk widget.
+
+    `winfo_id()` on a Toplevel returns Tk's INNER child window (class TkChild);
+    the window Windows actually manages is its parent (class TkTopLevel). Styling
+    the child is silently useless: WS_EX_TRANSPARENT and WS_EX_NOACTIVATE only
+    affect hit-testing and activation on the top-level, and a colour-key applied
+    to the child "succeeds" while keying nothing that matters. That mismatch is
+    why clicks landed ON the halo instead of the app beneath — verified live:
+    winfo_id -> TkChild, GetAncestor/GetParent/wm_frame all -> TkTopLevel.
+    """
+    import ctypes
+
+    hwnd = ctypes.windll.user32.GetAncestor(win.winfo_id(), GA_ROOT)
+    if hwnd:
+        return hwnd
+    frame = win.wm_frame()            # Tk's own answer; hex string on Windows
+    return int(frame, 16) if isinstance(frame, str) else int(frame)
+
+
+def _make_click_through(hwnd: int) -> None:
+    """OR the layered / click-through / no-activate bits into the exstyle."""
+    get, setl = _exstyle_fns()
     ex = get(hwnd, GWL_EXSTYLE)
     ex |= (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
     setl(hwnd, GWL_EXSTYLE, ex)
+
+
+def _exstyle_missing(hwnd: int) -> list:
+    """Which of the bits we require are NOT actually set on `hwnd`."""
+    get, _ = _exstyle_fns()
+    ex = get(hwnd, GWL_EXSTYLE)
+    return [name for name, bit in (("TRANSPARENT", WS_EX_TRANSPARENT),
+                                   ("NOACTIVATE", WS_EX_NOACTIVATE),
+                                   ("LAYERED", WS_EX_LAYERED))
+            if not ex & bit]
 
 
 def _apply_colorkey(hwnd: int, hex_color: str) -> bool:
@@ -267,10 +300,16 @@ def _new_layer(root: tk.Tk, w: int, h: int) -> tuple[tk.Toplevel, tk.Canvas]:
     canvas = tk.Canvas(win, width=w, height=h, bg=BG, highlightthickness=0, bd=0)
     canvas.pack(fill="both", expand=True)
     win.update_idletasks()        # force the HWND + Tk's own exstyle
-    hwnd = win.winfo_id()
+    # NB: the TOP-LEVEL hwnd, not winfo_id() — see toplevel_hwnd().
+    hwnd = toplevel_hwnd(win)
     _make_click_through(hwnd)
     if not _apply_colorkey(hwnd, BG):
         raise RuntimeError(f"SetLayeredWindowAttributes failed for hwnd {hwnd}")
+    missing = _exstyle_missing(hwnd)
+    if missing:
+        # Read the bits BACK off the same window we keyed. Without this the guard
+        # is theatre: styling the wrong hwnd still returns success from every call.
+        raise RuntimeError(f"hwnd {hwnd} missing exstyle bits: {', '.join(missing)}")
     win.withdraw()
     return win, canvas
 
