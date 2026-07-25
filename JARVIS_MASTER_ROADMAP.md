@@ -345,7 +345,39 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
     (tools: `gui_agent`/`human_gui_agent` computer-use, `action_engine`, browser; memory:
     `jarvis_longterm.db`/Chroma/`memory_manager`; governance). The MISSING thing is the
     **loop that wires them into a real tool-calling agent.**
-    - **Native path: Claude Agent SDK** (Anthropic's lib — gives an app the exact
+    - ⚠️ **PROVIDER DECISION 2026-07-25 (Kaustav): build it on the EXISTING FREE GROQ
+      CASCADE, not the Claude Agent SDK** (Anthropic API is paid, no free tier). The SDK is
+      convenience, not capability — the loop itself is ~200 lines and Groq speaks
+      OpenAI-style function calling, so it is provider-agnostic by construction and a paid
+      key later becomes a one-line provider switch, not a rewrite. What we hand-roll
+      instead of getting free: sub-agents (recursion on the same loop), MCP client, context
+      compaction, skills, permission prompts — but JARVIS's governance tiers ALREADY are
+      the permission system and `action_parser` already is the output-normalising spine.
+      THREE REAL BLOCKERS, in order of bite:
+      (1) **model** — `GROQ_MODEL` defaults to `llama-3.1-8b-instant`, which cannot hold a
+      multi-step tool loop (invents tool names, drops required args, loops). Agentic turns
+      need a 70B-class/strong-tool-use model via a SEPARATE `GROQ_TOOL_MODEL` env so cheap
+      classification turns stay cheap.
+      (2) **rate limits are the ceiling, not capability** — one agent task is 5–20 calls,
+      each carrying the whole growing transcript, so tokens/task run 10–50× a one-shot. The
+      5-key rotation covers desk-scale use (tens of tasks/day); continuous autonomy will hit
+      daily token caps. Mitigation is compaction + small per-turn tool sets, not more keys.
+      (3) **`llm_router` has no tools path** — `universal_llm_call` is text-only and
+      `_call_groq` posts `messages` with no `tools`. Needs a sibling `universal_tool_call()`
+      routing ONLY to tool-capable providers (groq → gemini → openrouter). **Ollama is
+      excluded from tool turns** — CPU-box tool-calling is slow and unreliable.
+      FIVE RULES that make free/weaker models workable: curate 5–8 tools per turn (never all
+      40 — small models degrade sharply with tool count); strict schema + ONE repair attempt
+      then an honest failure; hard `max_steps`/token/wall-clock caps (an agent that can't
+      finish must SAY so, never narrate false success); governance checked before EVERY tool
+      execution (computer-use + writes stay CONFIRM); and keep the current one-shot path —
+      the loop is opt-in per intent and falls back, so today's working behaviour is never
+      lost. PHASES (1–3 buildable blind + harnessable): (1) `universal_tool_call()` + route
+      order, fake-HTTP harness, no keys burnt; (2) NEW `modules/agent_core.py` loop +
+      validation + caps, fake-model harness; (3) tool registry wrapping ~8 existing
+      `action_engine` handlers with a governance tier each; (4) wire ONE intent to the loop,
+      everything else unchanged; (5) sub-agents (recursion) + compaction once 1–4 hold.
+    - **Reference path (NOT chosen — paid): Claude Agent SDK** (Anthropic's lib — gives an app the exact
       Claude-Code capabilities: agentic tool loop, sub-agents, MCP client, skills, context
       compaction). JARVIS already runs Anthropic cloud (cloud_first reasoning) so this is
       native. Alt: hand-roll the same with the Messages API **tool-use loop** + own registry.
