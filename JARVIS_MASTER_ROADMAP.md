@@ -39,13 +39,14 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.6** gesture vocab decision | ✅ DONE | §4 |
 | **G5.1** relative trackpad + accel + clutch + dwell right-click | ✅ DONE, live-gate owed | §3.3, §4 |
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
-| **Automatic test baseline** | ✅ 205/205 green | `TEST_PLAN.md` |
+| **Automatic test baseline** | ✅ **497 checks, 0 failures** (`test_screen_reader.py` is a live VLM script, not counted) | `TEST_PLAN.md` |
+| **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); voice click-to-talk = follow-up | §5 |
 | **G5.3** cursor-halo + edge-toast overlays | ✅ code done, live-gate owed | §5 |
 | **G5.4** distance mitigation | ✅ code done, live-gate owed | §5 |
 | **G5.5** precision / dual-target filtering | ✅ code done, live-gate owed | §5 |
-| **G5.7** robustness backlog | 🟡 backend 5/6 done (barge-in deferred); frontend TODO | §5 |
-| **Login/wake revamp** | 🟢 face-auth contract + FaceAuthOverlay + BootSequence + IdentityPrompt done (code); live-gate owed | §6 |
+| **G5.7** robustness backlog | 🟡 backend 5/6 done (barge-in deferred — live audio); **frontend ALL DONE** (`0b5a0a4`) | §5 |
+| **Login/wake revamp (§6.1)** | ✅ COMPLETE (code) — contract, FaceAuthOverlay + **live feed + real matching phase** (`8ae9cc0`), BootSequence + wipe, IdentityPrompt; live-gate owed | §6.1 |
 | **Away→mobile presence (Track B probe)** | ⬜ TODO | §5, §6 |
 | **Smart-home / IoT agent** | ⬜ MISSING | §5 |
 | **Guarded self-improvement loop** | ⬜ MISSING | §5 |
@@ -239,10 +240,19 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
        threads/device to exercise; not safely harnessable headless).
      - Harnesses: `test_llm_failover` 7, `test_watchdog_policy` 9, `test_boot_preflight`
        14, `test_working_memory_lock` 4, `test_speaker_errors` 5. Suite 239 → **278**.
-   - Frontend — ⬜ TODO: `BrowserWidget` iframe fallback for framing-blocked sites;
-     `DataOverlay` Escape/focus-trap; `CalculatorWidget` `eval()` → safe parser;
-     connection-based (not time-based) boot log; command-terminal error surfacing +
-     labeled input.
+   - Frontend — ✅ **ALL DONE 2026-07-24/25** (`0b5a0a4`, browser-gated against a mock-WS
+     backend): `DataOverlay` Escape + focus management (capture-phase window keydown,
+     auto-focus close, restore prior focus); `CalculatorWidget` `eval()` → `safeEvaluate()`
+     (tokenizer + shunting-yard, rejects anything but `+ - * / %`, decimals, parens, unary
+     ±; bundle 1084→1010kB); command-terminal error surfacing (`surfaceTerminalError` pins
+     the failure in the system log 6s, failed command stays in the input);
+     connection-based boot log = `BootSequence.jsx` (§6.1, gated to the real backend, no
+     timers); `BrowserWidget` framing fallback = an always-present **open-externally**
+     button + an `onError` panel. ⚠️ Auto-detecting `X-Frame-Options`/CSP frame blocks is
+     **NOT achievable client-side** — modern Chrome fires `onLoad` and renders an
+     inspection-proof error page (`contentDocument` throws exactly like a real
+     cross-origin load); the about:blank heuristic + load-watchdog were tried and REMOVED
+     as false-positive-prone. The external button is the answer, not detection.
 
 ### TIER B — experience upgrades (after Tier A)
 6. **Login / wake revamp** (spec in §6) — staged boot, identity step, believable
@@ -372,9 +382,37 @@ Three weak spots and the fix:
   `auth_face_*`, clears it when the flow advances; the new overlay supersedes the
   self-timed `FaceScanOverlay` (kept only as a fallback for an un-updated backend).
   `test_auth_status.py` 9/9; `npm run build` passes.
-  **Follow-ups:** real `auth_face_matching` phase (needs an `on_phase` callback +
-  face-box coords inside `scan_for_faces`) + live camera feed in the overlay (needs
-  the cam URL exposed to the frontend). **Live-gate owed** (§7).
+  ✅ **BOTH FOLLOW-UPS DONE 2026-07-25 (`8ae9cc0`)** — they were blocked on plumbing
+  that now exists (`modules/frame_bus.py`: one camera owner, many readers).
+  - **Real `matching` phase.** `vision.scan_for_faces(timeout, on_phase=None)` fires
+    `on_phase("matching", box, frame_size)` the instant the Haar pass finds a face and
+    DeepFace verification starts, and reverts to `"scanning"` if that face fails to
+    match and the loop keeps hunting — so the overlay lifts off its idle animation on a
+    real event. Callback runs on the scan's thread and `main.py` routes it through
+    `socket_manager.schedule_ui_update` (the thread-safe leg the gesture daemon uses);
+    callback exceptions are swallowed — progress reporting must never fail an auth.
+    `auth_status.normalise_box()` sends the box as 0..1 fractions clamped inside the
+    frame, so the overlay draws it at any feed size with no knowledge of capture res.
+  - **Live camera feed.** NEW `modules/camera_stream.py` + `GET /api/camera/stream`:
+    MJPEG re-broadcast of the frame bus that **never opens a camera** — no owner
+    publishing ⇒ 503, so a browser tab can't become the second consumer of the phone
+    stream. Ends on `max_seconds` (a forgotten `<img>` must not pin a reader), on client
+    disconnect, or when the publisher goes quiet past the idle grace (a dead camera
+    collapses the stream instead of freezing on its last frame). Sync generator on
+    purpose — Starlette iterates it in a threadpool so the pace-sleep can't stall the
+    event loop. `vision._CapFrames` now PUBLISHES what it reads, so a scan that owns the
+    camera feeds the overlay even with the gesture daemon off (`clear()` on release).
+    ⚠️ **SECURITY:** unlike the rest of this local API the payload is a live view of the
+    owner's desk, so the endpoint is **loopback-only** with a `JARVIS_CAMERA_STREAM=0`
+    kill switch — and the client check parses 127/8 as a literal IPv4, because a
+    `startswith("127.")` prefix test admits the attacker-supplied Host `127.evil.com`
+    (the harness caught exactly that). Overlay: dimmed mirrored feed behind the reticle
+    + the real face box on `matching`; `onError` falls back to the abstract animation, so
+    the feed is a bonus layer and never a requirement. Box `left` is mirrored
+    arithmetically (`1 - x - w`) — a CSS `scaleX(-1)` flips the rectangle in place and
+    lands it beside the face.
+  `test_camera_stream.py` 10 (new), `test_auth_status.py` 9→**18**; suite 478→**497**.
+  **Live-gate owed** (§7).
 - ✅ **DONE (code, 2026-07-19):** `BootSequence.jsx`/`.scss` — staged power-on POWER
   CORE→NEURAL LINK→MEMORY BANKS→CALIBRATING→NOMINAL, GATED (holds CALIBRATING until
   `ready`=backend `waking`/`online`, only then NOMINAL), then **scanline-wipes into the
@@ -389,8 +427,9 @@ Three weak spots and the fix:
   `identityPrompt` shown only on `security_listening`+"IDENTIFICATION"; overlays mounted
   (z: FaceAuth 9000 < IdentityPrompt 9050 < BootSequence 9100). `prefers-reduced-motion`
   respected (wipe → plain fade, beam dropped). `npm run build` passes. **Live-gate owed**
-  (§7). Remaining §6.1: none blocking — only the deferred matching-phase + live-cam-feed
-  follow-ups above.
+  (§7). **§6.1 is now COMPLETE** — contract, FaceAuthOverlay (+live feed +matching
+  phase), BootSequence (+scanline wipe), IdentityPrompt all shipped; only live-gating
+  is outstanding.
 
 ### 6.2 Away→mobile presence
 - **Track B (near-term, no app):** `modules/presence_probe.py` — detect phone on home
@@ -566,6 +605,16 @@ Webcam, or the daemon keeps taking 30s blind-retry windows.
 
 ## 7. Live-gates owed by Kaustav (hardware) + push status
 
+> **DECISION 2026-07-25 (Kaustav): live-gating happens ONCE, at the END — "will test at
+> last".** Do not stop building to wait on a gate, and do not ask him to run one
+> mid-stream. Keep landing code + harnesses, keep this list growing, and run the whole
+> checklist in a single desk session before the merge. Order at the desk:
+> **(1) this checklist → (2) Electron launch scripts (his explicit call: very last, needs
+> him present for real frameless windows) → (3) merge `feat/cloud-gateway` → `main`.**
+> Consequence to accept deliberately: features stack up *unverified against hardware*, so
+> every new item ships with (a) a self-running harness and (b) a one-line gate recipe added
+> below — the harness is what keeps the stack honest until that session.
+
 **PUSH STATUS 2026-07-25:** commits landed since `99281e3`: `fb30e50` enroll mirror,
 `c009d8e` camera unification, `6409adf` overlay blast-radius, `17185a9` auto-lock default +
 test log, `5f60a20` overlay TkTopLevel, `0863c7b` G6.4 closing-fist grab, `b7e771d` frame bus,
@@ -630,8 +679,19 @@ script, not a counted harness.
   clips the hand on fast moves). Confirm cursor doesn't jump as the crop re-anchors, and
   that `JARVIS_GESTURE_ROI=0` restores plain full-frame detection. Watch per-frame CPU at
   720p on the 17GB box (motion/face run cadenced; detect runs on the small crop).
+- **Stranger debounce (§6.5):** locked session (or `JARVIS_LOCK_AFTER` low + walk away),
+  then glance off-axis repeatedly — **zero** Telegram snapshots of himself. Have a second
+  person step in front of the lens → alert within ~2s. `JARVIS_STRANGER_CONFIRM` higher =
+  more evidence needed; `JARVIS_FACE_UNCERTAIN_FLOOR` higher = fewer faces treated as
+  "probably the owner".
+- **§6.1 live feed + matching phase:** biometric wake → the reticle shows the REAL camera
+  (dimmed/mirrored) and, the moment a face is found, a box locks onto it with "MATCHING
+  IDENTITY…" before success/fail. Kill the gesture daemon and repeat — the scan owns the
+  camera and the feed must still appear. Then `JARVIS_CAMERA_STREAM=0` → no feed, abstract
+  animation only, auth still works. Curl the endpoint from the phone/another LAN host →
+  **403** (loopback-only).
 - **Phase-4 phone smoke-tests + Phase-5 failover** — see `TEST_PLAN.md` §B5/B6.
-- Then **push + merge** `feat/cloud-gateway`.
+- Then **Electron launch scripts** (at the desk), then **merge** `feat/cloud-gateway`.
 
 ---
 
