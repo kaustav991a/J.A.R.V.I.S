@@ -373,7 +373,8 @@ class GestureDaemon:
 
     def _session(self) -> None:
         import cv2
-        from modules.face_gate import AbsenceTracker, FaceGate, MotionDetector
+        from modules.face_gate import (
+            AbsenceTracker, FaceGate, MotionDetector, StrangerConfirmer)
         from modules.gesture_camera import (
             CameraError, make_frame_source, parse_sources)
         from modules.gesture_engine import GestureConfig, GestureEngine
@@ -421,6 +422,10 @@ class GestureDaemon:
         gate = FaceGate()
         motion = MotionDetector()
         absence = AbsenceTracker(absent_after_s=self.absent_after)
+        # one off-axis check must not fire an intruder alert on the owner
+        stranger = StrangerConfirmer(
+            needed=_envf("JARVIS_STRANGER_CONFIRM", 3.0),
+            window_s=_envf("JARVIS_STRANGER_WINDOW_S", 3.0))
         mirror = gesture_calibration.load().get(
             "mirror", os.getenv("JARVIS_CAM_MIRROR", "1") == "1")
         roi_enabled = os.getenv("JARVIS_GESTURE_ROI", "1") == "1"  # G5.4 distance ROI
@@ -459,12 +464,22 @@ class GestureDaemon:
                 if now - self._last_face_t >= face_every and gate._ensure():
                     self._last_face_t = now
                     res = gate.check(frame)
-                    gesture_state["owner"] = res.owner_present
-                    gesture_state["stranger"] = res.stranger_present
                     if res.owner_present:
                         self._last_owner_t = now
-                    if res.stranger_present and self._locked:
-                        self._stranger_alert(frame, "approached the desk while you were away")
+                    # HUD shows the GRACE-smoothed owner, not the raw check:
+                    # SFace drops the owner for a check whenever he looks away
+                    # from the lens, and the tick flickering off is a lie while
+                    # control is still (correctly) allowed.
+                    gesture_state["owner"] = (
+                        (now - self._last_owner_t) <= self.OWNER_GRACE_S)
+                    if stranger.update(res.stranger_present, now,
+                                       uncertain=res.uncertain):
+                        gesture_state["stranger"] = True
+                        if self._locked:
+                            self._stranger_alert(
+                                frame, "approached the desk while you were away")
+                    else:
+                        gesture_state["stranger"] = False
                 res = gate.last
                 owner_ok = (now - self._last_owner_t) <= self.OWNER_GRACE_S
                 if gate.available is False:
@@ -554,7 +569,7 @@ class GestureDaemon:
                         engine._reset_motion_state()
                     pointer.release_all()
                     intents = []
-                    if pts is not None and res.stranger_present:
+                    if pts is not None and stranger.confirmed:
                         self._stranger_alert(frame, "tried to use gesture control")
                     if time.monotonic() - self._last_toast_t > self.DENY_TOAST_S:
                         self._last_toast_t = time.monotonic()

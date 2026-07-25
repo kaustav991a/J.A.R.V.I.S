@@ -485,8 +485,112 @@ reachable one; confirm a fully-dead list logs the summary + retries in 30s.
 
 ---
 
+### 6.5 Camera sharing + closing-fist grab (NEW 2026-07-25, G6.4 — both DONE + live-gated)
+
+Two defects found by actually running the gates rather than reasoning about them.
+
+**G6.4 closing-fist grab** (`0863c7b`) — live: three fist poses produced ZERO grabs, and
+fist→palm 1.3s later emitted a `right_click`. Root cause is ordering, not thresholds:
+`process()` calls `_update_pinches` BEFORE the grab check, and a hand closing into a fist
+*must* transit the pinch zone, so `d_left` < `pinch_down`(0.30) registers the pinch FIRST.
+G6.2's guard (`in_fist = pose=="fist" and not self._left.down`) therefore can't fire, and a
+closed fist parks the thumb at `d_left≈0.45` — under `pinch_up`(0.60) — so the pinch never
+releases either: it rides out the whole grab and comes up past `dwell_right_click_s` as a
+right-click, while `drag_start` (needs `not _left.down`) never runs. FIX: if the fist pose
+lands within `grab_transit_s`(0.4) of pinch-down **and** `d_left <= pinch_up`, cancel the
+pinch silently — no click, no dwell, and deliberately no `_pinch_up_t` (arming the grab
+cooldown there would block the grab being cleared for) — then let the grab fire that frame.
+The `d_left <= pinch_up` half is the PHYSICAL criterion, not a heuristic, and is what keeps
+G6.2 intact: a closing fist is *stuck* at 0.450 (can never self-release) while a genuine
+curled tap flicks the thumb clear to 1.733 (already releasing). Omitting it broke
+`test_curled_click_does_not_bleed_into_grab` — that test doing its job is how the
+distinction surfaced. Knobs: `JARVIS_GRAB_TRANSIT_S` + calibration `grab_transit_s`; **0
+disables**. ⚠️ **TESTING LESSON:** every pre-existing grab test fed a fist straight from an
+open palm — a motion no real hand can perform — which is why the suite was green while the
+gesture was broken. Model the *transit*, not the destination.
+
+**Camera contention → one owner, many readers** (`b7e771d`) — three subsystems each opened
+their own capture on the same phone stream (daemon ~30fps, `scan_for_faces` 10s, ambient
+vision every 6s). An IP Webcam MJPEG endpoint won't serve that: a face scan during a live
+daemon session killed it with `camera stream died (30 consecutive read failures)` + a 30s
+blind retry — and since face-auth runs at **every wake**, gesture control was guaranteed to
+drop exactly as the owner walked up. NEW `modules/frame_bus.py`: the owner publishes, others
+read. Dependency-free by requirement (threading+time only) because `ambient_vision` imports
+it at module scope and must stay loadable without cv2/TF/YOLO. Frames stored by REFERENCE
+(cv2 `read()` allocates per call — nothing to tear) and copied on READ so the memcpy costs
+only when consumed, not 30×/s; monotonic `seq`+`after_seq` so a reader waits for a genuinely
+new frame instead of re-recognising one stale image; 1.5s staleness bound (tolerates the
+daemon's ~2fps locked tier) so nobody is handed an empty-chair frame; `clear()` on session
+end. Daemon publishes **PRE-mirror** — deliberate: that's the orientation the two consumers
+saw from their own captures, so this changes contention ONLY, never recognition (`face_gate`
+keeps the mirrored frame, as `enroll_face` does). `scan_for_faces` got `_BusFrames`/
+`_CapFrames` behind one `.read()` contract so the scan loop doesn't branch; both consumers
+fall back to their own capture when nothing publishes. ⚠️ The bus is per-**process** state —
+correct, since all three live in the backend process; a separate-process script gets a cold
+bus and opens its own capture (which is how the bug was originally reproduced).
+BONUS: the scan now returns in **1.7s vs 8.0s** (frames already flowing).
+
+**`owner`/`stranger` flicker — FIXED (code, not yet live-gated).** SFace flipped the owner to
+`stranger` on isolated checks when he was the *only* person in frame and slightly off-axis
+(t+7.1/25.1/28.2/40.0 in one 60s run). Harmless while unlocked — the 3.5s owner grace covers
+the gaps and stranger alerts only fire when `_locked` — but once the desk locks, every one of
+those is a Telegram snapshot of the owner himself. Two layers, both pure logic:
+
+- **NEW `face_gate.StrangerConfirmer`** — require evidence, not one check. Each consecutive
+  stranger check adds 1.0 and the stranger is asserted at `needed`(3); a check with no
+  stranger clears the streak, and so does a gap > `window_s`(3s) — two sightings a minute
+  apart are not one person walking up. Fed **once per face check** (0.5s locked / 1.0s idle /
+  1.5s engaged cadence), NOT per camera frame, so 3 = ~1.5s of continuous presence before an
+  alert. Knobs `JARVIS_STRANGER_CONFIRM` / `JARVIS_STRANGER_WINDOW_S`.
+- **Near-miss faces count half.** `GateResult` gained `top_score` + `uncertain`; a
+  non-matching face scoring ≥ `UNCERTAIN_FLOOR`(0.25, `JARVIS_FACE_UNCERTAIN_FLOOR`) is far
+  more likely the owner off-axis (live: high 0.2s/low 0.3s) than a different person (~0.0–0.1),
+  so it contributes 0.5. A 2s head turn at the locked cadence therefore raises **nothing**,
+  while a genuine stranger still confirms in 3 checks. Such a face is still NOT the owner —
+  gestures stay denied; only the alert evidence is weaker.
+
+Also: the HUD `owner` tick now mirrors the **grace-smoothed** owner (`OWNER_GRACE_S`), not the
+raw check — the tick blinking off while control is still correctly allowed was a lie. The
+second alert site (`stranger tried to use gesture control`, evaluated every frame off the
+cached result) reads `stranger.confirmed`, so it inherits the debounce for free.
+`test_face_gate.py` 5→**12** (single-check-no-alert, 3-clear-confirm, uncertain-needs-double,
+mixed weighting, streak clear, stale gap, reset). **SUITE 471 → 478.**
+**LIVE-GATE OWED:** off-axis glances in a locked session must produce zero Telegram
+snapshots; a real second person must still alert within ~2s.
+
+**Phone stream is flaky:** it went unreachable mid-session and returned on `.105` within a
+minute (WiFi power saving). Pin a DHCP reservation + disable battery optimisation for IP
+Webcam, or the daemon keeps taking 30s blind-retry windows.
+
+---
+
 ## 7. Live-gates owed by Kaustav (hardware) + push status
-All gesture/UX code is committed but UNPUSHED on `feat/cloud-gateway`. Owed before push+merge:
+
+**PUSH STATUS 2026-07-25:** commits landed since `99281e3`: `fb30e50` enroll mirror,
+`c009d8e` camera unification, `6409adf` overlay blast-radius, `17185a9` auto-lock default +
+test log, `5f60a20` overlay TkTopLevel, `0863c7b` G6.4 closing-fist grab, `b7e771d` frame bus,
++ the stranger-confirmer above. Suite **478** automatic checks, 0 failures; 6 environmental
+non-greens (4 need pytest — not in venv, repo convention is self-running harnesses;
+`test_ping`/`test_ui_bridge_e2e` need the backend up). `test_screen_reader.py` is a live VLM
+script, not a counted harness.
+
+**GATES PASSED 2026-07-25** (strike these from the owed list below):
+- ✅ **G6.3 camera auto-select** — twice, unprompted: DHCP moved the phone `.105`→`.106`→
+  `.105` and the daemon skipped the dead entry in ~1.5s each time, recovering
+  `camera_error`→`idle` on its own.
+- ✅ **Camera unification** — `[VISION] camera source: …` → `✅ MATCH: KAUSTAV`.
+- ✅ **G5.3 overlay** — halo 532 cyan px in a 59×59 box at the cursor; windows are
+  72×72/132×132/200×48 with **no fullscreen window**; click-through verified on a *drawn*
+  pixel (probe at cursor+RING_R resolves to the app beneath); foreground never stolen;
+  deadman + EOF exits clean. The deadman also fired **unstaged in production** when the
+  daemon stalled.
+- ✅ **Gesture vocabulary** — `index_only`→START, `back_palm`→STOP, clutch on/off, all five
+  poses, click, and (after G6.4) `pose=fist last_action=grab` → `pose=palm last_action=drop`
+  with **zero** `right_click` in a 60s run.
+- ✅ **Camera sharing** — real topology, publisher unharmed across a scan (+50 frames,
+  `died=None`), cold-bus fallback intact.
+
+**STILL OWED** before push+merge:
 - **G4 camera gates:** arbiter during a real ghost_type/autopilot (cursor mustn't fight,
   chip shows "JARVIS DRIVING"); guided re-enroll `enroll_face.py` (12 samples →
   re-seed `owner_embeddings.npz`, currently the 1-sample seed); calibration `w`-save

@@ -33,6 +33,12 @@ DETECT_MODEL = os.path.join("models", "face_detection_yunet_2023mar.onnx")
 RECOG_MODEL = os.path.join("models", "face_recognition_sface_2021dec.onnx")
 OWNER_DB = os.path.join("models", "owner_embeddings.npz")
 COSINE_THRESHOLD = 0.363  # SFace-standard same-person threshold
+# A face that misses the threshold but still scores this high is far more likely
+# the owner off-axis than a different person: live, an off-axis owner lands in
+# the high 0.2s/low 0.3s while a genuine stranger sits near 0.0-0.1. Such a face
+# is still NOT the owner (gestures stay denied) — it is only counted as weaker
+# evidence by StrangerConfirmer, so a head turn can't fire an intruder alert.
+UNCERTAIN_FLOOR = float(os.getenv("JARVIS_FACE_UNCERTAIN_FLOOR", "0.25"))
 
 
 def cosine_best(feat, owner_feats) -> float:
@@ -57,6 +63,54 @@ class GateResult:
     owner_score: float = -1.0
     faces: int = 0
     face_box: tuple | None = None    # (x, y, w, h) px of the largest face (G5.4 ROI seed)
+    top_score: float = -1.0          # best cosine seen this pass, match or not
+    uncertain: bool = False          # the non-owner face scored >= UNCERTAIN_FLOOR
+
+
+class StrangerConfirmer:
+    """Debounce for "a stranger is at the desk".
+
+    SFace flips the owner to `stranger` for a check or two whenever he is
+    slightly off-axis — harmless while unlocked, but once the desk locks a
+    single such check used to fire a Telegram snapshot of the owner himself.
+    So require EVIDENCE, not one frame: each consecutive stranger check adds
+    1.0 (or 0.5 when `uncertain`, i.e. the face scored close to the owner) and
+    the stranger is asserted at `needed`. Any check without a stranger clears
+    the streak, and so does a gap longer than `window_s` — two sightings a
+    minute apart are not one person walking up.
+
+    Pure logic, fake-clock testable; the daemon feeds it once per face check
+    (NOT once per camera frame), so `needed` counts checks at the face cadence.
+    """
+
+    def __init__(self, needed: float = 3.0, window_s: float = 3.0,
+                 uncertain_weight: float = 0.5):
+        self.needed = max(1.0, float(needed))
+        self.window_s = window_s
+        self.uncertain_weight = uncertain_weight
+        self.evidence = 0.0
+        self.confirmed = False
+        self._last_t: float | None = None
+
+    def update(self, stranger_present: bool, t: float,
+               uncertain: bool = False) -> bool:
+        """Feed one face check; returns True while a stranger is confirmed."""
+        if not stranger_present:
+            self.evidence = 0.0
+            self.confirmed = False
+            self._last_t = t
+            return False
+        if self._last_t is not None and (t - self._last_t) > self.window_s:
+            self.evidence = 0.0          # stale streak — restart from this check
+        self.evidence += self.uncertain_weight if uncertain else 1.0
+        self._last_t = t
+        self.confirmed = self.evidence >= self.needed
+        return self.confirmed
+
+    def reset(self) -> None:
+        self.evidence = 0.0
+        self.confirmed = False
+        self._last_t = None
 
 
 class AbsenceTracker:
@@ -112,9 +166,11 @@ class FaceGate:
                  recog_model: str = RECOG_MODEL,
                  owner_db: str = OWNER_DB,
                  threshold: float = COSINE_THRESHOLD,
-                 max_faces: int = 3):
+                 max_faces: int = 3,
+                 uncertain_floor: float = UNCERTAIN_FLOOR):
         self.threshold = threshold
         self.max_faces = max_faces
+        self.uncertain_floor = uncertain_floor
         self._detect_model = detect_model
         self._recog_model = recog_model
         self._owner_db = owner_db
@@ -175,6 +231,7 @@ class FaceGate:
                 res.faces = len(faces)
                 res.any_face = True
                 res.face_box = tuple(float(v) for v in faces[0][:4])  # largest, (x,y,w,h) px
+                best_other = -1.0
                 for f in faces[: self.max_faces]:
                     aligned = self._recognizer.alignCrop(frame_bgr, f)
                     feat = self._recognizer.feature(aligned).flatten()
@@ -182,11 +239,16 @@ class FaceGate:
                         np.dot(feat, o) / ((np.linalg.norm(feat) or 1e-9)
                                            * (np.linalg.norm(o) or 1e-9))
                         for o in self._owner_feats))
+                    res.top_score = max(res.top_score, score)
                     if score >= self.threshold:
                         res.owner_present = True
                         res.owner_score = max(res.owner_score, score)
                     else:
                         res.stranger_present = True
+                        best_other = max(best_other, score)
+                # a near-miss face is probably the owner off-axis, not an
+                # intruder — still not the owner, but weaker alert evidence.
+                res.uncertain = res.stranger_present and best_other >= self.uncertain_floor
             self.last = res
             return res
         except Exception as e:  # noqa: BLE001
