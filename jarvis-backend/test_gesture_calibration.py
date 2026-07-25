@@ -191,6 +191,20 @@ def test_g62_click_knobs_roundtrip_and_apply():
     os.unlink(p)
 
 
+def test_g64_grab_transit_roundtrip_and_apply():
+    # G6.4's transit window is the knob that decides whether a closing fist reads
+    # as a grab or matures into a right-click, so it has to be tunable per hand
+    # and per camera — persistable, not env-only.
+    p = _tmp()
+    check(gc.save({"grab_transit_s": 0.55}, p), "grab_transit_s saves")
+    got = gc.load(p)
+    check(got.get("grab_transit_s") == 0.55, "grab_transit_s round-trips")
+    cfg = GestureConfig()
+    gc.apply_to(cfg, got)
+    check(abs(cfg.grab_transit_s - 0.55) < 1e-9, "grab_transit_s applied to config")
+    os.unlink(p)
+
+
 def test_g55_precision_knobs_roundtrip_and_apply():
     # G5.5 shipped the precision knobs as env-only; they belong in the persistable
     # set too, or the spike's `w` save silently drops whatever was tuned live.
@@ -216,6 +230,7 @@ TESTS = [
     test_load_missing,
     test_save_load_roundtrip,
     test_g62_click_knobs_roundtrip_and_apply,
+    test_g64_grab_transit_roundtrip_and_apply,
     test_g55_precision_knobs_roundtrip_and_apply,
     test_unknown_keys_dropped,
     test_type_coercion,

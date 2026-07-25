@@ -445,6 +445,115 @@ def test_g62_click_knobs_env_tunable():
 
 
 # ------------------------------------------------------------------ #
+# G6.4 — a hand CLOSING into a fist transits the pinch zone
+# ------------------------------------------------------------------ #
+
+# mid-close: thumb and index are touching, so this reads as a PINCH (d < 0.30)
+CLOSING = make_hand(ext=(), pinch=("left", 0.2))
+# committed fist with the thumb parked near the index: d=0.45 is >= pinch_down
+# (0.30) so the POSE is "fist", but still <= pinch_up (0.60), so an
+# already-registered pinch will NOT release here. That gap is the whole bug.
+FIST_THUMB_IN = make_hand(ext=(), pinch=("left", 0.45))
+
+
+def engaged_sim_cfg(**kw):
+    sim = Sim(GestureEngine(GestureConfig(**kw)))
+    assert sim.feed(INDEX_UP, 35) == [("engaged",)]
+    return sim
+
+
+def test_closing_fist_transit_grabs_not_right_clicks():
+    # THE live 2026-07-25 failure, reproduced. Every previous grab test fed a fist
+    # straight from an open palm, so the pinch never registered on the way in — a
+    # real hand cannot do that. Closing drags thumb and index through the pinch
+    # zone, so the pinch lands BEFORE the fist pose commits; the fist then holds
+    # d_left under pinch_up so the pinch never releases, rides out the entire grab,
+    # and comes up past dwell_right_click_s as a RIGHT CLICK — while drag_start,
+    # which requires `not _left.down`, never fires at all.
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(CLOSING, 3)             # transit -> pinch registers down
+    out += sim.feed(FIST_THUMB_IN, 50)     # ~1.7s of fist, past the 1.5s dwell
+    out += sim.feed(PALM, 6)               # open -> drop
+    k = kinds(out)
+    assert k.count("drag_start") == 1, f"the grab must fire, got {k}"
+    assert k.count("drag_end") == 1, f"and drop on open, got {k}"
+    assert "right_click" not in k, f"a grab must never right-click, got {k}"
+    assert "click" not in k, f"a grab must never click, got {k}"
+    assert k.index("drag_start") < k.index("drag_end")
+
+
+def test_grab_transit_still_drags_the_cursor():
+    # the reclassified grab must behave like any other drag, not just emit once
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(CLOSING, 3)
+    out += sim.feed(FIST_THUMB_IN, 4)
+    for i in range(6):
+        out += sim.feed(make_hand(ext=(), pinch=("left", 0.45),
+                                  shift=(0.02 * i, 0.0)))
+    out += sim.feed(PALM, 6)
+    k = kinds(out)
+    assert k.count("drag_start") == 1 and k.count("drag_end") == 1
+    moves = [i for i in out[k.index("drag_start"):] if i[0] == "move"]
+    assert moves, "cursor must keep moving while dragging"
+
+
+def test_fist_after_the_transit_window_leaves_the_pinch_alone():
+    # The reclassify is time-boxed on purpose. A pinch deliberately held well past
+    # grab_transit_s is INTENT, so curling up afterwards must not retroactively
+    # become a grab — the dwell right-click still wins. Pins the window so it
+    # can't be widened until it swallows real pinches.
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(pinched(), 20)          # ~0.67s hold, past grab_transit_s=0.4
+    out += sim.feed(FIST_THUMB_IN, 30)     # only now curl up
+    out += sim.feed(PALM, 8)
+    k = kinds(out)
+    assert "drag_start" not in k, f"a matured pinch is not a grab, got {k}"
+    assert k.count("right_click") == 1, f"dwell still decides, got {k}"
+
+
+def test_quick_tap_then_deliberate_fist_keeps_both():
+    # regression guard on the neighbouring G6.2 behaviour: a quick tap is still a
+    # click, and a fist a beat later is still a grab. The transit reclassify must
+    # not eat the tap (it only ever touches a pinch that is STILL down).
+    sim = engaged_sim()
+    sim.feed(PALM, 40)
+    out = sim.feed(make_hand(ext=(), pinch=("left", 0.2)), 4)   # tap
+    out += sim.feed(PALM, 10)                                   # release -> click
+    late = sim.feed(FIST_THUMB_IN, 14)                          # then a real grab
+    assert kinds(out).count("click") == 1, f"tap survives, got {kinds(out)}"
+    assert kinds(late).count("drag_start") == 1, f"grab fires, got {kinds(late)}"
+
+
+def test_grab_transit_zero_disables_the_reclassify():
+    # Safety valve: if the window ever misfires on someone's hand, 0 restores the
+    # old (wrong) behaviour exactly — same input, right_click and no grab.
+    sim = engaged_sim_cfg(grab_transit_s=0.0)
+    sim.feed(PALM, 40)
+    out = sim.feed(CLOSING, 3)
+    out += sim.feed(FIST_THUMB_IN, 50)
+    out += sim.feed(PALM, 6)
+    k = kinds(out)
+    assert "drag_start" not in k, f"disabled -> no reclassify, got {k}"
+    assert k.count("right_click") == 1, f"old behaviour returns, got {k}"
+
+
+def test_grab_transit_env_tunable():
+    import os
+    saved = os.environ.get("JARVIS_GRAB_TRANSIT_S")
+    try:
+        os.environ["JARVIS_GRAB_TRANSIT_S"] = "0.65"
+        assert abs(GestureConfig.from_env().grab_transit_s - 0.65) < 1e-9
+    finally:
+        if saved is None:
+            os.environ.pop("JARVIS_GRAB_TRANSIT_S", None)
+        else:
+            os.environ["JARVIS_GRAB_TRANSIT_S"] = saved
+
+
+# ------------------------------------------------------------------ #
 # scroll
 # ------------------------------------------------------------------ #
 

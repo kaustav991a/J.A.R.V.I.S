@@ -49,6 +49,7 @@ SCHEMA = {
     # G6.2 click/grab tuning
     "dwell_right_click_s": float,
     "grab_after_pinch_s": float,
+    "grab_transit_s": float,
     "scroll_gain": float,
     "start_hold_s": float,
     "stop_hold_s": float,

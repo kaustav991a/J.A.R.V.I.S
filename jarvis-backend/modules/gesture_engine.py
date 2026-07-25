@@ -205,6 +205,13 @@ class GestureConfig:
     # curled-hand click doesn't bleed straight into a drag as the hand reopens
     # through the fist-shaped zone. A real grab a beat later still engages.
     grab_after_pinch_s: float = 0.25
+    # G6.4: the MIRROR of the above. A hand closing into a fist has to transit
+    # the pinch zone — thumb and index pass close together on the way in — so the
+    # pinch lands BEFORE the fist pose commits. If the fist shows up within this
+    # long of the pinch landing, that pinch was transit, not intent: reclassify it
+    # as the start of a grab rather than letting it mature into a right-click.
+    # Only an IN-PROGRESS pinch is ever reclassified, so a completed tap is safe.
+    grab_transit_s: float = 0.4
     # ---- G5.5 precision: fine-target damping when the hand is nearly still --- #
     # A SECOND-STAGE gain applied to BOTH mapping modes (absolute has no accel
     # curve, so this is its only precision lever). Below precision_v_lo palm
@@ -249,7 +256,8 @@ class GestureConfig:
                                ("JARVIS_PINCH_DOWN", "pinch_down"),
                                ("JARVIS_PINCH_UP", "pinch_up"),
                                ("JARVIS_DWELL_RIGHT_CLICK_S", "dwell_right_click_s"),
-                               ("JARVIS_GRAB_AFTER_PINCH_S", "grab_after_pinch_s")):
+                               ("JARVIS_GRAB_AFTER_PINCH_S", "grab_after_pinch_s"),
+                               ("JARVIS_GRAB_TRANSIT_S", "grab_transit_s")):
             v = os.getenv(env_name)
             if v is not None:
                 try:
@@ -595,6 +603,35 @@ class GestureEngine:
         # RELEASES, d_left rises back through the fist-shaped zone and the pose can
         # momentarily read "fist"; forcing the pinch open there would misclassify
         # the hold length (G6.2). Once down, let real d_left decide the release.
+        # G6.4 GRAB TRANSIT. The guard above only helps while no pinch is down,
+        # and a hand CLOSING into a fist always registers the pinch first: thumb
+        # and index pass through the pinch zone on the way in, so by the time the
+        # pose commits to "fist" `_left.down` is already True. The pinch then rode
+        # out the whole grab and released past the dwell as a RIGHT CLICK, while
+        # `drag_start` never fired because it requires `not self._left.down`.
+        # Live-measured on 2026-07-25: three fists in a row produced zero grabs,
+        # and fist -> palm 1.3s later emitted right_click.
+        # So if the fist lands within grab_transit_s of the pinch, that pinch was
+        # the hand travelling, not a tap: cancel it SILENTLY — no click, no dwell,
+        # and deliberately no `_pinch_up_t` (arming the grab cooldown here would
+        # block the very grab we're clearing the way for) — and let the grab check
+        # in process() fire on this same frame.
+        #
+        # `d_left <= pinch_up` is what separates this from a genuine tap, and it is
+        # the physical criterion, not a heuristic: reclassify ONLY while the pinch
+        # is geometrically STUCK down. A closing fist parks the thumb against the
+        # fingers (measured d_left ~0.45, under pinch_up=0.60) so the pinch can
+        # never release itself — that is the stuck case. A real curled tap flicks
+        # the thumb clear instead (d_left ~1.7, well above pinch_up), so its pinch
+        # is already releasing on its own; leave it alone and let it fire its click,
+        # with grab_after_pinch_s stopping the reopen from bleeding into a drag.
+        if (pose == "fist" and self._left.down and self._pinch_down_t is not None
+                and d_left <= self.cfg.pinch_up
+                and t - self._pinch_down_t <= self.cfg.grab_transit_s):
+            self._left.reset()
+            self._pinch_down_t = None
+            return
+
         in_fist = pose == "fist" and not self._left.down
         ev = self._left.update(d_left if not in_fist else 2.0, t)
         if ev == "down":
