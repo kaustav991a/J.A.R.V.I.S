@@ -35,6 +35,7 @@ HERE = Path(__file__).resolve().parent
 # The self-running harnesses, alphabetical. Add new ones here when they land.
 HARNESSES = [
     "test_action_parser.py",
+    "test_agent_core.py",
     "test_ambient_camera.py",
     "test_auth_status.py",
     "test_boot_preflight.py",
@@ -55,6 +56,7 @@ HARNESSES = [
     "test_owner_notify.py",
     "test_presence_probe.py",
     "test_speaker_errors.py",
+    "test_tool_call.py",
     "test_watchdog_policy.py",
     "test_working_memory_lock.py",
 ]

@@ -29,12 +29,26 @@ OLLAMA_URL        = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 LOCAL_MODEL       = os.getenv("OLLAMA_MODEL", "llama3:8b")          # primary reasoning
 VISION_MODEL      = os.getenv("OLLAMA_VISION_MODEL", "llava:latest")  # vision cortex
 GROQ_MODEL        = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+# Agentic core: tool turns need a strong tool-use model. The 8B instant model
+# above is right for cheap classification and wrong for a multi-step tool loop —
+# it invents tool names, drops required args and loops. Kept as a SEPARATE env so
+# making the agent smarter never makes every routing turn more expensive.
+GROQ_TOOL_MODEL   = os.getenv("GROQ_TOOL_MODEL", "llama-3.3-70b-versatile")
 # Gemini cloud fallback — separate org/quota from Groq, so a drained Groq daily
 # bucket escalates here instead of dying. Skipped automatically if GEMINI_API_KEY
 # is unset. Uses the legacy google-generativeai SDK (already a dependency).
 # "gemini-flash-latest" is Google's evergreen alias for the current flash model
 # — pinned ids (gemini-2.5-flash) get retired for new accounts and start 404ing.
 GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_TOOL_MODEL = os.getenv("GEMINI_TOOL_MODEL", GEMINI_MODEL)
+# Tool turns reach Gemini through Google's OpenAI-COMPATIBILITY endpoint rather
+# than the google-generativeai SDK: the SDK wants FunctionDeclaration objects,
+# and translating both directions is a second dialect to keep correct for no
+# gain. This way all three tool providers share one request/response shape.
+GEMINI_OPENAI_URL = os.getenv(
+    "GEMINI_OPENAI_URL",
+    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+)
 # Lowered from 30s: a healthy local 8B returns its first token well under 15s.
 # If the local cortex can't meet this, the circuit breaker (below) routes to the
 # cloud instead of making every single call wait out a long timeout.
@@ -495,6 +509,199 @@ def _call_openrouter_model(model, messages, temperature, max_tokens, stream, jso
             yield first
         yield from g
     return _safe()
+
+
+# ===========================================================================
+# TOOL CALLING (agentic core, phase 1) — roadmap §5 Tier C #12
+# ===========================================================================
+# `universal_llm_call` is text-only: `_call_groq` posts `messages` with no
+# `tools`, so there was no way to run an agent loop through the router at all.
+# This is its sibling. Differences that matter:
+#
+#   * Ollama is EXCLUDED. Tool-calling on the 17GB CPU box is slow and
+#     unreliable, and a hallucinated tool call is worse than a slow sentence.
+#   * No streaming. A tool call is only actionable once complete.
+#   * Failure is EXPLICIT (`ToolTurn.ok is False`), never an empty success — the
+#     same rule the ollama empty-200 fix established.
+#   * Every provider answer goes through modules/tool_calls.normalise_*, so the
+#     agent loop never sees a provider-shaped object.
+
+# Free tool-capable models on OpenRouter, walked in order like OPENROUTER_MODELS.
+# Kept SEPARATE because plenty of good free chat models reject `tools` outright.
+OPENROUTER_TOOL_MODELS = [m.strip() for m in os.getenv(
+    "OPENROUTER_TOOL_MODELS",
+    "openai/gpt-oss-120b:free,"
+    "qwen/qwen3-next-80b-a3b-instruct:free,"
+    "meta-llama/llama-3.3-70b-instruct:free",
+).split(",") if m.strip()]
+
+
+def _tool_route_order() -> list[str]:
+    """Tool-capable providers only, in preference order, minus unconfigured ones.
+
+    Note there is no local tail here on purpose: if every cloud provider is out,
+    an agent task must fail honestly rather than be handed to a model that will
+    invent tool calls.
+    """
+    from modules.tool_calls import TOOL_PROVIDERS
+
+    order = list(TOOL_PROVIDERS)
+    if not _gemini_configured():
+        order = [p for p in order if p != "gemini"]
+    if not _openrouter_configured():
+        order = [p for p in order if p != "openrouter"]
+    return order
+
+
+def universal_tool_call(
+    messages: list,
+    tools: list,
+    tool_choice: str = "auto",
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+    timeout: float = 60.0,
+    provider: str | None = None,
+):
+    """One tool-calling turn, normalised. Returns a `tool_calls.ToolTurn`.
+
+    `messages` is standard OpenAI history INCLUDING prior `assistant` turns with
+    `tool_calls` and their `tool` results. `tools` is a list of OpenAI function
+    definitions — validated here, because a malformed registry should fail at the
+    door rather than as a provider 400 halfway through an agent task.
+
+    `provider` pins a single provider (used by tests and by an operator debugging
+    one route); by default the cascade is walked.
+
+    Temperature defaults LOW: tool selection is a decision, not prose.
+    """
+    from modules.tool_calls import ToolTurn, validate_tool_defs
+
+    problems = validate_tool_defs(tools)
+    if problems:
+        return ToolTurn.failed("invalid tool definitions: " + "; ".join(problems))
+
+    providers = [provider] if provider else _tool_route_order()
+    if not providers:
+        return ToolTurn.failed("no tool-capable provider is configured")
+
+    last_err: str | None = None
+    for name in providers:
+        try:
+            if name == "groq":
+                turn = _tool_call_groq(messages, tools, tool_choice,
+                                       temperature, max_tokens, timeout)
+            elif name == "gemini":
+                turn = _tool_call_gemini(messages, tools, tool_choice,
+                                         temperature, max_tokens, timeout)
+            elif name == "openrouter":
+                turn = _tool_call_openrouter(messages, tools, tool_choice,
+                                             temperature, max_tokens, timeout)
+            else:
+                last_err = f"'{name}' cannot serve tool calls"
+                print(f"[ROUTER] {last_err}.", flush=True)
+                continue
+            if turn.ok:
+                return turn
+            # A normalised-but-empty answer counts as a failure worth escalating:
+            # the next provider may well produce a real tool call.
+            last_err = turn.error
+            print(f"[ROUTER] tool route '{name}' unusable ({turn.error}) — escalating.",
+                  flush=True)
+        except Exception as e:  # noqa: BLE001
+            last_err = f"{type(e).__name__}: {e}"
+            print(f"[ROUTER] tool route '{name}' failed ({last_err}) — escalating.",
+                  flush=True)
+
+    print(f"[ROUTER] FATAL: no tool provider answered (last: {last_err}).", flush=True)
+    return ToolTurn.failed(f"all tool providers failed (last error: {last_err})")
+
+
+def _tool_call_groq(messages, tools, tool_choice, temperature, max_tokens, timeout):
+    from modules.tool_calls import normalise_openai_response
+
+    kwargs = {
+        "model": GROQ_TOOL_MODEL,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "timeout": timeout,
+    }
+    completion = run_with_key_rotation(lambda c: c.chat.completions.create(**kwargs))
+    return normalise_openai_response(completion, provider="groq", model=GROQ_TOOL_MODEL)
+
+
+def _tool_call_gemini(messages, tools, tool_choice, temperature, max_tokens, timeout):
+    """Gemini via its OpenAI-compatibility endpoint, reusing the key rotation."""
+    from modules.tool_calls import ToolTurn
+
+    def _attempt(key):
+        return _openai_tool_http(
+            GEMINI_OPENAI_URL, key, GEMINI_TOOL_MODEL, messages, tools,
+            tool_choice, temperature, max_tokens, timeout, provider="gemini")
+
+    keys = _gemini_keys()
+    if not keys:
+        return ToolTurn.failed("no Gemini key configured", "gemini")
+    last: Exception | None = None
+    for key in keys:
+        try:
+            return _attempt(key)
+        except Exception as e:  # noqa: BLE001
+            last = e
+            print(f"[ROUTER] Gemini tool key failed ({type(e).__name__}) — rotating.",
+                  flush=True)
+    raise last or RuntimeError("gemini tool call failed")
+
+
+def _tool_call_openrouter(messages, tools, tool_choice, temperature, max_tokens, timeout):
+    """Walk the free tool-capable models until one actually answers."""
+    key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+    last: Exception | None = None
+    for m in OPENROUTER_TOOL_MODELS:
+        try:
+            turn = _openai_tool_http(OPENROUTER_URL, key, m, messages, tools,
+                                     tool_choice, temperature, max_tokens, timeout,
+                                     provider="openrouter")
+            if turn.ok:
+                return turn
+            last = RuntimeError(turn.error or "empty turn")
+        except Exception as e:  # noqa: BLE001
+            last = e
+        print(f"[ROUTER] OpenRouter tool model '{m}' unusable "
+              f"({type(last).__name__}) — trying next.", flush=True)
+    raise last or RuntimeError("no OpenRouter tool models configured")
+
+
+def _openai_tool_http(url, key, model, messages, tools, tool_choice,
+                      temperature, max_tokens, timeout, provider):
+    """One OpenAI-compatible tool request over plain HTTP.
+
+    Shared by Gemini's compatibility endpoint and OpenRouter — the only
+    differences between them are the URL, the key and the model id.
+    """
+    from modules.tool_calls import normalise_openai_response
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "X-Title": "JARVIS",
+    }
+    resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    return normalise_openai_response(resp.json(), provider=provider, model=model)
 
 
 # ===========================================================================
