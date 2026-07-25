@@ -4,6 +4,13 @@ import { API_BASE } from "../api";
 
 const POLL_MS = 800; // detection overlay refresh (the ambient daemon itself updates ~6s)
 
+// The backend caps a single MJPEG response at 120s so a forgotten <img> can't hold
+// a reader forever. When it ends, the browser just freezes on the last frame with
+// no error event — so re-request before that, and on any error.
+const STREAM_RESTART_MS = 100_000;
+const STREAM_RETRY_MS = 4_000;
+const STREAM_FPS = 12;
+
 // Box colour by what JARVIS sees: intruder/unknown = red, known person = gold, object = cyan.
 function colorFor(det) {
   if (det.label === "person") {
@@ -25,7 +32,9 @@ function labelFor(det) {
 export default function CameraFeedWidget() {
   const [state, setState] = useState(null);
   const [streamError, setStreamError] = useState(false);
+  const [nonce, setNonce] = useState(0);
   const timerRef = useRef(null);
+  const retryRef = useRef(null);
 
   useEffect(() => {
     let alive = true;
@@ -46,24 +55,56 @@ export default function CameraFeedWidget() {
     };
   }, []);
 
-  const cameraUrl = state?.camera_url;
+  const streamAvailable = state?.stream_available === true;
+  const streamPath = state?.stream_path || "/api/camera/stream";
+
+  // Re-request the stream before the server's own cap expires, so the panel
+  // never sits on a silently-frozen last frame.
+  useEffect(() => {
+    if (!streamAvailable) return undefined;
+    const t = setInterval(() => setNonce((n) => n + 1), STREAM_RESTART_MS);
+    return () => clearInterval(t);
+  }, [streamAvailable]);
+
+  // A publisher that comes back (daemon restart, face scan starting) should get
+  // picked up without the user reopening the widget.
+  useEffect(() => {
+    if (streamAvailable) {
+      setStreamError(false);
+      setNonce((n) => n + 1);
+    }
+  }, [streamAvailable]);
+
+  useEffect(() => () => clearTimeout(retryRef.current), []);
+
+  const onStreamError = () => {
+    setStreamError(true);
+    clearTimeout(retryRef.current);
+    retryRef.current = setTimeout(() => setNonce((n) => n + 1), STREAM_RETRY_MS);
+  };
+
+  const streamUrl = `${API_BASE}${streamPath}?fps=${STREAM_FPS}&n=${nonce}`;
   const fw = state?.frame_w || 0;
   const fh = state?.frame_h || 0;
   const detections = state?.detections || [];
   const objects = state?.objects_in_view || [];
   const emotion = state?.dominant_emotion || "neutral";
   const intruder = state?.intruder_detected;
-  const offline = !cameraUrl || state?.camera_active === false || streamError;
+  const cameraOffline = state?.camera_active === false;
+  // "No live feed" is not the same as "no camera": JARVIS can still be analysing
+  // through whoever owns the capture while nothing is published for us to watch.
+  const showStream = streamAvailable && !streamError;
+  const offline = cameraOffline || !showStream;
 
   return (
     <div className="camera-feed-ui holographic-ui">
       <div className={`cam-viewport ${intruder ? "is-intruder" : ""}`}>
-        {cameraUrl && (
+        {showStream && (
           <img
             className="cam-stream"
-            src={cameraUrl}
+            src={streamUrl}
             alt="optical feed"
-            onError={() => setStreamError(true)}
+            onError={onStreamError}
             onLoad={() => setStreamError(false)}
           />
         )}
@@ -110,8 +151,12 @@ export default function CameraFeedWidget() {
         {offline && (
           <div className="cam-signal-lost">
             <span className="cam-lost-glyph">⚠</span>
-            <span>OPTICAL FEED OFFLINE</span>
-            <span className="cam-lost-sub">camera unreachable — check IP Webcam</span>
+            <span>{cameraOffline ? "OPTICAL FEED OFFLINE" : "OPTICAL FEED IDLE"}</span>
+            <span className="cam-lost-sub">
+              {cameraOffline
+                ? "camera unreachable — check the phone camera app"
+                : "no camera owner is publishing — feed resumes when one does"}
+            </span>
           </div>
         )}
 

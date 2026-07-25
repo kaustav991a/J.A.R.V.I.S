@@ -4,7 +4,7 @@
 > Electron build. Split into **PART A — Automatic** (Claude runs, no human/hardware)
 > and **PART B — Manual** (Kaustav runs: voice / camera / phone / GUI). Run PART A
 > after every change; run PART B once, right before Electron. Roadmap: `JARVIS_MASTER_ROADMAP.md`.
-> Last automatic baseline: **2026-07-26 — 522/522 green, 22/22 harnesses, 11.5 s.**
+> Last automatic baseline: **2026-07-26 — 525/525 green, 22/22 harnesses, ~12 s.**
 > Legend: ✅ pass · ⚠️ partial · ❌ fail · ☐ not yet run.
 
 ---
@@ -29,7 +29,7 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 | `test_auth_status.py` | 18 | face-auth WS frame contract + `normalise_box` (G6.1) | ✅ |
 | `test_boot_preflight.py` | 14 | boot preflight: required/recommended env + model files | ✅ |
 | `test_calibrate_gesture.py` | 14 | G5.2 wizard derivations (palm_sign, pinch, reach) | ✅ |
-| `test_camera_stream.py` | 10 | MJPEG re-broadcast generator + **loopback-only** guard | ✅ |
+| `test_camera_stream.py` | 13 | MJPEG re-broadcast generator, **loopback-only** guard, feed advertisement | ✅ |
 | `test_cursor_overlay.py` | 61 | halo/toast/ripple geometry, colour-key verify, deadman, clamping | ✅ |
 | `test_enroll_face.py` | 17 | enrollment quality gate + diversity report | ✅ |
 | `test_face_gate.py` | 12 | owner/stranger/absence + `StrangerConfirmer` + uncertain floor | ✅ |
@@ -46,7 +46,7 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 | `test_speaker_errors.py` | 5 | TTS failure logged + swallowed, flag still resets | ✅ |
 | `test_watchdog_policy.py` | 14 | respawn give-up policy + owner-down alert (live log untouched) | ✅ |
 | `test_working_memory_lock.py` | 4 | RLock concurrency + snapshot copies | ✅ |
-| **Total** | **522** | | **✅ 0 failed** |
+| **Total** | **525** | | **✅ 0 failed** |
 
 **A2 — semi-automatic (need the backend up; Claude can drive):** `test_ping.py`,
 `test_ui_bridge_e2e.py`. Start `uvicorn main:app --host 127.0.0.1 --port 8000`, then run.
@@ -376,6 +376,10 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 | 21.6 | Feed off | `JARVIS_CAMERA_STREAM=0` | no feed, abstract animation only, **auth still works** | ☐ |
 | 21.7 | 🔒 Loopback only | `curl http://<desk-LAN-ip>:8000/api/camera/stream` from the phone | **403** — the desk camera is never served off-box | ☐ |
 | 21.8 | Stranger debounce | locked session, glance off-axis repeatedly | **zero** Telegram snapshots of himself; a real second person alerts in ~2 s | ☐ |
+| 21.9 | HUD panel is a bus reader | open the camera panel with the gesture daemon running | live picture + detection boxes, and the phone reports **ONE** connected client (not two) | ☐ |
+| 21.10 | Panel idle vs offline | kill every publisher (`JARVIS_GESTURE=0`, no scan) | reads **OPTICAL FEED IDLE**, not OFFLINE; picks the feed back up on its own when a publisher returns | ☐ |
+| 21.11 | Panel doesn't freeze | leave the panel open **>2 min** | still live — the client re-requests at 100 s, ahead of the server's 120 s response cap | ☐ |
+| 21.12 | Panel truly offline | stop the phone camera app | **OPTICAL FEED OFFLINE**; with `JARVIS_CAMERA_STREAM=0` it says IDLE instead of spamming 404s | ☐ |
 
 ## 22. Presence — home vs at-desk vs away (Track B)
 
@@ -402,8 +406,6 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 - **No voice click-to-talk** — the HUD has no push-to-talk; `/ws` doesn't read client messages.
 - **No smart-home** (§2.1), **no personal-document RAG** (§4). *(Home/away presence: DONE — §22.)*
 - **Voice ID** absent (face ID only).
-- **`/api/vision/state`** still hands the frontend the phone's raw camera URL, so the
-  ambient-vision panel is a second MJPEG consumer — the thing the frame bus exists to kill.
 
 See `JARVIS_MASTER_ROADMAP.md` §5 for how each closes.
 

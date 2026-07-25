@@ -66,6 +66,24 @@ def is_local_client(host: str | None) -> bool:
     return all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
 
 
+STREAM_PATH = "/api/camera/stream"
+
+
+def stream_info(bus_active: bool, env=None) -> dict:
+    """What `/api/vision/state` should tell the HUD about the live feed.
+
+    The HUD camera panel used to be handed the phone's raw MJPEG URL and connect
+    to it directly — the exact second consumer this module and `frame_bus` exist
+    to prevent, and a desk camera URL leaked to the browser besides. It now gets
+    only this: whether a shared feed is available, and the local path to it.
+
+    Unavailable covers BOTH "no owner is publishing" and "the endpoint is
+    switched off", so the panel doesn't request a stream that can only 404.
+    """
+    available = bool(bus_active) and stream_enabled(env)
+    return {"stream_available": available, "stream_path": STREAM_PATH}
+
+
 def clamp_fps(fps: float | None) -> float:
     """Keep a caller-supplied fps sane: a bogus value must not spin the loop."""
     try:

@@ -125,7 +125,14 @@ class AmbientVisionDaemon:
             return None
         ret, frame = cap.read()
         cap.release()
-        return frame if ret else None
+        if not ret:
+            return None
+        # We just became the (momentary) camera owner, so publish what we took:
+        # a reader that arrives in the next 1.5s gets this frame instead of
+        # opening yet another capture. The HUD panel reads the bus too, so this
+        # is also what keeps a picture on screen when the gesture daemon is off.
+        frame_bus.publish(frame, source=self.camera_url)
+        return frame
 
     def start(self):
         if not self.running:

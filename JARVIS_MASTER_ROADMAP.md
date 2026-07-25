@@ -669,11 +669,25 @@ mixed weighting, streak clear, stale gap, reset). **SUITE 471 → 478.**
 **LIVE-GATE OWED:** off-axis glances in a locked session must produce zero Telegram
 snapshots; a real second person must still alert within ~2s.
 
-**OPEN — `/api/vision/state` still leaks a second camera consumer.** It hands the frontend
-the phone's raw `camera_url` so the ambient-vision HUD panel pulls MJPEG *directly from the
-phone* — exactly the second-consumer pattern `frame_bus` exists to kill (an IP Webcam
-endpoint serves one MJPEG client). Now that `GET /api/camera/stream` re-serves the bus,
-migrate that panel onto it and stop publishing the raw URL. Low risk, not yet done.
+**✅ CLOSED 2026-07-26 — the HUD camera panel no longer opens its own connection to the
+phone.** `/api/vision/state` used to hand the frontend the phone's raw `camera_url`, so
+`CameraFeedWidget` pulled MJPEG *directly from the phone* — exactly the second-consumer
+pattern `frame_bus` exists to kill (an IP Webcam endpoint serves one MJPEG client), and a
+desk-camera URL in the browser besides. New contract: NEW pure
+`camera_stream.stream_info(bus_active, env)` → `{stream_available, stream_path}`, spread into
+`/api/vision/state` (which no longer contains a camera address at all, error branch included).
+`stream_available` is False when **nobody is publishing OR `JARVIS_CAMERA_STREAM=0`**, so the
+panel never requests a stream that could only 404. `ambient_vision._grab_frame` now
+**publishes** the frame it takes when it falls back to its own capture — a momentary owner
+was previously invisible to the bus, which is what kept the panel dark with the gesture daemon
+off. Frontend: streams `${API_BASE}/api/camera/stream?fps=12&n=<nonce>`, **re-requests every
+100 s** (the server caps one response at 120 s and a finished multipart `<img>` freezes
+silently — no error event fires, so a timer is the only way to notice), retries 4 s after an
+error, re-attaches when a publisher returns, and distinguishes **OPTICAL FEED OFFLINE**
+(camera unreachable) from **OPTICAL FEED IDLE** (no owner publishing — detections may still be
+flowing). `test_camera_stream` 10 → **13** (advertised payload is a local path with no camera
+address; unavailable with no publisher; unavailable behind the kill switch). **SUITE 522 → 525.**
+LIVE-GATE OWED — see the camera panel entry in §7.
 
 **Phone stream is flaky:** it went unreachable mid-session and returned on `.105` within a
 minute (WiFi power saving). Pin a DHCP reservation + disable battery optimisation for IP
@@ -768,6 +782,14 @@ script, not a counted harness.
   camera and the feed must still appear. Then `JARVIS_CAMERA_STREAM=0` → no feed, abstract
   animation only, auth still works. Curl the endpoint from the phone/another LAN host →
   **403** (loopback-only).
+- **HUD camera panel (2026-07-26 migration):** open the panel with the gesture daemon
+  running → live picture **plus** detection boxes, and the phone's own client counter must
+  show **ONE** connection, not two. Kill every publisher (`JARVIS_GESTURE=0`, no scan
+  running) → the panel must read **OPTICAL FEED IDLE** (not OFFLINE) and pick the feed back
+  up by itself when a publisher returns. Leave the panel open **>2 minutes** — it must not
+  freeze on a stale frame (the client re-requests at 100 s, ahead of the server's 120 s cap).
+  Unplug/stop the phone app entirely → **OPTICAL FEED OFFLINE**. `JARVIS_CAMERA_STREAM=0` →
+  no feed at all, and the panel says IDLE rather than spamming a 404.
 - **Track B presence:** set `JARVIS_PHONE_IP` + `JARVIS_PHONE_MAC` (pin a non-random MAC for
   the home SSID first), start the backend, hit `GET /api/presence/state` → `lan: "home"` with
   `how` reading `arp:mac`. Sit in front of the camera → `presence: "at_desk"`. Leave the desk

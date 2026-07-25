@@ -980,16 +980,23 @@ async def calendar_today():
 @app.get("/api/vision/state")
 async def vision_state():
     """
-    Optical-feed state for the HUD camera panel. The browser pulls the raw MJPEG
-    directly from the phone (camera_url); this endpoint supplies JARVIS's
-    detections so the HUD can draw bounding boxes/labels/identity on top, scaled
-    from the analysed frame (frame_w/frame_h) to the displayed video size.
+    Optical-feed state for the HUD camera panel: JARVIS's detections, so the HUD
+    can draw bounding boxes/labels/identity on top, scaled from the analysed
+    frame (frame_w/frame_h) to the displayed video size.
+
+    It no longer returns the phone's `camera_url`. The browser used to connect to
+    that MJPEG endpoint itself, which made the HUD the second consumer that kills
+    the shared phone stream (the failure `frame_bus` was built to end) and leaked
+    a desk-camera URL to the frontend. The panel now watches the SAME frames
+    everyone else does via `stream_path` -> /api/camera/stream, and only when
+    `stream_available` says an owner is actually publishing.
     """
     try:
         from ambient_vision import shared_optical_cache as c
+        from modules import camera_stream, frame_bus
         return {
             "camera_active": bool(c.get("camera_active")),
-            "camera_url": c.get("camera_url"),
+            **camera_stream.stream_info(frame_bus.active()),
             "frame_w": c.get("frame_w", 0),
             "frame_h": c.get("frame_h", 0),
             "detections": c.get("detections", []),
@@ -1001,7 +1008,8 @@ async def vision_state():
         }
     except Exception as e:
         print(f"[API] Vision state error: {e}")
-        return {"camera_active": False, "camera_url": None, "detections": [], "error": str(e)}
+        return {"camera_active": False, "stream_available": False,
+                "stream_path": "/api/camera/stream", "detections": [], "error": str(e)}
 
 @app.get("/api/presence/state")
 async def presence_state():

@@ -23,6 +23,29 @@ def test_stream_kill_switch():
     assert cs.stream_enabled({"JARVIS_CAMERA_STREAM": "0"}) is False
 
 
+def test_stream_info_advertises_the_local_path_not_the_camera():
+    """What /api/vision/state may tell the browser about the feed.
+
+    The old contract handed over the phone's raw MJPEG URL, so the HUD panel
+    became a second consumer on a stream that serves one. The replacement must
+    never contain a camera address — only a flag and a local path.
+    """
+    info = cs.stream_info(True, {})
+    assert info == {"stream_available": True, "stream_path": "/api/camera/stream"}
+    assert info["stream_path"].startswith("/"), "must be a local path, not a URL"
+
+
+def test_stream_info_unavailable_when_nobody_publishes():
+    assert cs.stream_info(False, {})["stream_available"] is False
+
+
+def test_stream_info_respects_the_kill_switch():
+    # Endpoint off => don't advertise it; the panel would only get a 404.
+    off = {"JARVIS_CAMERA_STREAM": "0"}
+    assert cs.stream_info(True, off)["stream_available"] is False
+    assert cs.stream_info(False, off)["stream_available"] is False
+
+
 def test_clamp_fps_never_spins_the_loop():
     assert cs.clamp_fps(None) == cs.DEFAULT_FPS
     assert cs.clamp_fps("abc") == cs.DEFAULT_FPS
