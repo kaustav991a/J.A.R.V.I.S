@@ -4,7 +4,7 @@
 > Electron build. Split into **PART A — Automatic** (Claude runs, no human/hardware)
 > and **PART B — Manual** (Kaustav runs: voice / camera / phone / GUI). Run PART A
 > after every change; run PART B once, right before Electron. Roadmap: `JARVIS_MASTER_ROADMAP.md`.
-> Last automatic baseline: **2026-07-26 — 525/525 green, 22/22 harnesses, ~12 s.**
+> Last automatic baseline: **2026-07-26 — 537/537 green, 23/23 harnesses, ~12 s.**
 > Legend: ✅ pass · ⚠️ partial · ❌ fail · ☐ not yet run.
 
 ---
@@ -40,13 +40,14 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 | `test_gesture_camera.py` | 46 | source list parse, reachability probe, open-first-available | ✅ |
 | `test_gesture_engine.py` | 64 | gesture state machine: relative/clutch/dwell/precision/grab-transit | ✅ |
 | `test_gesture_roi.py` | 29 | distance ROI crop + landmark remap (no-jump proof) | ✅ |
+| `test_listen_request.py` | 12 | click-to-talk flag: one-shot, expiry, cross-thread exactly-once | ✅ |
 | `test_llm_failover.py` | 7 | ollama empty-200 raises → cascade escalates instead of "" | ✅ |
 | `test_owner_notify.py` | 20 | owner fan-out (desk/TTS/phone) + presence-aware legs | ✅ |
 | `test_presence_probe.py` | 25 | ARP/TCP/ICMP ladder, asymmetric debounce, fuse + routing | ✅ |
 | `test_speaker_errors.py` | 5 | TTS failure logged + swallowed, flag still resets | ✅ |
 | `test_watchdog_policy.py` | 14 | respawn give-up policy + owner-down alert (live log untouched) | ✅ |
 | `test_working_memory_lock.py` | 4 | RLock concurrency + snapshot copies | ✅ |
-| **Total** | **525** | | **✅ 0 failed** |
+| **Total** | **537** | | **✅ 0 failed** |
 
 **A2 — semi-automatic (need the backend up; Claude can drive):** `test_ping.py`,
 `test_ui_bridge_e2e.py`. Start `uvicorn main:app --host 127.0.0.1 --port 8000`, then run.
@@ -115,6 +116,11 @@ a live script, deliberately excluded from the total.
 | 2.8 | Keyword barge-in | While he's speaking, say "stop" | Audio cuts immediately | ☐ |
 | 2.9 | VAD barge-in | While he's speaking, just start talking | Audio interrupts on any speech | ☐ |
 | 2.10 | TTS offline fallback | Disconnect internet, trigger a reply | Piper local voice speaks (`local_tts`) | ☐ |
+| 2.11 | Click-to-talk (awake) | idle + online, click the MicIndicator | within ~3 s: wake SFX, HUD → LISTENING, spoken command runs; console `[WAKE] Listen requested by hud` | ☐ |
+| 2.12 | Click-to-talk (offline) | system offline, click the MicIndicator | boots through the **normal biometric** path, same as saying "wake up" — **never** straight in as admin | ☐ |
+| 2.13 | Click while speaking | click mid-sentence | he finishes speaking, **then** listens (deliberate — cutting him off is barge-in, still deferred) | ☐ |
+| 2.14 | Click expires | click, then ignore him ~20 s | request expires; the mic does NOT open late | ☐ |
+| 2.15 | Click with no backend | stop the backend, click | log reads `MIC REQUEST FAILED — BACKEND UNREACHABLE` (never a silent nothing) | ☐ |
 
 ---
 
@@ -403,7 +409,6 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 - **No LLM self-correction** in the worker (§1.1b) — failures use hardcoded fallbacks, no error re-prompt.
 - **Not full-duplex** (§1.3) — listens *or* speaks (VAD barge-in works, but no streaming STT / echo-cancel).
   **Barge-in on interrupt has a known thread/stream leak** — deferred, it needs live audio to harness.
-- **No voice click-to-talk** — the HUD has no push-to-talk; `/ws` doesn't read client messages.
 - **No smart-home** (§2.1), **no personal-document RAG** (§4). *(Home/away presence: DONE — §22.)*
 - **Voice ID** absent (face ID only).
 

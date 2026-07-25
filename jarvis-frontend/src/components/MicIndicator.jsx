@@ -4,19 +4,19 @@ import "./MicIndicator.scss";
 
 // The visible voice affordance a voice-first product was missing. It mirrors the
 // REAL backend voice state (statuses already broadcast on the WS) so you can see
-// whether JARVIS is listening / thinking / speaking, and it's an obvious "talk
-// or type here" target. Click focuses the command line (works today); true
-// voice click-to-talk needs a backend bidirectional trigger (roadmap follow-up).
+// whether JARVIS is listening / thinking / speaking, and it is the click-to-talk
+// button: a click POSTs /api/listen, which the SERVER-side microphone loop picks
+// up between listen windows (so it takes a moment, and offline it wakes him).
 function derive(status) {
   if (!status || status === "offline")
-    return { tone: "off", label: "MIC OFF", hint: "system offline — say the wake word" };
+    return { tone: "off", label: "MIC OFF", hint: "click to wake, or say the wake word" };
   if (["listening", "security_listening", "calibrating"].includes(status))
     return { tone: "listening", label: "LISTENING", hint: "speak now" };
   if (["processing_llm", "searching"].includes(status))
     return { tone: "busy", label: "THINKING", hint: "processing your request" };
   if (status === "speaking")
     return { tone: "speaking", label: "SPEAKING", hint: "JARVIS is responding" };
-  return { tone: "ready", label: "READY", hint: "say the wake word, or click to type" };
+  return { tone: "ready", label: "READY", hint: "click to talk, or say the wake word" };
 }
 
 export default function MicIndicator({ status, onClick }) {

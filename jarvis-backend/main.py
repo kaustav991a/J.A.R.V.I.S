@@ -1011,6 +1011,29 @@ async def vision_state():
         return {"camera_active": False, "stream_available": False,
                 "stream_path": "/api/camera/stream", "detections": [], "error": str(e)}
 
+@app.post("/api/listen")
+async def request_listen():
+    """Click-to-talk: the HUD mic button asks the SERVER microphone to listen.
+
+    The HUD captures no audio — the mic is here — and both loops in wakeword.py
+    block inside `recognizer.listen(...)`, so there is nothing the event loop can
+    interrupt and no client WebSocket message is read while they're blocked. A
+    POST therefore sets a one-shot flag the loops consume between listen windows:
+    expect up to one window (~3s awake, ~5s offline) before it takes effect, and
+    the request expires if nothing picks it up (see modules/listen_request.py).
+
+    Offline, this is equivalent to SAYING "wake up" — it boots through the same
+    biometric path. It is never the admin bypass; a button must not grant admin.
+    """
+    from wakeword import is_shutting_down, listen_request
+
+    if is_shutting_down.is_set():
+        return {"ok": False, "reason": "shutting_down"}
+    listen_request.request("hud")
+    print("[API] Listen requested from the HUD mic button.", flush=True)
+    return {"ok": True, "ttl_s": listen_request.ttl_s}
+
+
 @app.get("/api/presence/state")
 async def presence_state():
     """Track B presence for the HUD: fused verdict + which signal carried it."""

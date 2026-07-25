@@ -39,9 +39,9 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.6** gesture vocab decision | ✅ DONE | §4 |
 | **G5.1** relative trackpad + accel + clutch + dwell right-click | ✅ DONE, live-gate owed | §3.3, §4 |
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
-| **Automatic test baseline** | ✅ **522 checks, 0 failures** (`test_screen_reader.py` is a live VLM script, not counted) | `TEST_PLAN.md` |
+| **Automatic test baseline** | ✅ **537 checks / 23 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted) | `TEST_PLAN.md` |
 | **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
-| **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); voice click-to-talk = follow-up | §5 |
+| **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); **click-to-talk DONE 2026-07-26** (`POST /api/listen`), live-gate owed | §5 |
 | **G5.3** cursor-halo + edge-toast overlays | ✅ code done, live-gate owed | §5 |
 | **G5.4** distance mitigation | ✅ code done, live-gate owed | §5 |
 | **G5.5** precision / dual-target filtering | ✅ code done, live-gate owed | §5 |
@@ -151,14 +151,28 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
 ### TIER A — desktop G5 finish (buildable now, no hardware to *build*, live-gate after)
 1. ✅ **G5.7 mic / voice affordance** — DONE (`3d3063d`). `MicIndicator.jsx` in the
    command terminal mirrors real voice state (READY/LISTENING/THINKING/SPEAKING/OFF),
-   click focuses the command line. **Follow-up:** true voice click-to-talk needs the
-   backend to READ client WS messages — the `/ws` voice loop blocks on the server-side
-   mic and never consumes `START_LISTENING`; add a bidirectional trigger (or a
-   `POST /api/listen`) later. Pairs with the login IdentityPrompt.
-   ⬜ **STILL OPEN — the only unbuilt Tier A item besides barge-in.** Shape: a
-   `POST /api/listen` that sets a flag the `/ws` voice loop checks between blocking mic
-   reads (it cannot be awaited *inside* `wait_for_wake_word`), or a real bidirectional WS
-   read leg. Buildable without hardware; needs a live mic to gate.
+   click focuses the command line. Pairs with the login IdentityPrompt.
+   ✅ **Click-to-talk DONE 2026-07-26** — Tier A now has only barge-in left. The WS idea
+   was dropped for the reason it never worked: nothing reads client frames while the
+   voice loop is blocked inside `recognizer.listen(...)`, so `START_LISTENING` was a
+   no-op. Instead NEW dependency-free `modules/listen_request.py` (`ListenRequest`:
+   thread-safe, clock-injectable) + `POST /api/listen`, consumed by the loops in
+   `wakeword.py` **between** listen windows — the one seam that exists. Two rules it
+   holds: **one-shot** (`consume()` clears, so a press can't make him listen twice) and
+   **it expires** (`ttl_s` 15s — a click during a 40s LLM turn must not pop the mic open
+   afterwards). Wired at THREE points: `wait_for_jarvis` (press = called by name, plus
+   the wake SFX), `wait_for_wake_word` (press = boot, returning `CLICK_WAKE_PHRASE`
+   = **"wake up"**, the guest/biometric path — a button must never take the admin
+   bypass), and the **no-microphone fallback** loop, where the button is the only wake
+   path that exists. Checked AFTER the deafen guard on purpose: a press while he is
+   speaking stays pending and fires when he stops — cutting him off is barge-in, a
+   different (still deferred) feature. Frontend: `MicIndicator` is now a real button —
+   `startVoiceCommand` POSTs `/api/listen`, surfaces a refusal in the system log, and
+   works while offline (there it means "wake up"). `test_listen_request.py` **12**
+   (one-shot, expiry either side of the boundary, refresh-on-second-press, 8-thread
+   exactly-once race, plus a static check that the wake phrase is never the admin one).
+   **SUITE 525 → 537.** COST TO ACCEPT: up to one listen window of latency (~3s awake,
+   ~5s offline) before a press is noticed. LIVE-GATE OWED — see §7.
 2. ✅ **G5.3 overlays** — DONE (code). `cursor_overlay.py` = separate always-on-top
    **click-through** process (WS_EX_TRANSPARENT + WS_EX_NOACTIVATE — the gesture cursor
    still clicks the app beneath; the overlay only draws). Cursor halo recolours by pose
@@ -782,6 +796,15 @@ script, not a counted harness.
   camera and the feed must still appear. Then `JARVIS_CAMERA_STREAM=0` → no feed, abstract
   animation only, auth still works. Curl the endpoint from the phone/another LAN host →
   **403** (loopback-only).
+- **Click-to-talk (2026-07-26):** with him ONLINE and idle, click the MicIndicator —
+  within one listen window (~3s) the wake SFX plays and the HUD goes to LISTENING; speak a
+  command and it must run. Console shows `[WAKE] Listen requested by hud (mic button)`.
+  Then with him OFFLINE, click it: he must BOOT through the normal biometric face-auth
+  path (identical to saying "wake up") — **never** straight in as admin. Click while he is
+  mid-sentence: he must finish speaking, then start listening (that pause is deliberate;
+  cutting him off is barge-in, which is still deferred). Click, then ignore him for ~20s:
+  the request must EXPIRE, not open the mic late. Finally, with the backend stopped, click
+  it: the log line reads `MIC REQUEST FAILED — BACKEND UNREACHABLE`, no silent nothing.
 - **HUD camera panel (2026-07-26 migration):** open the panel with the gesture daemon
   running → live picture **plus** detection boxes, and the phone's own client counter must
   show **ONE** connection, not two. Kill every publisher (`JARVIS_GESTURE=0`, no scan

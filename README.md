@@ -189,7 +189,13 @@ JARVIS_OVERLAY_DEADMAN_S=20         # overlay self-exits after this long with no
 JARVIS_CAMERA_STREAM=1              # GET /api/camera/stream — MJPEG re-broadcast of the SHARED
                                     # camera for the HUD's live face-auth feed. Never opens a
                                     # camera itself (503 when nothing is publishing) and is
-                                    # LOOPBACK-ONLY; 0 disables it outright.
+                                    # LOOPBACK-ONLY; 0 disables it outright. The HUD camera
+                                    # panel reads this too — it never connects to the phone.
+# Click-to-talk needs no env: POST /api/listen (the HUD mic button) asks the SERVER
+# microphone to listen. The voice loops block inside recognizer.listen(), so the request
+# is a one-shot flag consumed BETWEEN listen windows — expect ~3s awake / ~5s offline, and
+# it expires after 15s. Offline it boots him exactly as saying "wake up" does (biometric
+# path, never the admin bypass).
 JARVIS_FACE_UNCERTAIN_FLOOR=0.25    # a non-owner face scoring above this is treated as "probably
                                     # the owner off-axis" and counts half towards a stranger alert
 JARVIS_STRANGER_CONFIRM=3           # evidence needed before asserting a stranger (per face check,

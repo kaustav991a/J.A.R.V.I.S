@@ -50,6 +50,7 @@ HARNESSES = [
     "test_gesture_camera.py",
     "test_gesture_engine.py",
     "test_gesture_roi.py",
+    "test_listen_request.py",
     "test_llm_failover.py",
     "test_owner_notify.py",
     "test_presence_probe.py",

@@ -70,6 +70,22 @@ def _transcribe(recognizer, audio):
 # 1. Global kill-switch for graceful shutdowns
 is_shutting_down = threading.Event()
 
+# ==========================================
+# CLICK-TO-TALK (POST /api/listen)
+# ==========================================
+# The HUD has no microphone of its own — the mic lives here, on the server — and
+# both loops below block inside recognizer.listen(), so the event loop cannot
+# interrupt them. The button therefore sets this flag and the loops consume it
+# between listen windows. See modules/listen_request.py for why it expires.
+from modules.listen_request import ListenRequest  # noqa: E402  (stdlib-only)
+
+listen_request = ListenRequest()
+
+# What a button press means at the offline stage. Deliberately the GUEST phrase,
+# never "admin override": a click must not hand out admin, it goes through the
+# same biometric boot a spoken "wake up" does.
+CLICK_WAKE_PHRASE = "wake up"
+
 def wait_for_wake_word():
     """STAGE 1: The Initial Boot (Only happens once)"""
     # --- LAZY IMPORT FIX: Prevents Uvicorn infinite loops on Windows ---
@@ -98,6 +114,13 @@ def wait_for_wake_word():
                     import time
                     time.sleep(0.1)
                     continue
+
+                # Click-to-talk: the HUD mic button boots him exactly as saying
+                # "wake up" does (biometric path — never the admin bypass).
+                clicked = listen_request.consume()
+                if clicked:
+                    print(f"[WAKE] Boot requested by {clicked} (mic button).", flush=True)
+                    return CLICK_WAKE_PHRASE
 
                 try:
                     # 5-second listen window for the initial wake
@@ -128,6 +151,12 @@ def wait_for_wake_word():
         # Sleep infinitely so the system doesn't crash, allowing backdoor commands
         while not is_shutting_down.is_set():
             import time
+            # With no microphone there is no spoken way in at all, so the mic
+            # button is the ONLY wake path left — honour it here too.
+            clicked = listen_request.consume()
+            if clicked:
+                print(f"[WAKE] Boot requested by {clicked} (no microphone — text mode).", flush=True)
+                return CLICK_WAKE_PHRASE
             time.sleep(1)
             
     return None 
@@ -159,6 +188,20 @@ def wait_for_jarvis():
                     import time
                     time.sleep(0.1)
                     continue
+
+                # Click-to-talk: same effect as being called by name. Checked
+                # AFTER the deafen guard on purpose — a click while he is
+                # talking stays pending (that would be barge-in, not this) and
+                # fires the moment he stops, if it hasn't expired by then.
+                clicked = listen_request.consume()
+                if clicked:
+                    print(f"[WAKE] Listen requested by {clicked} (mic button).", flush=True)
+                    try:
+                        from modules.sfx_manager import play_sfx
+                        play_sfx("wake")
+                    except Exception:
+                        pass
+                    return True
 
                 try:
                     # Shorter 3-second timeout keeps the loop snappy

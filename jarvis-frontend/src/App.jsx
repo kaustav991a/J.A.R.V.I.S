@@ -633,19 +633,33 @@ function App() {
     return () => clearInterval(t);
   }, []);
 
-  const startVoiceCommand = () => {
-    if (socket.current?.readyState === WebSocket.OPEN) {
-      if (!hasWokenUp) setHasWokenUp(true);
-      setLogSpeaker("SYSTEM");
-      setLogTextRaw("INITIALIZING MIC OVERRIDE...");
-      socket.current.send("START_LISTENING");
+  // Click-to-talk. The mic lives on the SERVER, and its listening loops block
+  // inside a recognizer call, so this can't be a WebSocket message (nothing
+  // reads client frames while a loop is blocked) — it's a POST that sets a flag
+  // the loop consumes between listen windows. Hence "up to a few seconds".
+  const startVoiceCommand = async () => {
+    if (!hasWokenUp) setHasWokenUp(true);
+    setLogSpeaker("SYSTEM");
+    setLogTextRaw(
+      status === "offline" ? "WAKE REQUESTED — BOOTING…" : "MIC REQUESTED — SPEAK NOW…"
+    );
+    try {
+      const res = await fetch(`${API_BASE}/api/listen`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || data?.ok === false) {
+        surfaceTerminalError(
+          `MIC REQUEST REFUSED${data?.reason ? ` — ${String(data.reason).toUpperCase()}` : ""}`
+        );
+      }
+    } catch {
+      surfaceTerminalError("MIC REQUEST FAILED — BACKEND UNREACHABLE");
     }
   };
 
-  // Mic affordance click: focus the command line (works today) and fire the
-  // (future) voice trigger — harmless no-op until the backend reads WS input.
+  // Mic affordance click: ask the server mic to listen, and focus the command
+  // line so typing is still one keystroke away. Works offline too — there it
+  // means the same thing as saying "wake up".
   const handleMicClick = () => {
-    if (status === "offline") return;
     startVoiceCommand();
     commandInputRef.current?.focus();
   };
