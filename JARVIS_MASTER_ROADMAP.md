@@ -50,7 +50,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **Away→mobile presence (Track B probe)** | ✅ DONE (code) — ARP/TCP/ICMP ladder + asymmetric debounce + owner_notify routing; live-gate owed | §5 #7, §6.2 |
 | **Smart-home / IoT agent** | ⬜ MISSING | §5 |
 | **Guarded self-improvement loop** | ⬜ MISSING | §5 |
-| **Agentic core (Claude-Code-grade tool loop)** | ⬜ MISSING — foundational for self-improvement | §5 (Tier B #12) |
+| **Agentic core (Claude-Code-grade tool loop)** | ⬜ MISSING — foundational for self-improvement | §5 (Tier C #12) |
 | **Presence/context state machine** | 🟡 partial | §5 |
 | **Electron packaging** | ⬜ PARKED (after all desktop) | §5 |
 | **Mobile app (Track C)** | ⬜ FUTURE (after Electron) | §6 |
@@ -155,6 +155,10 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
    backend to READ client WS messages — the `/ws` voice loop blocks on the server-side
    mic and never consumes `START_LISTENING`; add a bidirectional trigger (or a
    `POST /api/listen`) later. Pairs with the login IdentityPrompt.
+   ⬜ **STILL OPEN — the only unbuilt Tier A item besides barge-in.** Shape: a
+   `POST /api/listen` that sets a flag the `/ws` voice loop checks between blocking mic
+   reads (it cannot be awaited *inside* `wait_for_wake_word`), or a real bidirectional WS
+   read leg. Buildable without hardware; needs a live mic to gate.
 2. ✅ **G5.3 overlays** — DONE (code). `cursor_overlay.py` = separate always-on-top
    **click-through** process (WS_EX_TRANSPARENT + WS_EX_NOACTIVATE — the gesture cursor
    still clicks the app beneath; the overlay only draws). Cursor halo recolours by pose
@@ -163,9 +167,10 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
    UNAUTHORIZED / CONTROL OFF). `gesture_daemon` spawns it (`JARVIS_GESTURE_OVERLAY=1`
    default, win32-only), streams state frames to its stdin each `_hud`, kills on stop;
    overlay polls its own cursor pos (~60fps) so smoothness is IPC-independent, exits on
-   stdin EOF like `lock_overlay.py`. Live-gate owed (see §7). **Follow-up:** click-flash
-   (engine exposes no pinch pose — click is an intent, not `pose`; add a click pulse when
-   state carries the click event). Biggest *felt* gesture jump.
+   stdin EOF like `lock_overlay.py`. Live-gate owed (see §7). ✅ **Follow-up CLOSED by G6.2** — the click-flash needed the
+   state to carry the click *event* (a pinch is an intent, not a `pose`), which
+   `gesture_state["last_action"]` now does, so `cursor_overlay` draws an expanding ripple
+   per action (cyan click · purple right-click · amber grab). Biggest *felt* gesture jump.
    🚨 **BLACK-DESKTOP INCIDENT + HARDENING 2026-07-25.** Kaustav's whole screen went dark
    and could not be dismissed; it only came back when he Alt+F4'd the terminal running the
    backend. Diagnosis: this overlay. Three properties combined into a desk-killer — ONE
@@ -357,14 +362,22 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
       it incrementally. Governance-gated from day one — NEVER an ungoverned tool loop.
 
 ### TIER D — packaging & mobile (LAST, in this order)
-12. **Full `TEST_PLAN.md` pass** — automatic (Claude) + manual (Kaustav). Gate to Electron.
-13. **Electron packaging** — single .exe boots FE+BE; notch → fullscreen takeover
+13. **Full `TEST_PLAN.md` pass** — automatic (Claude) + manual (Kaustav). Gate to Electron.
+    ⚠️ **`TEST_PLAN.md` IS STALE (found 2026-07-25):** it still claims *205/205 green* and
+    documents only 12 harnesses, while the repo has **28 self-running harnesses / 522
+    checks**. Missing from the doc entirely: `test_ambient_camera`, `test_auth_status`,
+    `test_boot_preflight`, `test_camera_stream`, `test_cursor_overlay`, `test_frame_bus`,
+    `test_gesture_camera`, `test_gesture_roi`, `test_llm_failover`, `test_presence_probe`,
+    `test_speaker_errors`, `test_watchdog_policy`, `test_working_memory_lock`. Also note
+    `test_screen_reader.py` is a LIVE VLM script, not a counted harness. Refresh the
+    automatic section (per-harness counts + the one-line runner) BEFORE claiming a pass.
+14. **Electron packaging** — single .exe boots FE+BE; notch → fullscreen takeover
     overlay (live agent-cam). ⚠️ `jarvis-frontend/package.json` lost its electron config
     in the Jul-4 history rewrite (no `main`/builder block/deps) though `node_modules`
     still has electron + a stale Jun-28 `release/*.exe`; `NotchView.jsx`/`SidecarView.jsx`/
     `electron/` are untracked. To resume: restore the package.json electron config,
     reconcile the stale Notch/Sidecar views with the current HUD, rebuild.
-14. **Mobile app (Track C)** — Flutter (recommended): FCM push leg on `owner_notify`,
+15. **Mobile app (Track C)** — Flutter (recommended): FCM push leg on `owner_notify`,
     `POST /api/presence` ingest (supersedes Track B), live agent-cam, geofence, voice.
 
 ---
@@ -537,9 +550,9 @@ for URLs. Both paths now share `_first_frame(cap, attempts, sleep)`
 frames…")` and auto-select moves on. `_open_source` gained injectable `capture=`/`sleep=`
 kwargs (positional signature unchanged, so `open_first_available`'s `opener` contract holds),
 making the gate harnessable: `test_gesture_camera.py` 28→46 checks (incl. stalled-stream-
-loses-to-next-working-source). **USB still owed** — needs from
-Kaustav: DroidCam PC client installed (→ USB = a webcam index) or ADB path
-(`adb forward tcp:4747 tcp:4747` → `127.0.0.1:4747/video`); + app version. **Live-gate:**
+loses-to-next-working-source). ~~USB still owed~~ **USB DROPPED 2026-07-19 (Kaustav's call — WiFi only).** HyperOS never
+authorised ADB (interface bound, `adb devices` stayed empty), and the DroidCam PC client
+path wasn't worth chasing while WiFi works. Do not reopen unless he asks. **Live-gate:**
 kill the first source mid-run / start with only the 2nd app streaming → daemon picks the
 reachable one; confirm a fully-dead list logs the summary + retries in 30s.
 
@@ -617,6 +630,12 @@ cached result) reads `stranger.confirmed`, so it inherits the debounce for free.
 mixed weighting, streak clear, stale gap, reset). **SUITE 471 → 478.**
 **LIVE-GATE OWED:** off-axis glances in a locked session must produce zero Telegram
 snapshots; a real second person must still alert within ~2s.
+
+**OPEN — `/api/vision/state` still leaks a second camera consumer.** It hands the frontend
+the phone's raw `camera_url` so the ambient-vision HUD panel pulls MJPEG *directly from the
+phone* — exactly the second-consumer pattern `frame_bus` exists to kill (an IP Webcam
+endpoint serves one MJPEG client). Now that `GET /api/camera/stream` re-serves the bus,
+migrate that panel onto it and stop publishing the raw URL. Low risk, not yet done.
 
 **Phone stream is flaky:** it went unreachable mid-session and returned on `.105` within a
 minute (WiFi power saving). Pin a DHCP reservation + disable battery optimisation for IP
