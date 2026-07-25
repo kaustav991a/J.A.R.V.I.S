@@ -34,23 +34,24 @@ def scan_for_faces(timeout=10):
 
     print("[VISION] Connecting to Camera...")
 
-    camera_url = "http://192.168.0.106:8080/video"
-    
-    # --- NEW: Fast Camera Ping ---
-    # Quickly check if the camera is reachable to avoid OpenCV's long timeout freeze
+    # Camera source resolves EXACTLY like the gesture stack (JARVIS_CAM_SOURCES
+    # priority list, legacy JARVIS_CAM fallback). This was a hardcoded
+    # 192.168.0.106:8080 — a third phone IP that drifted stale, so every face
+    # scan bailed with "Camera unreachable" even while the gesture daemon was
+    # streaming fine from a different address. open_first_available keeps the
+    # fast-fail property the old urllib ping was there for (TCP probe per URL,
+    # ~1.5 s, never lets cv2 hang) and additionally frame-validates, so a
+    # connected-but-stalled stream is skipped instead of scanned blindly.
+    from modules.gesture_camera import (CameraError, open_first_available,
+                                        parse_sources)
+
+    sources = parse_sources(os.getenv("JARVIS_CAM_SOURCES"), os.getenv("JARVIS_CAM"))
     try:
-        import urllib.request
-        # Check the base URL instead of the video stream so it doesn't download the stream
-        urllib.request.urlopen("http://192.168.0.106:8080", timeout=1.0)
-    except Exception as e:
-        print(f"[VISION] Camera unreachable, skipping facial scan. ({e})")
+        cap, chosen = open_first_available(sources, probe_timeout=1.5)
+    except CameraError as e:
+        print(f"[VISION] Camera unreachable, skipping facial scan. [{e.kind}] {e}")
         return None
-
-    cap = cv2.VideoCapture(camera_url)
-
-    if not cap.isOpened():
-        print("[VISION] ERROR: Cannot access camera.")
-        return None
+    print(f"[VISION] camera source: {chosen}")
 
     # Haar Cascade (fast)
     cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'

@@ -9,7 +9,27 @@ import os
 
 # Camera (IP Webcam) endpoints — env-overridable so the IP can change without code edits.
 # CAMERA_URL is the MJPEG video stream; CAMERA_BASE is the lightweight reachability ping.
-CAMERA_URL  = os.getenv("JARVIS_CAMERA_URL", "http://192.168.0.106:8080/video")
+
+
+def _default_camera_url() -> str:
+    """First stream URL of the SHARED camera priority list.
+
+    ambient_vision, gesture_daemon and vision.scan_for_faces must follow the same
+    phone address; each used to carry its own hardcoded IP and they drifted apart
+    (this one and vision.py both pointed at a 192.168.0.106 that no longer
+    existed). Parsed by hand rather than via gesture_camera.parse_sources because
+    this module deliberately has NO heavy imports (that one pulls in cv2).
+    Device indices are skipped — an int index is meaningless as a URL.
+    """
+    raw = os.getenv("JARVIS_CAM_SOURCES") or os.getenv("JARVIS_CAM") or ""
+    for part in raw.split(","):
+        s = part.strip()
+        if s and not s.isdigit():
+            return s
+    return "http://192.168.0.106:8080/video"
+
+
+CAMERA_URL  = os.getenv("JARVIS_CAMERA_URL") or _default_camera_url()
 CAMERA_BASE = os.getenv("JARVIS_CAMERA_BASE", CAMERA_URL.rsplit("/", 1)[0])
 
 # --- SHARED CACHE ---

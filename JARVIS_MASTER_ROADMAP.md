@@ -244,6 +244,17 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
     `test_gesture_camera.py` 28/28. `.env` `JARVIS_CAM_SOURCES` set. **USB DROPPED 2026-07-19
     (Kaustav's call — WiFi only):** HyperOS never authorised adb (ADB Interface bound OK but
     `adb devices` empty — MIUI security-settings toggle / RSA prompt / charge-only mode). Not chasing.
+    ✅ **EXTENDED 2026-07-25 — one camera list for the WHOLE stack.** G6.3 only rewired the
+    gesture daemon; `ambient_vision.py` and `vision.scan_for_faces` still carried their own
+    hardcoded `192.168.0.106:8080`, a third phone IP that had gone stale — so every face scan
+    bailed with "Camera unreachable" and ambient vision saw nothing *while the gesture daemon
+    streamed fine from a different address*. Both now resolve off `JARVIS_CAM_SOURCES`:
+    `scan_for_faces` calls `open_first_available` (keeps the old fast-fail property, adds frame
+    validation, replaces the hand-rolled urllib ping); `ambient_vision` parses the list by hand
+    (it must stay import-light — no cv2), taking the first URL and skipping device indices.
+    `JARVIS_CAMERA_URL` still pins ambient vision if set. New `test_ambient_camera.py` 15/15,
+    suite **351→366**. `.env` list reordered `.105` first (the G6.2 gate address) so the common
+    case pays zero probe delay.
 7. **Away→mobile presence Track B** — `modules/presence_probe.py` (phone-on-WiFi
    ARP/TCP/ping + HOME/AWAY debounce) feeding `owner_notify` routing. No app. (Note:
    away→phone *already works* via Telegram; this adds *automatic* presence.)

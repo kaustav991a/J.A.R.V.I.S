@@ -175,8 +175,13 @@ ANTHROPIC_API_KEY=                  # optional (agent worker)
 
 # --- Voice / vision (optional) ---
 JARVIS_VOSK_MODEL=                  # override Vosk model dir (default: models/vosk/)
-JARVIS_CAMERA_URL=                  # IP camera stream for ambient vision
-JARVIS_CAM=                         # hand-gesture camera (device index or IP Webcam URL)
+JARVIS_CAM_SOURCES=                 # camera priority list (comma: device indices and/or stream URLs).
+                                    # ONE list for the whole stack — gestures, face scan and ambient
+                                    # vision all follow it; first source that opens AND delivers a
+                                    # frame wins, dead URLs skipped by a ~1.5s TCP probe.
+JARVIS_CAMERA_URL=                  # pin ambient vision to one stream, ignoring the list above
+JARVIS_CAM=                         # legacy single camera (device index or URL) — fallback when
+                                    # JARVIS_CAM_SOURCES is unset
 JARVIS_CAM_MIRROR=                  # 1 to flip horizontally if the gesture cursor moves inverted
 JARVIS_FULL_DUPLEX=1
 JARVIS_AEC=1
