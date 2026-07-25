@@ -410,7 +410,19 @@ summary), `make_frame_source` (auto-select + wrap, `FrameSource` now accepts a p
 source, sets `gesture_state["camera"]` to it. `test_gesture_camera.py` 28/28; suite 287→315.
 Recommended `.env` for Kaustav (both apps on phone 192.168.0.103, one runs at a time):
 `JARVIS_CAM_SOURCES=http://192.168.0.103:4747/video,http://192.168.0.103:8080/video,0`
-(DroidCam WiFi first, IP Webcam second, local index last). **USB still owed** — needs from
+(DroidCam WiFi first, IP Webcam second, local index last).
+✅ **FOLLOW-UP FIX (2026-07-25, from the pre-merge audit):** `_open_source` was asymmetric —
+an index source read up to 10 frames before accepting, but a URL source only checked
+`cap.isOpened()` and returned WITHOUT reading one, so a stream that connects and then
+stalls (app backgrounded, phone camera held by another app) got auto-selected over a later
+working source and `open_first_available`'s "opens AND delivers a frame" contract was false
+for URLs. Both paths now share `_first_frame(cap, attempts, sleep)`
+(`INDEX_FRAME_ATTEMPTS=10`, `STREAM_FRAME_ATTEMPTS=20` — WiFi MJPEG needs longer for frame 1,
+`FRAME_WAIT_S=0.1`); a stalled URL raises `CameraError("stream", "connected but delivered no
+frames…")` and auto-select moves on. `_open_source` gained injectable `capture=`/`sleep=`
+kwargs (positional signature unchanged, so `open_first_available`'s `opener` contract holds),
+making the gate harnessable: `test_gesture_camera.py` 28→46 checks (incl. stalled-stream-
+loses-to-next-working-source). **USB still owed** — needs from
 Kaustav: DroidCam PC client installed (→ USB = a webcam index) or ADB path
 (`adb forward tcp:4747 tcp:4747` → `127.0.0.1:4747/video`); + app version. **Live-gate:**
 kill the first source mid-run / start with only the 2nd app streaming → daemon picks the

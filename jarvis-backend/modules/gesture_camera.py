@@ -11,10 +11,15 @@ Fixes the two G1 live-run findings:
    appended (e.g. "?640x480") unless the URL already has one.
 
 2. **Camera error messages** — distinguishes "no device present" (index fails
-   to open), "device busy/failing" (opens but never delivers a frame) and
-   "stream unreachable" (URL), including the mobile-data-IP trap hit during
-   G1 setup: IP Webcam must show its Wi-Fi IP (same subnet as this PC), not
-   the 192.0.0.x mobile-data address.
+   to open), "device busy/failing" (opens but never delivers a frame),
+   "stream unreachable" and "stream connected but stalled" (URL), including the
+   mobile-data-IP trap hit during G1 setup: IP Webcam must show its Wi-Fi IP
+   (same subnet as this PC), not the 192.0.0.x mobile-data address.
+
+   Every source — index OR URL — must hand over a real frame before it is
+   accepted, so a stream that connects and then stalls (app backgrounded,
+   camera held by another app on the phone) is rejected instead of being
+   auto-selected over a later working source.
 
 Used by gesture_spike.py now; gesture_daemon.py adopts it in G3.
 """
@@ -92,9 +97,40 @@ def url_reachable(url: str, timeout: float = 1.5, connect=None) -> bool:
     return True
 
 
-def _open_source(source, width: int, height: int, url_res: str | None):
+INDEX_FRAME_ATTEMPTS = 10
+STREAM_FRAME_ATTEMPTS = 20  # a WiFi MJPEG stream needs longer to hand over frame 1
+FRAME_WAIT_S = 0.1
+
+
+def _default_capture(spec):
+    if isinstance(spec, int):
+        return cv2.VideoCapture(spec, cv2.CAP_DSHOW)
+    return cv2.VideoCapture(spec)
+
+
+def _first_frame(cap, attempts: int, sleep) -> bool:
+    """True once the capture actually hands over a frame.
+
+    "isOpened()" only means the device/socket was acquired — a busy webcam or a
+    stalled MJPEG stream opens and then delivers nothing. Auto-select would
+    happily pick such a source over a later working one, so every source is
+    frame-validated here before it is accepted.
+    """
+    for i in range(attempts):
+        ok, _frame = cap.read()
+        if ok:
+            return True
+        if i + 1 < attempts:
+            sleep(FRAME_WAIT_S)
+    return False
+
+
+def _open_source(source, width: int, height: int, url_res: str | None,
+                 *, capture=None, sleep=None):
+    capture = capture or _default_capture
+    sleep = sleep or time.sleep
     if isinstance(source, int):
-        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+        cap = capture(source)
         if not cap.isOpened():
             cap.release()
             raise CameraError(
@@ -106,11 +142,8 @@ def _open_source(source, width: int, height: int, url_res: str | None):
             )
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        for _ in range(10):  # device present but held by another app?
-            ok, _frame = cap.read()
-            if ok:
-                return cap
-            time.sleep(0.1)
+        if _first_frame(cap, INDEX_FRAME_ATTEMPTS, sleep):  # held by another app?
+            return cap
         cap.release()
         raise CameraError(
             "busy",
@@ -120,7 +153,7 @@ def _open_source(source, width: int, height: int, url_res: str | None):
             "holding it — close it and retry",
         )
     url = decorate_url(str(source), url_res)
-    cap = cv2.VideoCapture(url)
+    cap = capture(url)
     if not cap.isOpened():
         cap.release()
         raise CameraError(
@@ -131,7 +164,17 @@ def _open_source(source, width: int, height: int, url_res: str | None):
             "Wi-Fi IP (192.168.x.x here), NOT the mobile-data 192.0.0.x one\n"
             "  - test the URL in a browser on this PC first",
         )
-    return cap
+    if _first_frame(cap, STREAM_FRAME_ATTEMPTS, sleep):
+        return cap
+    cap.release()
+    raise CameraError(
+        "stream",
+        f"stream connected but delivered no frames: {url}\n"
+        "  - the app is running but not streaming — is it backgrounded, or is "
+        "the phone camera held by another app (Camera/WhatsApp/Zoom)?\n"
+        "  - re-open the app and press Start server, then retry\n"
+        "  - if two camera apps are installed, only ONE can hold the camera",
+    )
 
 
 def open_first_available(sources, width: int = 640, height: int = 480,

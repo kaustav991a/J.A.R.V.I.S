@@ -4,9 +4,10 @@ test_gesture_camera.py — G6.3 camera source auto-select (pure logic)
 Run: venv\Scripts\python.exe test_gesture_camera.py
 
 Exercises parse_sources (ordering/dedup/fallback), url_reachable (via an
-injected connect), and open_first_available (first-working-wins /
-skip-unreachable / skip-erroring / all-fail) via injected reachable + opener.
-No real camera or network is touched.
+injected connect), open_first_available (first-working-wins /
+skip-unreachable / skip-erroring / all-fail) via injected reachable + opener,
+and _open_source's frame validation (index AND url must deliver a real frame)
+via an injected capture factory. No real camera or network is touched.
 """
 
 from modules import gesture_camera as gc
@@ -194,6 +195,134 @@ def test_open_only_source_unreachable_raises():
         check(False, "expected CameraError when the only source is unreachable")
 
 
+# ------------------------------------------------------- _open_source frame gate
+
+class _FakeCap:
+    """Capture stub: opens or not, delivers a frame after `fail_frames` reads."""
+
+    def __init__(self, opened=True, fail_frames=0, total_frames=99):
+        self._opened = opened
+        self._fail_frames = fail_frames
+        self._total = total_frames
+        self.reads = 0
+        self.released = False
+        self.props = {}
+
+    def isOpened(self):  # noqa: N802 — cv2 API name
+        return self._opened
+
+    def read(self):
+        self.reads += 1
+        if self.reads <= self._fail_frames or self.reads > self._fail_frames + self._total:
+            return False, None
+        return True, f"FRAME{self.reads}"
+
+    def set(self, prop, value):
+        self.props[prop] = value
+
+    def release(self):
+        self.released = True
+
+
+def _capture_factory(caps):
+    """capture(spec) -> caps[spec]; records the exact specs requested."""
+    seen = []
+
+    def capture(spec):
+        seen.append(spec)
+        return caps[spec]
+
+    return capture, seen
+
+
+def _noop_sleep(_s):
+    pass
+
+
+def test_url_accepted_only_after_a_real_frame():
+    cap = _FakeCap(opened=True, fail_frames=0)
+    capture, seen = _capture_factory({"http://a/video?640x480": cap})
+    got = gc._open_source("http://a/video", 640, 480, "640x480",
+                          capture=capture, sleep=_noop_sleep)
+    check(got is cap, "working stream returned")
+    check(cap.reads == 1, f"frame was actually read, got {cap.reads} reads")
+    check(seen == ["http://a/video?640x480"], f"decorate_url applied, got {seen}")
+    check(not cap.released, "working stream not released")
+
+
+def test_url_opens_but_stalls_raises_stream():
+    cap = _FakeCap(opened=True, fail_frames=999)  # connects, never delivers
+    capture, _ = _capture_factory({"http://dead/video?640x480": cap})
+    try:
+        gc._open_source("http://dead/video", 640, 480, "640x480",
+                        capture=capture, sleep=_noop_sleep)
+    except CameraError as e:
+        check(e.kind == "stream", f"stalled stream -> stream, got {e.kind}")
+        check("no frames" in str(e), f"message names the stall, got {str(e)[:60]}")
+        check(cap.reads == gc.STREAM_FRAME_ATTEMPTS,
+              f"retried {gc.STREAM_FRAME_ATTEMPTS}x, got {cap.reads}")
+        check(cap.released, "stalled stream released")
+    else:
+        check(False, "expected CameraError for a stream that delivers no frames")
+
+
+def test_url_slow_first_frame_is_tolerated():
+    cap = _FakeCap(opened=True, fail_frames=3)  # MJPEG warm-up
+    capture, _ = _capture_factory({"http://slow/video?640x480": cap})
+    slept = []
+    got = gc._open_source("http://slow/video", 640, 480, "640x480",
+                          capture=capture, sleep=slept.append)
+    check(got is cap, "slow-but-alive stream accepted")
+    check(len(slept) == 3, f"waited between retries, got {len(slept)} sleeps")
+
+
+def test_url_not_opened_still_unreachable():
+    cap = _FakeCap(opened=False)
+    capture, _ = _capture_factory({"http://x/video?640x480": cap})
+    try:
+        gc._open_source("http://x/video", 640, 480, "640x480",
+                        capture=capture, sleep=_noop_sleep)
+    except CameraError as e:
+        check(e.kind == "stream", "unopened url -> stream")
+        check("unreachable" in str(e), "unreachable message kept")
+        check(cap.reads == 0, "no read attempted on an unopened stream")
+    else:
+        check(False, "expected CameraError for an unopened stream")
+
+
+def test_index_frame_gate_unchanged():
+    cap = _FakeCap(opened=True, fail_frames=999)
+    capture, _ = _capture_factory({0: cap})
+    try:
+        gc._open_source(0, 640, 480, "640x480", capture=capture, sleep=_noop_sleep)
+    except CameraError as e:
+        check(e.kind == "busy", f"index with no frames -> busy, got {e.kind}")
+        check(cap.reads == gc.INDEX_FRAME_ATTEMPTS,
+              f"index retried {gc.INDEX_FRAME_ATTEMPTS}x, got {cap.reads}")
+        check(len(cap.props) == 2, f"width/height still set, got {cap.props}")
+    else:
+        check(False, "expected CameraError('busy') for an index with no frames")
+
+
+def test_stalled_stream_loses_to_next_working_source():
+    """The bug this gate fixes: a connect-but-no-frames URL must not win."""
+    stalled = _FakeCap(opened=True, fail_frames=999)
+    working = _FakeCap(opened=True, fail_frames=0)
+    capture, _ = _capture_factory({
+        "http://stalled/video?640x480": stalled,
+        "http://good/video?640x480": working,
+    })
+
+    def opener(src, w, h, url_res):
+        return gc._open_source(src, w, h, url_res, capture=capture, sleep=_noop_sleep)
+
+    cap, chosen = gc.open_first_available(
+        ["http://stalled/video", "http://good/video"],
+        reachable=lambda u: True, opener=opener)  # both hosts answer TCP
+    check(chosen == "http://good/video", f"stalled source skipped, got {chosen}")
+    check(cap is working, "returned cap is the frame-delivering one")
+
+
 TESTS = [
     test_parse_comma_list_order_and_types, test_parse_dedup_preserves_first,
     test_parse_blank_entries_dropped, test_parse_env_overrides_legacy,
@@ -203,6 +332,9 @@ TESTS = [
     test_open_first_wins, test_open_skips_unreachable, test_open_skips_erroring_source,
     test_open_index_skips_reachability, test_open_all_fail_raises_with_summary,
     test_open_only_source_unreachable_raises,
+    test_url_accepted_only_after_a_real_frame, test_url_opens_but_stalls_raises_stream,
+    test_url_slow_first_frame_is_tolerated, test_url_not_opened_still_unreachable,
+    test_index_frame_gate_unchanged, test_stalled_stream_loses_to_next_working_source,
 ]
 
 
