@@ -187,7 +187,13 @@ def main() -> int:
         print(f"FAIL[{e.kind}]: {e}")
         return 1
 
-    mirror = os.getenv("JARVIS_CAM_MIRROR", "1") == "1"
+    # Mirror MUST resolve exactly like gesture_daemon (calibration JSON first,
+    # env as the default) — SFace is not mirror-invariant, so enrolling from
+    # flipped frames while the gate reads unflipped ones weakens every match.
+    from modules import gesture_calibration
+    mirror = gesture_calibration.load().get(
+        "mirror", os.getenv("JARVIS_CAM_MIRROR", "1") == "1")
+    print(f"mirror={mirror} (matches gesture_daemon's resolution)")
     feats, seq, last_t = [], 0, 0.0
     print(f"enrolling {owner}: follow the on-screen prompt; move your head between "
           f"samples. ESC aborts, S saves early (>= 3).")
