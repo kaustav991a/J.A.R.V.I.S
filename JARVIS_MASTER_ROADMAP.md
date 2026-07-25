@@ -4,9 +4,9 @@
 > the old `ROADMAP_TO_FULL_JARVIS.md`, `RELIABILITY_HARDENING.md`,
 > `HAND_GESTURE_CONTROL_PLAN.md`, `UPGRADES_AND_FLUIDITY.md`, `MOBILE_PRESENCE_PLAN.md`,
 > and `LOGIN_REVAMP_PLAN.md` (all deleted 2026-07-19). The **test plan lives
-> separately** in `TEST_PLAN.md`. Last updated 2026-07-19.
+> separately** in `TEST_PLAN.md`. Last updated 2026-07-26.
 >
-> **Working branch:** `feat/cloud-gateway`. Many commits are UNPUSHED (see §7).
+> **Working branch:** `feat/cloud-gateway`, fully pushed as of 2026-07-26 (see §7).
 > **Deep code detail:** query the `codebase-memory-mcp` graph, don't re-read whole files.
 
 ---
@@ -395,14 +395,20 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
 
 ### TIER D — packaging & mobile (LAST, in this order)
 13. **Full `TEST_PLAN.md` pass** — automatic (Claude) + manual (Kaustav). Gate to Electron.
-    ⚠️ **`TEST_PLAN.md` IS STALE (found 2026-07-25):** it still claims *205/205 green* and
-    documents only 12 harnesses, while the repo has **28 self-running harnesses / 522
-    checks**. Missing from the doc entirely: `test_ambient_camera`, `test_auth_status`,
-    `test_boot_preflight`, `test_camera_stream`, `test_cursor_overlay`, `test_frame_bus`,
-    `test_gesture_camera`, `test_gesture_roi`, `test_llm_failover`, `test_presence_probe`,
-    `test_speaker_errors`, `test_watchdog_policy`, `test_working_memory_lock`. Also note
-    `test_screen_reader.py` is a LIVE VLM script, not a counted harness. Refresh the
-    automatic section (per-harness counts + the one-line runner) BEFORE claiming a pass.
+    ✅ **Doc refreshed 2026-07-26** (the 2026-07-25 staleness finding is closed): PART A now
+    lists all **22 self-running harnesses / 522 checks** measured, and is driven by ONE real
+    command — NEW `jarvis-backend/run_harnesses.py` (subprocess per harness, per-harness
+    counts + timing, totals, **exits 1 on any failure** so it works as a gate; add new
+    harnesses to its `HARNESSES` list). Full run: 522/522 in ~11.5 s. PART B gained §19
+    (overlay/distance/precision), §20 (click/double/right/grab), §21 (camera sharing +
+    auto-select + live feed + loopback 403), §22 (presence) — checkbox rows only, the
+    tuning guidance stays here in §7 so it can't drift. Also corrected in the doc: dwell
+    right-click is **1.5 s** (was 0.5), auto-lock is **60 s** code / **120 s** `.env` (was 6),
+    §15's `phase*_regression_commands.json` files **do not exist** (lost in the Jul-4
+    rewrite — only the runner survives), home/away presence moved out of "known
+    limitations", and the dead `ROADMAP_TO_FULL_JARVIS.md` pointer now points here.
+    `test_screen_reader.py` is a LIVE VLM script, excluded from the total on purpose.
+    REMAINING for a real pass: A2 (backend up), A3 (needs pytest), and the manual §0–§22.
 14. **Electron packaging** — single .exe boots FE+BE; notch → fullscreen takeover
     overlay (live agent-cam). ⚠️ `jarvis-frontend/package.json` lost its electron config
     in the Jul-4 history rewrite (no `main`/builder block/deps) though `node_modules`

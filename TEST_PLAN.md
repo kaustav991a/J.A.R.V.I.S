@@ -4,42 +4,60 @@
 > Electron build. Split into **PART A — Automatic** (Claude runs, no human/hardware)
 > and **PART B — Manual** (Kaustav runs: voice / camera / phone / GUI). Run PART A
 > after every change; run PART B once, right before Electron. Roadmap: `JARVIS_MASTER_ROADMAP.md`.
-> Last automatic baseline: **2026-07-19 — 205/205 green.**
+> Last automatic baseline: **2026-07-26 — 522/522 green, 22/22 harnesses, 11.5 s.**
 > Legend: ✅ pass · ⚠️ partial · ❌ fail · ☐ not yet run.
 
 ---
 
 # PART A — AUTOMATIC (Claude runs, no hardware)
 
-One command runs the core suite (from `jarvis-backend`, with the venv):
+**One command**, from `jarvis-backend`, with the venv:
 
 ```
-for t in action_parser failure_detection owner_notify gesture_arbiter \
-         enroll_face gesture_calibration gesture_engine face_gate \
-         calibrate_gesture ; do .\venv\Scripts\python.exe test_$t.py ; done
+.\venv\Scripts\python.exe run_harnesses.py
 ```
 
-| Harness | Tests | Covers | Status |
+It runs every self-running harness in a subprocess, prints per-harness checks +
+timing, totals them, and **exits 1 if anything fails** — so it works as a gate.
+Pass/fail comes from the exit code; the counts are parsed from each harness's own
+summary line. When a new harness lands, add its filename to `HARNESSES` in that file.
+
+| Harness | Checks | Covers | Status |
 |---|---:|---|---|
-| `test_action_parser.py` | 24 | LLM-reply → action parse spine | ✅ |
+| `test_action_parser.py` | 24 | LLM-reply → action parse spine (fences, prose, arrays, truncation) | ✅ |
+| `test_ambient_camera.py` | 15 | `ambient_vision` resolves its camera off `JARVIS_CAM_SOURCES` | ✅ |
+| `test_auth_status.py` | 18 | face-auth WS frame contract + `normalise_box` (G6.1) | ✅ |
+| `test_boot_preflight.py` | 14 | boot preflight: required/recommended env + model files | ✅ |
+| `test_calibrate_gesture.py` | 14 | G5.2 wizard derivations (palm_sign, pinch, reach) | ✅ |
+| `test_camera_stream.py` | 10 | MJPEG re-broadcast generator + **loopback-only** guard | ✅ |
+| `test_cursor_overlay.py` | 61 | halo/toast/ripple geometry, colour-key verify, deadman, clamping | ✅ |
+| `test_enroll_face.py` | 17 | enrollment quality gate + diversity report | ✅ |
+| `test_face_gate.py` | 12 | owner/stranger/absence + `StrangerConfirmer` + uncertain floor | ✅ |
 | `test_failure_detection.py` | 17 | honest failure vs false "Done, Sir" | ✅ |
-| `test_owner_notify.py` | 20 | Phase-4 owner fan-out (desk/TTS/phone) | ✅ |
-| `test_gesture_arbiter.py` | 28 | cursor ownership referee | ✅ |
-| `test_enroll_face.py` | 17 | enrollment quality gate | ✅ |
-| `test_gesture_calibration.py` | 31 | calibration JSON persistence | ✅ |
-| `test_gesture_engine.py` | 49 | gesture state machine incl. G5.1 relative/clutch/dwell | ✅ |
-| `test_face_gate.py` | 5 | owner/stranger/absence presence | ✅ |
-| `test_calibrate_gesture.py` | 14 | G5.2 wizard derivation | ✅ |
-| **Total** | **205** | | **✅** |
-
-As new pure logic lands (G5.3/4/5, presence probe), add a harness here and keep it green.
+| `test_frame_bus.py` | 30 | one camera owner, many readers: seq, staleness, copy-on-read | ✅ |
+| `test_gesture_arbiter.py` | 28 | cursor ownership referee (hold/mark/self-heal) | ✅ |
+| `test_gesture_calibration.py` | 48 | calibration JSON schema, persistence, defaults<JSON<env | ✅ |
+| `test_gesture_camera.py` | 46 | source list parse, reachability probe, open-first-available | ✅ |
+| `test_gesture_engine.py` | 64 | gesture state machine: relative/clutch/dwell/precision/grab-transit | ✅ |
+| `test_gesture_roi.py` | 29 | distance ROI crop + landmark remap (no-jump proof) | ✅ |
+| `test_llm_failover.py` | 7 | ollama empty-200 raises → cascade escalates instead of "" | ✅ |
+| `test_owner_notify.py` | 20 | owner fan-out (desk/TTS/phone) + presence-aware legs | ✅ |
+| `test_presence_probe.py` | 25 | ARP/TCP/ICMP ladder, asymmetric debounce, fuse + routing | ✅ |
+| `test_speaker_errors.py` | 5 | TTS failure logged + swallowed, flag still resets | ✅ |
+| `test_watchdog_policy.py` | 14 | respawn give-up policy + owner-down alert (live log untouched) | ✅ |
+| `test_working_memory_lock.py` | 4 | RLock concurrency + snapshot copies | ✅ |
+| **Total** | **522** | | **✅ 0 failed** |
 
 **A2 — semi-automatic (need the backend up; Claude can drive):** `test_ping.py`,
 `test_ui_bridge_e2e.py`. Start `uvicorn main:app --host 127.0.0.1 --port 8000`, then run.
 
 **A3 — blocked-automatic (need `pytest`, not in the venv):** `test_governance.py`,
-`test_android_tv_agent.py`, `test_github_agent.py`, `test_gmail_agent.py`, `tests/*`.
+`test_android_tv_agent.py`, `test_github_agent.py`, `test_gmail_agent.py`,
+`tests/test_briefing.py`, `tests/test_hardware.py`, `tests/test_scheduler.py`.
 Decision owed: `pip install pytest` (dev-only) to unlock, or convert to self-running.
+
+**Not a harness:** `test_screen_reader.py` takes a real screenshot and calls the VLM —
+a live script, deliberately excluded from the total.
 
 ---
 
@@ -47,7 +65,13 @@ Decision owed: `pip install pytest` (dev-only) to unlock, or convert to self-run
 
 > The detailed per-subsystem checklist below (§0–§14) is the 2026-06-27 manual plan,
 > preserved. NEW subsystems added after it: §16 gesture control (G3/G4/G5.1/G5.2),
-> §17 login/wake, §18 G5.0 resilience. Do the whole thing once before Electron.
+> §17 login/wake, §18 G5.0 resilience, §19 overlay/distance/precision (G5.3–G5.5),
+> §20 click + grab (G6.2/G6.4), §21 camera sharing + auto-select (G6.3 + frame bus),
+> §22 presence (Track B). Do the whole thing once before Electron.
+>
+> **Decision 2026-07-25 (Kaustav): gates run ONCE, at the end** — building does not
+> stop to wait on them. Roadmap **§7** holds the long-form recipe (which knob to turn
+> when a gate misbehaves) for everything from §19 down; the rows here are the checkboxes.
 
 ---
 
@@ -251,28 +275,20 @@ Decision owed: `pip install pytest` (dev-only) to unlock, or convert to self-run
 
 ---
 
-## 15. Regression Suites (automated, for reference)
+## 15. Regression Suites (live backend — ⚠️ command files missing)
+
+`run_phase1_regression.py` drives real commands through `POST /api/backdoor`, so it
+needs the backend up. It reads a JSON command list:
 
 ```bash
 cd jarvis-backend
 python run_phase1_regression.py --commands-file phase1_regression_commands.json --mode safe
-python run_phase1_regression.py --commands-file phase2_regression_commands.json --mode safe
-python run_phase1_regression.py --commands-file phase5_regression_commands.json --mode safe
-python run_phase1_regression.py --commands-file phase7_regression_commands.json --mode safe
 ```
-Expected: each suite passes at its documented KPI (see `jarvis-backend/PHASE_TRACKER.md`).
 
----
+⚠️ **None of the `phase*_regression_commands.json` files are in the repo** (lost in the
+Jul-4 history rewrite) — only the runner survives. Either re-author a command list or
+treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-backend/PHASE_TRACKER.md`.
 
-## Known limitations (expected ❌ — not bugs)
-
-- **No multi-step planner** (§1.2) — complex compound goals won't fully decompose.
-- **No LLM self-correction** in the worker (§1.1b) — failures use hardcoded fallbacks, no error re-prompt.
-- **Not full-duplex** (§1.3) — listens *or* speaks (VAD barge-in works, but no streaming STT / echo-cancel).
-- **No smart-home** (§2.1), **no home/away presence** (§2.3), **no personal-document RAG** (§4).
-- **Voice ID** absent (face ID only).
-
-See `ROADMAP_TO_FULL_JARVIS.md` for how each closes.
 ---
 
 ## 16. Gesture control (G3 / G4 / G5.1 / G5.2) — camera
@@ -282,8 +298,8 @@ See `ROADMAP_TO_FULL_JARVIS.md` for how each closes.
 | 16.1 | Enroll | `python enroll_face.py` | 12-sample guided capture; re-seeds `owner_embeddings.npz`; report shows diversity OK | ☐ |
 | 16.2 | Engage / vocab | `gesture_spike.py <url>`; index-up 1 s | control starts; open-palm moves cursor; waving never engages | ☐ |
 | 16.3 | Click / grab split | click a taskbar icon; grab-drag a file; scroll a page | left click doesn't text-select; fist drags; two-finger scrolls | ☐ |
-| 16.4 | Dwell right-click | quick pinch vs hold ≥0.5 s | quick = left click; held = right click; thumb+middle does nothing | ☐ |
-| 16.5 | Away soft-lock | walk away 6 s | lock overlay + screen off; return → auto-unlock; stranger → deny + Telegram snapshot | ☐ |
+| 16.4 | Dwell right-click | quick pinch vs pinch-and-hold ≥`dwell_right_click_s` (default **1.5 s**) | quick = left click; held = right click; thumb+middle does nothing (retired in G5.6) | ☐ |
+| 16.5 | Away soft-lock | leave the frame past `JARVIS_LOCK_AFTER` (code default **60 s**, `.env` pins **120 s**) | lock overlay + screen off; return → auto-unlock; stranger → deny + Telegram snapshot | ☐ |
 | 16.6 | G4 arbiter | engage hand, then trigger a real ghost_type/autopilot | cursor doesn't fight; HUD chip shows "JARVIS DRIVING" | ☐ |
 | 16.7 | G5.1 relative | press `r` → REL; tune gain `[`/`]` | small move = precise, fast = flick; no gorilla-arm | ☐ |
 | 16.8 | G5.1 clutch | REL: brief back-of-hand → move hand → re-face palm | cursor does NOT jump; HUD shows CLUTCH | ☐ |
@@ -314,8 +330,89 @@ See `ROADMAP_TO_FULL_JARVIS.md` for how each closes.
 
 ---
 
+> **§19–§22 — where the newer gates live.** These cover everything shipped after the
+> original manual plan. Each row is a
+> checkbox; the **tuning knobs and failure-mode guidance are in `JARVIS_MASTER_ROADMAP.md` §7**
+> (kept in one place on purpose — duplicating them here would drift).
+
+---
+
+## 19. Overlay, distance, precision (G5.3 / G5.4 / G5.5) — camera
+
+| # | Test | Steps | Expected | ✓ |
+|---|---|---|---|---|
+| 19.1 | Halo tracks | engage control | cyan halo follows the cursor; fist → amber; index+middle → dashed; back-of-hand → dim clutch ring | ☐ |
+| 19.2 | Click-through | click an app *under* the halo | click lands on the app; foreground/focus never stolen | ☐ |
+| 19.3 | Toasts | engage / trigger automation / hand back | HAND READY → JARVIS DRIVING → YOU HAVE CONTROL | ☐ |
+| 19.4 | Blast radius | look at the overlay windows while running | small windows only (halo ~72², ripple ~132², toast ~200×48) — **no fullscreen window** | ☐ |
+| 19.5 | Kill switch | `JARVIS_GESTURE_OVERLAY=0`, restart | no overlay process at all; gestures still work | ☐ |
+| 19.6 | Deadman | stall/kill the gesture daemon | overlay exits within ~20 s (`no state frame in 20s`), respawns when the daemon returns | ☐ |
+| 19.7 | G5.4 distance | `JARVIS_CAM_RES=1280x720`, step back across the room, engage | cursor still tracks (ROI crops to the hand); near hand behaves exactly as before, **no jump** as the crop re-anchors | ☐ |
+| 19.8 | G5.4 off | `JARVIS_GESTURE_ROI=0` | plain full-frame detection restored | ☐ |
+| 19.9 | G5.5 precision | inch very slowly onto a window `×` / a text caret | cursor holds steady and **lands exactly** (no settling short, no wobble past); a fast flick feels unchanged | ☐ |
+| 19.10 | G5.5 off | `JARVIS_GESTURE_PRECISION=0` | precision damping gone, cursor behaves as pre-G5.5 | ☐ |
+
+## 20. Click / double / right-click / grab (G6.2 + G6.4) — camera
+
+| # | Test | Steps | Expected | ✓ |
+|---|---|---|---|---|
+| 20.1 | Left click | one quick thumb-index pinch | LEFT click fires; **cyan** ripple at the cursor | ☐ |
+| 20.2 | Double | two quick pinches, same spot | double-click; not two singles | ☐ |
+| 20.3 | Right-click | pinch **and hold** (~1.5 s) | RIGHT click; **purple** ripple — and quick taps must NOT produce one | ☐ |
+| 20.4 | Grab / drop | close a FIST, move, open | drag; **amber** ripple on grab, drop on open | ☐ |
+| 20.5 | G6.4 transit | close the fist *slowly*, thumb tucked near the index | still a GRAB — never a right-click (the closing hand crosses the pinch zone; the transit rule cancels it) | ☐ |
+| 20.6 | No bleed | quick curled-hand click, then reopen | click only; the reopening hand must not start a drag | ☐ |
+| 20.7 | 60 s clean run | normal use for a minute | zero spurious right-clicks; then `w`-save any tuned values via the wizard | ☐ |
+
+## 21. Camera sharing + auto-select (frame bus, G6.3, §6.1 feed)
+
+| # | Test | Steps | Expected | ✓ |
+|---|---|---|---|---|
+| 21.1 | Auto-select | put a dead address first in `JARVIS_CAM_SOURCES`, start the backend | skips it in ~1.5 s, logs `camera auto-select: chose …`, `camera_error` → `idle` on its own | ☐ |
+| 21.2 | All dead | stop both phone apps | per-source failure summary in the log + 30 s retry (no crash loop) | ☐ |
+| 21.3 | Shared camera | trigger a face scan **while** the gesture daemon streams | scan logs `(shared with gesture daemon)` and matches; daemon does NOT die (was: 30 read failures) | ☐ |
+| 21.4 | Cold bus | gesture daemon off, trigger a face scan | scan opens its own capture and still matches | ☐ |
+| 21.5 | Live feed | biometric wake | FaceAuthOverlay shows the real dimmed/mirrored feed; on a hit a box locks onto the face with "MATCHING IDENTITY…" before success/fail | ☐ |
+| 21.6 | Feed off | `JARVIS_CAMERA_STREAM=0` | no feed, abstract animation only, **auth still works** | ☐ |
+| 21.7 | 🔒 Loopback only | `curl http://<desk-LAN-ip>:8000/api/camera/stream` from the phone | **403** — the desk camera is never served off-box | ☐ |
+| 21.8 | Stranger debounce | locked session, glance off-axis repeatedly | **zero** Telegram snapshots of himself; a real second person alerts in ~2 s | ☐ |
+
+## 22. Presence — home vs at-desk vs away (Track B)
+
+> Pin a **non-random MAC** for the home SSID on the phone first, then set
+> `JARVIS_PHONE_IP` + `JARVIS_PHONE_MAC`.
+
+| # | Test | Steps | Expected | ✓ |
+|---|---|---|---|---|
+| 22.1 | LAN home | `GET /api/presence/state` | `lan: "home"`, `how: "arp:mac"` (the rung that carried it) | ☐ |
+| 22.2 | At desk | sit in front of the camera | `presence: "at_desk"` — the face gate outranks LAN | ☐ |
+| 22.3 | Home, not at desk | leave the desk, stay in the house | `"home"`; alerts now buzz the phone **as well as** the desk | ☐ |
+| 22.4 | Away | take the phone off WiFi, wait out `JARVIS_PRESENCE_AWAY_GRACE` | `"away"`; proactive alerts stop talking to an empty room | ☐ |
+| 22.5 | 🔴 The asymmetry | lock the phone screen and idle **5 min without leaving** | must STAY `"home"` — this is the exact failure the asymmetric debounce exists to prevent | ☐ |
+| 22.6 | Unknown = everywhere | stop the presence monitor (unset `JARVIS_PHONE_IP`) | verdict `unknown`, alerts go **everywhere** (pre-Track-B behaviour is the fallback) | ☐ |
+
+---
+
+## Known limitations (expected ❌ — not bugs)
+
+- **No multi-step planner** (§1.2) — complex compound goals won't fully decompose.
+- **No LLM self-correction** in the worker (§1.1b) — failures use hardcoded fallbacks, no error re-prompt.
+- **Not full-duplex** (§1.3) — listens *or* speaks (VAD barge-in works, but no streaming STT / echo-cancel).
+  **Barge-in on interrupt has a known thread/stream leak** — deferred, it needs live audio to harness.
+- **No voice click-to-talk** — the HUD has no push-to-talk; `/ws` doesn't read client messages.
+- **No smart-home** (§2.1), **no personal-document RAG** (§4). *(Home/away presence: DONE — §22.)*
+- **Voice ID** absent (face ID only).
+- **`/api/vision/state`** still hands the frontend the phone's raw camera URL, so the
+  ambient-vision panel is a second MJPEG consumer — the thing the frame bus exists to kill.
+
+See `JARVIS_MASTER_ROADMAP.md` §5 for how each closes.
+
+---
+
 ## Exit criteria for the Electron build
-1. PART A + A2 fully green (and A3 if pytest is enabled).
-2. Every PART B box ticked (§0–§18), no open ⚠️/❌.
-3. No uncommitted work; `feat/cloud-gateway` pushed + merged.
-4. Then, and only then, start Electron packaging.
+1. `run_harnesses.py` green (PART A) + A2 green (and A3 if pytest is enabled).
+2. Every PART B box ticked (§0–§22), no open ⚠️/❌ — one desk session, per the
+   2026-07-25 decision. Long-form recipes: `JARVIS_MASTER_ROADMAP.md` §7.
+3. No uncommitted work; `feat/cloud-gateway` pushed.
+4. **Then** Electron launch scripts (Kaustav at the desk — his explicit call: very last),
+   **then** merge `feat/cloud-gateway` → `main`.
