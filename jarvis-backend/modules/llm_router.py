@@ -574,11 +574,14 @@ def universal_tool_call(
 
     Temperature defaults LOW: tool selection is a decision, not prose.
     """
-    from modules.tool_calls import ToolTurn, validate_tool_defs
+    from modules.tool_calls import ToolTurn, to_openai_tools, validate_tool_defs
 
     problems = validate_tool_defs(tools)
     if problems:
         return ToolTurn.failed("invalid tool definitions: " + "; ".join(problems))
+    # The registry authors tools in the Anthropic dialect; every provider we can
+    # reach today speaks OpenAI function-calling. Translate once, here.
+    tools = to_openai_tools(tools)
 
     providers = [provider] if provider else _tool_route_order()
     if not providers:

@@ -98,6 +98,12 @@ def parse_arguments(raw: Any) -> tuple[dict, str | None]:
         parsed = json.loads(text)
     except Exception as e:  # noqa: BLE001
         return {}, f"invalid JSON arguments: {e}"
+    if parsed is None:
+        # Groq sends the literal `null` for a zero-argument tool (verified live
+        # 2026-07-26 against llama-3.3-70b-versatile). That is an unambiguous
+        # "no arguments", not a malformed call — flagging it would burn the
+        # loop's single repair attempt on every system_status/read_screen call.
+        return {}, None
     if not isinstance(parsed, dict):
         return {}, f"arguments must be an object, got {type(parsed).__name__}"
     return parsed, None
@@ -202,17 +208,61 @@ def tool_result_message(call: ToolCall | str, content: Any) -> dict:
     return {"role": "tool", "tool_call_id": call_id, "content": content}
 
 
+def is_anthropic_tool(tool: Any) -> bool:
+    """True for a tool written in the Anthropic dialect.
+
+    Anthropic: {"name", "description", "input_schema": {...}}
+    OpenAI:    {"type": "function", "function": {"name", …, "parameters": {...}}}
+    """
+    return isinstance(tool, dict) and "input_schema" in tool and "name" in tool
+
+
+def to_openai_tools(tools: Any) -> list:
+    """Translate Anthropic-dialect tool defs to what the wire actually takes.
+
+    The registry authors tools in the Anthropic shape because that is the shape
+    a paid Anthropic key would consume directly — so switching provider later is
+    a routing change, not a registry rewrite. But every provider JARVIS can
+    afford today (Groq, Gemini's compatibility endpoint, OpenRouter) speaks
+    OpenAI function-calling, so the translation happens HERE, once, at the
+    boundary — not in the registry and not in the loop.
+
+    Entries already in the OpenAI shape pass through untouched, so a mixed list
+    (or a hand-written OpenAI def in a test) still works.
+    """
+    out = []
+    for t in tools or []:
+        if is_anthropic_tool(t):
+            schema = t.get("input_schema")
+            if not isinstance(schema, dict):
+                schema = {"type": "object", "properties": {}}
+            out.append({
+                "type": "function",
+                "function": {
+                    "name": t.get("name"),
+                    "description": t.get("description", ""),
+                    "parameters": schema,
+                },
+            })
+        else:
+            out.append(t)
+    return out
+
+
 def validate_tool_defs(tools: Any) -> list[str]:
     """Cheap structural check of a tool list, returning human-readable problems.
 
     Catching a malformed registry here beats a 400 from the provider mid-task,
     and beats a weak model hallucinating around a tool whose schema never loaded.
+
+    Accepts either dialect: Anthropic entries are translated first, so the rules
+    below (and their messages) stay written against the one wire shape.
     """
     problems: list[str] = []
     if not isinstance(tools, list) or not tools:
         return ["tools must be a non-empty list"]
     seen: set[str] = set()
-    for i, t in enumerate(tools):
+    for i, t in enumerate(to_openai_tools(tools)):
         if not isinstance(t, dict):
             problems.append(f"tool[{i}] is not an object")
             continue

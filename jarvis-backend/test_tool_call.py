@@ -81,6 +81,18 @@ def test_non_object_arguments_are_rejected():
         assert err and args == {}, raw
 
 
+def test_json_null_means_no_arguments():
+    """Caught by a LIVE Groq call, not by this harness: for a zero-argument tool
+    llama-3.3-70b-versatile sends arguments="null". Treating that as malformed
+    burned the loop's one repair attempt on every system_status/read_screen."""
+    args, err = tc.parse_arguments("null")
+    assert args == {} and err is None
+    turn = tc.normalise_openai_response(
+        _resp(_msg(None, [_call(name="system_status", args="null")])), provider="groq")
+    assert turn.ok and turn.tool_calls[0].ok, turn.tool_calls[0].arguments_error
+    assert turn.tool_calls[0].arguments == {}
+
+
 def test_empty_arguments_are_fine():
     args, err = tc.parse_arguments("")
     assert args == {} and err is None
@@ -156,6 +168,82 @@ def test_tool_result_message_shape():
 
 
 # ---- tool-definition validation ------------------------------------------ #
+
+# ---- dialect adapter ----------------------------------------------------- #
+# The registry is authored in Anthropic's shape so a paid Anthropic key later is
+# a routing change, not a registry rewrite; the wire wants OpenAI's shape today.
+
+ANTHROPIC_TOOL = {
+    "name": "open_app",
+    "description": "Launch an application",
+    "input_schema": {"type": "object",
+                     "properties": {"name": {"type": "string"}},
+                     "required": ["name"]},
+}
+
+
+def test_anthropic_tools_are_translated_for_the_wire():
+    out = tc.to_openai_tools([ANTHROPIC_TOOL])
+    assert out == [{
+        "type": "function",
+        "function": {
+            "name": "open_app",
+            "description": "Launch an application",
+            "parameters": ANTHROPIC_TOOL["input_schema"],
+        },
+    }]
+
+
+def test_openai_tools_pass_through_untouched():
+    assert tc.to_openai_tools(TOOLS) == TOOLS
+    mixed = tc.to_openai_tools([ANTHROPIC_TOOL] + TOOLS)
+    assert len(mixed) == 2 and all(t["type"] == "function" for t in mixed)
+
+
+def test_dialect_detection():
+    assert tc.is_anthropic_tool(ANTHROPIC_TOOL) is True
+    assert tc.is_anthropic_tool(TOOLS[0]) is False
+    assert tc.is_anthropic_tool("nope") is False
+
+
+def test_missing_input_schema_becomes_an_empty_object_schema():
+    """A no-argument tool must still present a valid object schema, or providers
+    reject the whole request."""
+    out = tc.to_openai_tools([{"name": "system_status", "description": "d"}])
+    # No input_schema at all is NOT the Anthropic dialect, so it passes through
+    # untouched and validation catches it — better than silently inventing one.
+    assert out[0] == {"name": "system_status", "description": "d"}
+    out2 = tc.to_openai_tools([{"name": "x", "input_schema": None}])
+    assert out2[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+
+
+def test_validation_accepts_the_anthropic_dialect():
+    assert tc.validate_tool_defs([ANTHROPIC_TOOL]) == []
+    bad = dict(ANTHROPIC_TOOL, name="")
+    assert tc.validate_tool_defs([bad])
+
+
+def test_router_translates_before_sending():
+    """End of the chain: an Anthropic-shaped registry must reach the provider as
+    OpenAI-shaped JSON."""
+    sent = {}
+
+    def fake_provider(messages, tools, *a, **k):
+        sent["tools"] = tools
+        return tc.normalise_openai_response(_resp(_msg("ok")), provider="groq")
+
+    orig = lr._tool_call_groq
+    lr._tool_call_groq = fake_provider
+    try:
+        turn = lr.universal_tool_call([{"role": "user", "content": "x"}],
+                                      [ANTHROPIC_TOOL], provider="groq")
+    finally:
+        lr._tool_call_groq = orig
+    assert turn.ok
+    assert sent["tools"][0]["type"] == "function"
+    assert sent["tools"][0]["function"]["parameters"]["required"] == ["name"]
+    assert "input_schema" not in sent["tools"][0]
+
 
 def test_validate_tool_defs_accepts_a_good_registry():
     assert tc.validate_tool_defs(TOOLS) == []

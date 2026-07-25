@@ -57,6 +57,7 @@ from modules.worker_loop import OvernightWorker  # --- Roadmap §1.1: Overnight 
 from modules.session_manager import COMMAND_LOCK, CallbackChannel, SESSIONS  # --- Concurrent session scoping ---
 from modules import telegram_bot  # --- Telegram Remote Gateway ---
 from modules import planner  # --- ReAct Orchestrator (Roadmap §1.2) ---
+from modules import agent_runner  # --- Agentic core, phase 4 (flagged, one intent) ---
 from modules import fast_path  # --- Deterministic low-latency lane (Roadmap §3.4) ---
 from modules import action_parser  # --- Unified LLM-reply → action(s) parse spine ---
 # Phase 6 – Governance Engine
@@ -1011,6 +1012,38 @@ async def vision_state():
         return {"camera_active": False, "stream_available": False,
                 "stream_path": "/api/camera/stream", "detections": [], "error": str(e)}
 
+@app.post("/api/agent/confirm")
+async def agent_confirm_endpoint(payload: dict):
+    """Answer a pending agent confirmation: {"confirmation_id": …, "approved": bool}.
+
+    The agent loop parks on a Future when a CONFIRM-tier tool comes up and the
+    owner is at the desk; this resolves it. It is a POST rather than a WebSocket
+    message for the same reason click-to-talk is: nothing reads client→server WS
+    frames while the voice loop is blocked on the microphone.
+
+    Unknown or already-answered ids return ok=False — resolving twice must not
+    approve two different actions.
+    """
+    from modules.agent_confirm import confirms
+
+    cid = str(payload.get("confirmation_id") or "").strip()
+    approved = bool(payload.get("approved"))
+    if not cid:
+        return {"ok": False, "reason": "confirmation_id required"}
+    ok = confirms.resolve(cid, approved)
+    print(f"[AGENT] confirmation {cid} → {'approved' if approved else 'denied'}"
+          f"{'' if ok else ' (unknown or already answered)'}", flush=True)
+    return {"ok": ok, "approved": approved}
+
+
+@app.get("/api/agent/pending")
+async def agent_pending():
+    """Outstanding confirmations, so a reloaded HUD can re-render its prompt."""
+    from modules.agent_confirm import confirms
+
+    return {"pending": confirms.outstanding()}
+
+
 @app.post("/api/listen")
 async def request_listen():
     """Click-to-talk: the HUD mic button asks the SERVER microphone to listen.
@@ -1892,6 +1925,31 @@ async def backdoor_command(req: BackdoorRequest):
             await safe_send_all({"status": "complete", "result": _fp_say})
             asyncio.create_task(speaker.speak_text(_fp_say))
             return {"status": "success"}
+
+        # ── Agentic core (Tier C #12, phase 4) — ONE wired intent, flagged ───
+        # JARVIS_AGENT_LOOP=1 plus a match on the wired intent routes to the
+        # structured tool loop, which narrates every step to the HUD and can ask
+        # for CONFIRM approval in place. Everything else — including every other
+        # multi-step goal — still takes the text-JSON planner below. Any failure
+        # falls through to the one-shot pipeline, so the flag can never cost the
+        # user a working command.
+        if agent_runner.should_use_agent(command_text):
+            print("[BACKDOOR] Wired intent → agentic loop.", flush=True)
+            try:
+                _res = await agent_runner.run_agent_command(
+                    command_text, engine, lock=COMMAND_LOCK,
+                    send=safe_send_all, tool_set="files",
+                )
+                if _res.ok and _res.answer:
+                    await safe_send_all({"status": "complete", "result": _res.answer})
+                    asyncio.create_task(speaker.speak_text(_res.answer))
+                    return {"status": "success"}
+                # Honest failure, then the safety net: report what happened and
+                # let the one-shot path have a go rather than dead-ending.
+                print(f"[BACKDOOR] Agent loop did not finish "
+                      f"({_res.stop_reason}: {_res.error}) — falling back.", flush=True)
+            except Exception as _ae:
+                print(f"[BACKDOOR] Agent loop fault, falling back: {_ae}", flush=True)
 
         # ── ReAct planner fast-path bypass (Roadmap §1.2) ────────────────────
         # Multi-step goals run the Think→Act→Observe loop; simple commands fall

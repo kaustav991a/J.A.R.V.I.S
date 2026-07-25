@@ -8,8 +8,23 @@ ask the model, parse one answer, execute, done. This is the loop:
     decide -> call tool -> observe -> decide again -> ... -> answer
 
 Everything the loop touches is INJECTED (`call_model`, `execute`, `authorize`,
-`clock`), so the whole thing is exercised against a scripted fake model in
-test_agent_core.py — no keys, no network, no real side effects.
+`clock`, `lock`), so the whole thing is exercised against a scripted fake model
+in test_agent_core.py — no keys, no network, no real side effects.
+
+ASYNC, and specifically shaped for the human-in-the-loop confirm that lands in a
+later phase:
+
+  * **No lock is ever held across an await that isn't the tool itself.** The
+    engine lock (`COMMAND_LOCK` in production) is acquired inside `_run_tool`
+    and released the moment the tool returns. Model turns, authorisation, and —
+    critically — any wait for a human to approve a CONFIRM-tier action happen
+    with the lock NOT held. A loop paused on a confirmation must never stop an
+    unrelated command from running; `test_agent_core.py` proves that.
+  * `authorize` may be async. That is the seam the AT_DESK confirm uses: it
+    emits a HUD prompt and awaits a Future keyed by confirmation_id. Because it
+    is called outside the lock, awaiting a human there is safe.
+  * Sync callables are accepted everywhere and offloaded with
+    `asyncio.to_thread`, so an OS-bound tool can never block the event loop.
 
 The five rules from the roadmap, and where they live here:
 
@@ -30,6 +45,7 @@ The five rules from the roadmap, and where they live here:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -50,6 +66,16 @@ PROVIDER_FAILED = "provider_failed"
 DENIED = "denied"
 TOOL_ERRORS = "tool_errors"
 BAD_REQUEST = "bad_request"
+
+
+class ToolFailure(Exception):
+    """A tool ran and honestly failed (as opposed to blowing up unexpectedly).
+
+    The registry raises this when `execute_with_retry`'s meta comes back
+    `state == "FAILED"` — i.e. when the Phase-2 `_is_failure` discipline says the
+    action did not do what it claimed. Both this and an unexpected exception are
+    fed back to the model as observations; neither crashes the loop.
+    """
 
 
 @dataclass
@@ -110,6 +136,30 @@ class AgentResult:
         return f"I couldn't complete that, Sir: {self.error or self.stop_reason}"
 
 
+async def _maybe_await(fn: Callable, *args):
+    """Call `fn`, awaiting it if it is async and off-threading it if it is not.
+
+    A sync tool is OS-bound often enough (launching an app, reading the screen)
+    that running it inline would stall the HUD, the voice loop and every other
+    socket for its whole duration — so it goes to a thread. An async tool is
+    already cooperative and is simply awaited.
+    """
+    result = fn(*args)
+    if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+        return await result
+    return result
+
+
+async def _offload(fn: Callable, *args):
+    """Same, but a *blocking* sync callable is pushed to a worker thread."""
+    if asyncio.iscoroutinefunction(fn):
+        return await fn(*args)
+    result = await asyncio.to_thread(fn, *args)
+    if asyncio.iscoroutine(result):        # sync fn that returned a coroutine
+        return await result
+    return result
+
+
 def _truncate(text: str, limit: int) -> str:
     """Cap a tool's output, and SAY that it was capped.
 
@@ -131,33 +181,39 @@ def _stringify(value: Any) -> str:
         return str(value)
 
 
-def run_agent(
+async def run_agent_loop(
     goal: str | list,
     tools: list,
     execute: Callable[[ToolCall], Any],
     *,
     system: str | None = None,
-    authorize: Callable[[ToolCall], Decision] | None = None,
+    authorize: Callable[[ToolCall], Any] | None = None,
     call_model: Callable[..., ToolTurn] | None = None,
     limits: AgentLimits | None = None,
     clock: Callable[[], float] = time.monotonic,
-    on_event: Callable[[str, dict], None] | None = None,
+    on_event: Callable[[str, dict], Any] | None = None,
+    lock: Any | None = None,
 ) -> AgentResult:
     """Run the decide→act→observe loop until the model answers or a cap trips.
 
     `goal` is a string (turned into a user message) or a full message list.
-    `execute(call)` performs one tool call and returns its result; raising is
-    fine — the error is reported back to the model rather than killing the run.
-    `authorize(call)` is the governance hook: consulted before EVERY execution.
+    `execute(call)` performs one tool call and returns its result; raising
+    `ToolFailure` (honest failure) or anything else (unexpected) is fine — the
+    error is reported back to the model rather than killing the run.
+    `authorize(call)` is the governance hook, consulted before EVERY execution;
+    it may be async and may await a human, because it runs OUTSIDE `lock`.
+    `lock` is an `asyncio.Lock` (production: `COMMAND_LOCK`) held ONLY for the
+    duration of a tool execution — never across a model turn or a human wait.
     """
     limits = limits or AgentLimits()
 
-    def emit(kind: str, **data):
-        if on_event:
-            try:
-                on_event(kind, data)
-            except Exception:  # noqa: BLE001
-                pass   # telemetry must never break a run
+    async def emit(kind: str, **data):
+        if on_event is None:
+            return
+        try:
+            await _maybe_await(on_event, kind, data)
+        except Exception:  # noqa: BLE001
+            pass   # telemetry must never break a run
 
     problems = validate_tool_defs(tools)
     if problems:
@@ -182,7 +238,8 @@ def run_agent(
     else:
         messages.extend(goal)
 
-    tool_names = {t["function"]["name"] for t in tools}
+    tool_names = {t["function"]["name"] if "function" in t else t.get("name")
+                  for t in tools}
     runs: list[ToolRun] = []
     deadline = clock() + limits.max_seconds
     repairs = 0
@@ -190,30 +247,44 @@ def run_agent(
     denials = 0
     steps = 0
 
+    async def run_tool(call: ToolCall):
+        """Execute one tool with the engine lock held for exactly that long.
+
+        Everything slow-but-cooperative (deciding, authorising, waiting on a
+        human) happens outside this function, so a loop parked on a confirmation
+        never holds the lock that the rest of JARVIS needs.
+        """
+        if lock is None:
+            return await _offload(execute, call)
+        async with lock:
+            return await _offload(execute, call)
+
     while True:
         if steps >= limits.max_steps:
-            emit("cap", reason=MAX_STEPS, steps=steps)
+            await emit("cap", reason=MAX_STEPS, steps=steps)
             return AgentResult(False, None, MAX_STEPS, steps, runs,
                                error=f"hit the {limits.max_steps}-step ceiling",
                                messages=messages)
         if clock() >= deadline:
-            emit("cap", reason=TIMEOUT, steps=steps)
+            await emit("cap", reason=TIMEOUT, steps=steps)
             return AgentResult(False, None, TIMEOUT, steps, runs,
                                error=f"exceeded {limits.max_seconds}s", messages=messages)
 
         steps += 1
-        emit("model_turn", step=steps)
-        turn = call_model(messages, tools)
+        await emit("model_turn", step=steps)
+        # The provider call is blocking HTTP; off-thread it so the event loop
+        # keeps serving the HUD while the model thinks.
+        turn = await _offload(call_model, messages, tools)
 
         if turn is None or not turn.ok:
             err = (turn.error if turn is not None else "no turn returned")
-            emit("provider_failed", error=err)
+            await emit("provider_failed", error=err)
             return AgentResult(False, None, PROVIDER_FAILED, steps, runs,
                                error=err, messages=messages)
 
         # No tool calls => the model is answering. That ends the run.
         if not turn.wants_tools:
-            emit("answer", text=turn.text)
+            await emit("answer", text=turn.text)
             messages.append(assistant_message(turn))
             return AgentResult(True, turn.text, ANSWERED, steps, runs,
                                messages=messages)
@@ -227,10 +298,10 @@ def run_agent(
                 problem = call.arguments_error
             elif call.name not in tool_names:
                 problem = (f"unknown tool '{call.name}'. Available tools: "
-                           + ", ".join(sorted(tool_names)))
+                           + ", ".join(sorted(n for n in tool_names if n)))
             if problem:
                 repairs += 1
-                emit("repair", problem=problem, attempt=repairs)
+                await emit("repair", problem=problem, attempt=repairs)
                 if repairs > limits.max_repairs:
                     return AgentResult(
                         False, None, BAD_REQUEST, steps, runs,
@@ -241,12 +312,18 @@ def run_agent(
                 continue
 
             # --- governance, before EVERY execution (rule 4) ----------------
-            decision = authorize(call) if authorize else Decision(True)
+            # Deliberately outside `lock`: this is where a later phase awaits a
+            # human at the HUD, and holding the engine lock through that would
+            # freeze every other command in the process.
+            if authorize is None:
+                decision = Decision(True)
+            else:
+                decision = await _maybe_await(authorize, call)
             if not decision.allowed:
                 denials += 1
                 runs.append(ToolRun(call.name, call.arguments, ok=False,
                                     denied=True, error=decision.reason))
-                emit("denied", tool=call.name, reason=decision.reason)
+                await emit("denied", tool=call.name, reason=decision.reason)
                 if denials > limits.max_repairs:
                     return AgentResult(False, None, DENIED, steps, runs,
                                        error=decision.reason, messages=messages)
@@ -256,19 +333,21 @@ def run_agent(
                 continue
 
             # --- execute ----------------------------------------------------
-            emit("tool_start", tool=call.name, arguments=call.arguments)
+            await emit("tool_start", tool=call.name, arguments=call.arguments)
             try:
-                raw = execute(call)
+                raw = await run_tool(call)
                 output = _truncate(_stringify(raw), limits.max_tool_output_chars)
                 runs.append(ToolRun(call.name, call.arguments, ok=True, output=output))
                 consecutive_errors = 0
-                emit("tool_ok", tool=call.name, output=output)
+                await emit("tool_ok", tool=call.name, output=output)
                 messages.append(tool_result_message(call, output))
             except Exception as e:  # noqa: BLE001
                 consecutive_errors += 1
-                err = f"{type(e).__name__}: {e}"
+                # An honest ToolFailure carries the engine's own wording; keep it
+                # verbatim so the model reads exactly what the user would hear.
+                err = str(e) if isinstance(e, ToolFailure) else f"{type(e).__name__}: {e}"
                 runs.append(ToolRun(call.name, call.arguments, ok=False, error=err))
-                emit("tool_error", tool=call.name, error=err)
+                await emit("tool_error", tool=call.name, error=err)
                 if consecutive_errors >= limits.max_consecutive_errors:
                     return AgentResult(
                         False, None, TOOL_ERRORS, steps, runs,
