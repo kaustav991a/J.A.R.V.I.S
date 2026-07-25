@@ -39,7 +39,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.6** gesture vocab decision | ✅ DONE | §4 |
 | **G5.1** relative trackpad + accel + clutch + dwell right-click | ✅ DONE, live-gate owed | §3.3, §4 |
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
-| **Automatic test baseline** | ✅ **497 checks, 0 failures** (`test_screen_reader.py` is a live VLM script, not counted) | `TEST_PLAN.md` |
+| **Automatic test baseline** | ✅ **522 checks, 0 failures** (`test_screen_reader.py` is a live VLM script, not counted) | `TEST_PLAN.md` |
 | **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); voice click-to-talk = follow-up | §5 |
 | **G5.3** cursor-halo + edge-toast overlays | ✅ code done, live-gate owed | §5 |
@@ -47,7 +47,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.5** precision / dual-target filtering | ✅ code done, live-gate owed | §5 |
 | **G5.7** robustness backlog | 🟡 backend 5/6 done (barge-in deferred — live audio); **frontend ALL DONE** (`0b5a0a4`) | §5 |
 | **Login/wake revamp (§6.1)** | ✅ COMPLETE (code) — contract, FaceAuthOverlay + **live feed + real matching phase** (`8ae9cc0`), BootSequence + wipe, IdentityPrompt; live-gate owed | §6.1 |
-| **Away→mobile presence (Track B probe)** | ⬜ TODO | §5, §6 |
+| **Away→mobile presence (Track B probe)** | ✅ DONE (code) — ARP/TCP/ICMP ladder + asymmetric debounce + owner_notify routing; live-gate owed | §5 #7, §6.2 |
 | **Smart-home / IoT agent** | ⬜ MISSING | §5 |
 | **Guarded self-improvement loop** | ⬜ MISSING | §5 |
 | **Agentic core (Claude-Code-grade tool loop)** | ⬜ MISSING — foundational for self-improvement | §5 (Tier B #12) |
@@ -295,9 +295,30 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
     `JARVIS_CAMERA_URL` still pins ambient vision if set. New `test_ambient_camera.py` 15/15,
     suite **351→366**. `.env` list reordered `.105` first (the G6.2 gate address) so the common
     case pays zero probe delay.
-7. **Away→mobile presence Track B** — `modules/presence_probe.py` (phone-on-WiFi
-   ARP/TCP/ping + HOME/AWAY debounce) feeding `owner_notify` routing. No app. (Note:
-   away→phone *already works* via Telegram; this adds *automatic* presence.)
+7. ✅ **Away→mobile presence Track B — DONE (code, 2026-07-25, `a491de8`)** — spec §6.2. NEW
+   pure `modules/presence_probe.py`: detection ladder **ARP (after a priming ping) → TCP
+   connect to a phone port → ICMP**, ARP primary because a phone answers ARP with every app
+   closed and a **MAC match survives a DHCP move** (`JARVIS_PHONE_MAC` is the signal worth
+   pinning; `JARVIS_PHONE_IP` alone still works). `PresenceDebounce` is deliberately
+   **asymmetric** — any hit ⇒ HOME instantly, AWAY only after an unbroken
+   `JARVIS_PRESENCE_AWAY_GRACE`(180s) miss streak — because phones sleep their WiFi radio and
+   the inverted version would announce "you left" while he's reading. `fuse()` lets the
+   **face gate outrank the LAN** (on camera = AT_DESK whatever the phone is doing) and
+   `routing()` maps presence → legs: AT_DESK desk-only, HOME desk+phone, AWAY phone-only.
+   ⚠️ UNKNOWN (unconfigured / not yet probed) routes **everywhere** — silence is the one
+   failure mode an alert path must not have, so the pre-Track-B behaviour is the fallback.
+   Wiring: `owner_notify.notify_owner(speak=None, phone=None)` resolves the legs from
+   presence (an explicit True/False from the caller still wins, so existing callers are
+   untouched — `test_owner_notify` 20/20 unchanged); `gesture_daemon` PUSHES the desk verdict
+   via `note_desk_presence()` each face check (push, not pull — `presence_probe` must never
+   import the camera stack) with a 10s freshness bound so a dead daemon can't look like a
+   seated owner; `PresenceMonitor` thread started in the lifespan (self-disables with no
+   IP/MAC), `GET /api/presence/state` exposes the fused verdict + **which rung carried it**
+   (`arp:mac`/`tcp:8080`/`icmp` — the difference between "presence works" and "presence works
+   by luck"). `ping_succeeded()` reads the ping TEXT, not the exit code: Windows exits 0 for
+   "Destination host unreachable". Probe faults (missing `arp` binary) degrade to a miss,
+   never crash the thread. `test_presence_probe.py` **25**; suite 497 → **522**.
+   **Live-gate owed** (§7).
 
 ### TIER C — bigger capability gaps (from the full-JARVIS roadmap)
 8. **Smart-home / IoT agent** — `home_agent` over Home Assistant / MQTT / Matter;
@@ -690,6 +711,13 @@ script, not a counted harness.
   camera and the feed must still appear. Then `JARVIS_CAMERA_STREAM=0` → no feed, abstract
   animation only, auth still works. Curl the endpoint from the phone/another LAN host →
   **403** (loopback-only).
+- **Track B presence:** set `JARVIS_PHONE_IP` + `JARVIS_PHONE_MAC` (pin a non-random MAC for
+  the home SSID first), start the backend, hit `GET /api/presence/state` → `lan: "home"` with
+  `how` reading `arp:mac`. Sit in front of the camera → `presence: "at_desk"`. Leave the desk
+  but stay home → `"home"` (alerts should now ALSO buzz the phone). Take the phone out of WiFi
+  range and wait out `JARVIS_PRESENCE_AWAY_GRACE` → `"away"`, and proactive alerts must stop
+  talking to the empty room. Lock the phone screen and idle 5 min WITHOUT leaving — it must
+  stay `home` (that is the failure the asymmetric debounce exists to prevent).
 - **Phase-4 phone smoke-tests + Phase-5 failover** — see `TEST_PLAN.md` §B5/B6.
 - Then **Electron launch scripts** (at the desk), then **merge** `feat/cloud-gateway`.
 
