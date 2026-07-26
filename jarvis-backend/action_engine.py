@@ -738,6 +738,11 @@ class ActionEngine:
         # ── Remote Gateway: push a file/document to the operator's Telegram ──
         elif action == "telegram_send_file":
             return await self._telegram_send_file(target)
+        # ── Partner messaging: owner-approved send + owner-only pull ──────────
+        elif action == "message_partner":
+            return await self._message_partner(target)
+        elif action == "summarize_partner_chat":
+            return await asyncio.to_thread(self._summarize_partner_chat, target)
         # --- Phase 8: HUD Widget Toggles (handled by main.py, not action_engine) ---
         elif action in ("open_sticky_note", "close_sticky_note", "open_browser", "close_browser", "open_calculator", "close_calculator"):
             return f"UI_WIDGET_TOGGLE:{action}"
@@ -1537,6 +1542,89 @@ class ActionEngine:
         if ok:
             return f"Sent '{os.path.basename(path)}' to your Telegram, sir."
         return f"I was unable to deliver '{os.path.basename(path)}' to Telegram, sir."
+
+    async def _message_partner(self, target) -> str:
+        """Send an OWNER-APPROVED message to a registered partner.
+
+        By the time this runs the owner has already authorised the exact text:
+        `message_partner` is CONFIRM-tier in governance.json, so the first call
+        returns the GOVERNANCE_CONFIRM sentinel and only the post-approval
+        re-invocation (governance_bypass=True) reaches this method.
+
+        Recipient resolution is allowlist-only (`partner_registry`): a NAME maps
+        to an id held in the environment, and anything containing a digit is
+        refused as an attempted raw chat id. Unknown or ambiguous names are
+        refused honestly — a private message to the wrong person is the failure
+        this whole path exists to prevent.
+        """
+        from modules import partner_messaging, partner_registry
+
+        name, body = partner_messaging.parse_target(target)
+        res = partner_registry.resolve(name)
+        if not res.ok:
+            print(f"[PARTNER] ⛔ send refused — {res.reason} (name={name!r})", flush=True)
+            return res.refusal_text()
+
+        body = partner_messaging.normalise_body(body)
+        if not body:
+            return (f"There's no message to send to {res.display_name}, Sir — "
+                    "tell me what you'd like to say.")
+
+        # A declined send is terminal, and a send already awaiting approval is
+        # not staged twice. Checked HERE because every route (voice, HUD, phone,
+        # a second action in the same reply) funnels through the engine.
+        refusal = partner_messaging.guard.refusal(res.slot, body)
+        if refusal:
+            print(f"[PARTNER] ⛔ send refused — {refusal} ({res.slot})", flush=True)
+            return partner_messaging.refusal_text(refusal, res.display_name)
+
+        try:
+            from modules import telegram_bot
+        except Exception as e:  # noqa: BLE001
+            return f"The Telegram gateway is unavailable, Sir: {e}"
+        if not telegram_bot.is_configured():
+            return "The Telegram gateway is offline, Sir — nothing was sent."
+
+        ok = await telegram_bot.send_text_to_partner(res.partner_id, body)
+        if ok:
+            partner_messaging.guard.note_sent(res.slot, body)
+            return f"Sent to {res.display_name}, Sir."
+        return (f"I couldn't deliver that to {res.display_name}, Sir — "
+                "Telegram refused the message. Nothing was sent.")
+
+    def _summarize_partner_chat(self, target) -> str:
+        """Read back what a partner has told JARVIS. ADMIN-ONLY, pull-only.
+
+        Admin-only is enforced upstream by `tier_allows` — this action is NOT on
+        `VIP_GUEST_ALLOWED_ACTIONS`, so a guest's invocation is refused with the
+        TIER_BLOCKED sentinel before any dispatch, logging, or governance pend.
+        One partner's history can never surface in another's: `partner_log.recent`
+        filters on the single resolved slot.
+
+        Nothing is pushed. This only ever runs because the owner asked.
+        """
+        from modules import partner_log, partner_messaging, partner_registry
+
+        name, _ = partner_messaging.parse_target(target)
+        if not name:
+            name = str(target or "").strip()
+        res = partner_registry.resolve(name)
+        if not res.ok and res.reason != partner_registry.REASON_NOT_REGISTERED:
+            return res.refusal_text()
+        slot = res.slot
+        display = res.display_name or partner_registry.display_for(slot or "")
+
+        if not partner_log.logging_enabled():
+            return (f"I don't keep a record of {display}'s messages, Sir — "
+                    f"partner-chat logging is switched off "
+                    f"({partner_log.ENV_FLAG} is not set). I can only tell you "
+                    "what I've learned about her in general conversation.")
+
+        rows = partner_log.recent(slot, limit=25)
+        if not rows:
+            return (f"Nothing logged from {display} yet, Sir. Partner-chat "
+                    "logging is on, but she hasn't messaged me since.")
+        return partner_messaging.format_history(rows, display, partner_log.DISCLOSURE)
 
     def _workspace_write(self, target: str) -> str:
         """

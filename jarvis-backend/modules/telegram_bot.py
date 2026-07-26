@@ -492,6 +492,47 @@ async def send_text_to_owner(text: str) -> bool:
     return True
 
 
+async def send_text_to_partner(partner_id: int, text: str) -> bool:
+    """Deliver an OWNER-AUTHORISED message to a registered partner's chat.
+
+    Second line of defence, not the first: `partner_registry` already resolved a
+    NAME to this id from the environment, and governance already had the owner
+    approve the exact text. This function re-checks anyway — the id must be a
+    recognised NON-ADMIN identity in `_IDENTITIES`, so even a caller that
+    fabricated an id cannot make JARVIS message a stranger.
+
+    Send-only: replies from the partner arrive through the normal inbound
+    handlers and are never piped back to the owner as a live feed.
+    """
+    if _bot is None or not text or not text.strip():
+        return False
+    try:
+        pid = int(partner_id)
+    except (TypeError, ValueError):
+        print(f"[TELEGRAM] ⛔ partner send refused — non-numeric id {partner_id!r}", flush=True)
+        return False
+
+    ident = _IDENTITIES.get(pid)
+    if ident is None:
+        print(f"[TELEGRAM] ⛔ partner send refused — id={pid} is not a recognised identity.", flush=True)
+        return False
+    if ident.get("tier") == _ADMIN_TIER:
+        # The owner has his own paths (send_text_to_owner); this one exists for
+        # partners, and keeping it strict means a "partner" send can never be
+        # quietly redirected at the operator's own chat.
+        print("[TELEGRAM] ⛔ partner send refused — target is the admin identity.", flush=True)
+        return False
+
+    for chunk in _chunk(text.strip(), 4000):
+        try:
+            await _bot.send_message(pid, chunk)
+        except Exception as e:  # noqa: BLE001
+            print(f"[TELEGRAM] partner send failed ({ident.get('label')}): {e}", flush=True)
+            return False
+    print(f"[TELEGRAM] ✉ Sent owner-authorised message to {ident.get('label')}.", flush=True)
+    return True
+
+
 def is_configured() -> bool:
     return _bot is not None and _OWNER_ID is not None
 

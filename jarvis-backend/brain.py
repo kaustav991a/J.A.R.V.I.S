@@ -155,6 +155,8 @@ ACTION_CATALOGUE = """Available Actions for JSON Output:
 - "workspace_patch": surgical line edit. target="filepath|exact_search_string|replacement_string". CRITICAL: exact_search_string MUST be the LITERAL text currently in the file — character for character. NEVER use placeholder names like "def old():" or "old_text". Example: if file contains print('Hello, World!') then to change it use: "test_hello.py|print('Hello, World!')|print('Hello, Universe!')".
 - "remember_fact": target="Category: fact details".
 - "telegram_send_file": send a file/document to the operator's phone via Telegram. target=filepath, OR {"path": filepath, "caption": "short note"}. Use when the user (especially over a remote channel) asks you to "send me", "text me", or "deliver" a file/report/document.
+- "message_partner": send a Telegram message to ONE registered partner. target={"to":"girlfriend"|"mousumi"|"brother"|"kinshuk","message":"the full text"}. CONFIRM — Sir approves the exact wording before it sends. NEVER a phone number or chat id in "to", only those names; if Sir is vague ("her","someone") ask who he means instead of guessing. Write "message" in Sir's voice TO that person, never as a note to Sir.
+- "summarize_partner_chat": recall what a partner has told JARVIS. target="girlfriend"|"mousumi"|"brother"|"kinshuk". Sir only. Use for "what did my girlfriend tell you", "what has Mousumi been saying".
 - "search_documents": semantic search over the user's OWN indexed notes/documents. target=query. Use for "what did I write/decide about X", "find my notes on Y", "search my documents for Z".
 - "render_chart": visualise structured data on the HUD as a chart. target={"title":"...","type":"bar"|"line"|"pie","data":[{"label":"Mon","value":12},...]}. Use when the user says "chart/graph/plot/visualise this" or "show it on screen" for numeric data.
 - "self_improve": propose a code change to your OWN codebase, apply it on a branch, run tests, and open a PR for review (never merges). target="what to improve". Use when the user asks you to improve/fix/refactor your own code or add a feature to yourself. (CONFIRM-tier.)
@@ -384,6 +386,9 @@ EMAIL / MESSAGING ACTIONS:
 - "gmail_reply": reply in a thread. target="thread_id | body" or JSON {"thread_id","body"}. CONFIRM.
 - "check_email"/"read_email"/"search_email"/"send_email": legacy equivalents (prefer the gmail_* actions).
 - "telegram_send_file": send a file to the operator's phone. target=filepath or {"path","caption"}. Use for "send/text/deliver me <file>".
+- "message_partner": send a Telegram message to ONE registered partner. target={"to":"girlfriend"|"mousumi"|"brother"|"kinshuk","message":"the full text to send"}. CONFIRM — Sir approves the exact wording first. NEVER put a phone number or chat id in "to"; ONLY those names. If Sir names anyone else, or is vague ("her","someone"), do NOT guess: ask who he means. Write "message" as Sir's own words TO that person (first person, natural), not as a note to Sir.
+- "summarize_partner_chat": recall what a partner has told JARVIS. target="girlfriend"|"mousumi"|"brother"|"kinshuk". AUTO, Sir only. Use for "what did my girlfriend tell you / say to you", "what's Mousumi been talking to you about".
+ROUTING (partners): "ask/tell/text my girlfriend|Mousumi|brother|Kinshuk <something>" → message_partner (draft the words, governance asks Sir before sending). "what did she/my girlfriend tell you" → summarize_partner_chat. A partner send is NEVER autonomous: even if you think a message would help, propose it to Sir and let the confirmation carry it.
 ROUTING: "check email"/"any new emails"/"unread" → gmail_read_unread. "find/search email about X" → gmail_read. "send/email X saying Y" → gmail_send (ask for recipient first if missing; fill to+subject+body). "reply to that thread" → gmail_reply (needs thread_id from a prior read).
 OUTGOING EMAIL VOICE: subjects/bodies are real mail FROM the user TO the recipient — write first-person to them with a normal greeting/sign-off. NEVER address the user ("Sir") or use assistant-to-user wording in the mail text.
 """
@@ -397,7 +402,9 @@ TV / TELEVISION ACTIONS (only when the user names TV/television/big screen):
 ROUTING: "turn on/off TV" → tv_power. "TV volume up/down/mute" → tv_volume. "open <app> on TV" (no media named) → tv_launch_app. "play/watch/search <content> on TV" → tv_play_media (bare target if app not named; NEVER guess an app from memory). NEVER tv_cast.
 """
 
-_COMMS_HINTS = ("email", "mail", "inbox", "gmail", "reply", "telegram", "message", "send me", "text me", "deliver")
+_COMMS_HINTS = ("email", "mail", "inbox", "gmail", "reply", "telegram", "message", "send me", "text me", "deliver",
+                # partner messaging (message_partner / summarize_partner_chat)
+                "girlfriend", "mousumi", "brother", "kinshuk", "ask my", "tell my", "text my")
 _TV_HINTS = ("tv", "television", "big screen", "netflix", "hotstar", "prime video", "sonyliv")
 _CODE_HINTS = (
     "code", "script", "program", "function", "class", "git", "commit", "push", "repo",

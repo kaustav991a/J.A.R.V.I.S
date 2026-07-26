@@ -179,6 +179,16 @@ autonomous butler safe.
   (a real face scan happened and he is awake); while locked it returns `403 refused`.
   Set `JARVIS_ALLOW_BACKDOOR=1` before boot to reopen the full auth bypass for a test run.
   Risk tiers and governance are unaffected either way.
+- **Messaging a partner:** say (or text him) *"ask my girlfriend if she's eaten"*. He drafts,
+  reads the recipient **and the full message back verbatim**, and sends only on "confirm".
+  Recipients are allowlist-only — `girlfriend`/`gf`/`mousumi` and `brother`/`kinshuk`, resolved
+  to `TELEGRAM_GF_ID` / `TELEGRAM_BROTHER_ID`; a raw chat id or an unknown name is refused, not
+  guessed. "cancel" is final: the same message will not be re-attempted by any route.
+- **Asking what a partner said:** *"what did my girlfriend tell you"* → a summary of her recent
+  messages, with a note that it comes from logged data. Requires `JARVIS_LOG_PARTNER_CHATS=1`
+  (**off by default**, on in Kaustav's `.env` since 2026-07-26); with it off he keeps no
+  transcript and says so. His ordinary memory of her (per-user extracted facts) works either
+  way. Sir only — guests can neither send nor read.
 - **Test hooks (backdoor commands):**
   - `test:morning_briefing` — replay the comprehensive morning briefing on demand
   - `test:deep_work_ui` — run the deep-work macro + UI bridge

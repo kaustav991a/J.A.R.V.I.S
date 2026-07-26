@@ -825,6 +825,51 @@ Webcam, or the daemon keeps taking 30s blind-retry windows.
 
 ---
 
+### 6.6 Partner messaging — outbound propose-and-approve + inbound pull (NEW 2026-07-26, DONE, live gate owed)
+
+Owner-facing only; guests gained nothing. Two actions, both funnelling through the
+existing gates rather than around them.
+
+**`message_partner` (CONFIRM).** "Ask my girlfriend if she's eaten" → JARVIS drafts →
+the confirm read-back names the **resolved partner** and quotes the **full message
+verbatim** (`partner_messaging.confirm_prompt`; `agent_confirm.question_for` clips at 120
+chars, which is wrong for words said to a person) → "confirm" sends, "cancel" does not.
+- Recipient is **allowlist-only**: `modules/partner_registry.py` maps role words *and*
+  first names (girlfriend/gf/mousumi, brother/kinshuk) to `TELEGRAM_GF_ID` /
+  `TELEGRAM_BROTHER_ID`. Anything containing a digit is refused as a raw-chat-id attempt
+  *before* the alias table is read; unknown ("Priya") and vague ("her", "someone") are
+  refused honestly. The model picks among registered partners; it never supplies an address.
+- **Deny is terminal** (`partner_messaging.SendGuard`, checked in the engine — the one
+  place every route funnels through, so voice, HUD, phone, or a second action in the same
+  LLM reply all hit it). Same discipline as the §5 #12 bug-#4 fix. 5-min TTL
+  (`JARVIS_PARTNER_DENY_TTL_S`) so he can deliberately change his mind. A staged send is
+  also not staged twice — one prompt, one send.
+- **Send-only, never autonomous.** `telegram_bot.send_text_to_partner` re-checks the id
+  against `_IDENTITIES` and refuses the admin id, and it has exactly two callers
+  (transport + engine, harness-asserted). Not an agent tool.
+
+**`summarize_partner_chat` (AUTO in governance, ADMIN-ONLY via `tier_allows`).** The pull
+that fixes the channel-isolation blind spot: a partner's chat lives in her own session, so
+"what did my girlfriend tell you" used to fail honestly. Rows are read for one slot only.
+Nothing is ever pushed. Guests are refused before dispatch (neither action is on
+`VIP_GUEST_ALLOWED_ACTIONS`; the allowlist was not touched).
+
+**The logging is opt-in.** `modules/partner_log.py` writes a partner's INBOUND messages to
+`partner_messages` **inside the existing `jarvis_longterm.db`** (no new store) and only when
+`JARVIS_LOG_PARTNER_CHATS=1`. Off ⇒ no rows, no table. Every summary leads with a disclosure
+that it is logged data. Kaustav switched it **on** in his `.env` 2026-07-26.
+⚠️ **Scope, explicitly ruled by Kaustav:** the flag governs this raw store ONLY. JARVIS's
+per-user memory extraction (`brain.extract_and_store_memory` → `memory_manager`, keyed
+`user='MOUSUMI'`) has always run for every recognised caller and keeps running either way —
+that is what makes him know her warmly in her own chat. So "off" means *no verbatim
+transcript*, not *nothing retained*.
+**TIER C #11 (encryption at rest) must cover `partner_messages`** — third-party personal
+data, currently plain SQLite. Noted in the module docstring too.
+
+Harness: `test_partner_messaging.py` (34 checks, refusal-weighted). Live gate: TEST_PLAN §24.
+
+---
+
 ## 7. Live-gates owed by Kaustav (hardware) + push status
 
 > **DECISION 2026-07-25 (Kaustav): live-gating happens ONCE, at the END — "will test at

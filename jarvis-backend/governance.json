@@ -2,6 +2,7 @@
   "_comment": "J.A.R.V.I.S. Governance Ruleset — Phase 6",
   "_version": "1.5.0",
   "_policy": "Fail-safe: any action_type NOT listed here defaults to BLOCK.",
+  "_note_partner_messaging": "message_partner is CONFIRM: the owner approves the resolved recipient AND the full message text verbatim before anything leaves his account. summarize_partner_chat is AUTO here because these tiers are per-ACTION, not per-caller — its admin-only restriction is enforced by action_engine.tier_allows (it is deliberately absent from VIP_GUEST_ALLOWED_ACTIONS), which runs before this gate.",
 
   "tiers": {
     "AUTO": "Execute immediately, no confirmation required.",
@@ -11,6 +12,9 @@
 
   "rules": {
     "self_improve": "CONFIRM",
+
+    "message_partner": "CONFIRM",
+    "summarize_partner_chat": "AUTO",
 
     "===  TIER: AUTO  ===": "─────────────────────────────────────────────",
 

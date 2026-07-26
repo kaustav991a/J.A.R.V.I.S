@@ -63,6 +63,9 @@ from modules import agent_core  # --- Agentic core: stop_reason constants ---
 from modules import fast_path  # --- Deterministic low-latency lane (Roadmap §3.4) ---
 from modules import action_parser  # --- Unified LLM-reply → action(s) parse spine ---
 from modules import backdoor_gate  # --- /api/backdoor is a biometric bypass: gated, default OFF ---
+from modules import partner_messaging  # --- propose-and-approve partner sends ---
+from modules import partner_registry   # --- name → registered partner id, allowlist only ---
+from modules import partner_log        # --- opt-in partner-chat store (flag default OFF) ---
 # Phase 6 – Governance Engine
 from governance_manager import governance_manager
 from socket_manager import register_client, unregister_client, send_ui_update, set_app_loop
@@ -96,6 +99,10 @@ DATA_ACTIONS = frozenset({
     "get_telemetry",
     # Personal-document RAG results synthesised like other data tools.
     "search_documents",
+    # A partner's logged messages are raw text; synthesis turns them into the
+    # answer to "what did she tell you" (the disclosure line leads the payload
+    # so it survives summarisation).
+    "summarize_partner_chat",
 })
 
 # --- Barge-in / interruptibility (Refinement Phase) ---
@@ -1259,7 +1266,56 @@ _REMOTE_DATA_ACTIONS = frozenset({
     "web_search", "tavily_search", "web_browse", "read_email", "check_email",
     "check_calendar", "check_vitals", "read_screen", "gmail_read_unread",
     "gmail_read", "system_status", "get_telemetry", "search_documents",
+    "summarize_partner_chat",
 })
+
+
+# ── Partner sends: verbatim authorisation, and a refusal that stays refused ───
+# A CONFIRM prompt for `message_partner` must show WHO and the WHOLE text — the
+# owner is authorising these exact words leaving his account, and a summary of
+# them is not consent. The staged payload holds both, so the prompt is rebuilt
+# from it rather than from the sentinel (which carries only action_type + cid).
+
+def _partner_confirm_text(conf_action: str, conf_id: str | None, honor: str = "Sir") -> str | None:
+    """Verbatim read-back for a staged partner send; None for every other action."""
+    if (conf_action or "").lower() != partner_messaging.ACTION_SEND:
+        return None
+    try:
+        payload = governance_manager.get_pending_payload(conf_id) if conf_id else None
+        if not isinstance(payload, dict):
+            return None
+        name, body = partner_messaging.parse_target(payload.get("target"))
+        res = partner_registry.resolve(name)
+        display = res.display_name or (name or "them")
+        # Mark it in flight: one prompt, one send — a second identical staging in
+        # the same reply is refused by the engine instead of asking twice.
+        partner_messaging.guard.note_staged(res.slot or name, body)
+        return partner_messaging.confirm_prompt(display, body, honor)
+    except Exception as e:  # noqa: BLE001 — never let the read-back break the gate
+        print(f"[PARTNER] confirm read-back failed: {e}", flush=True)
+        return None
+
+
+def _partner_note_denial(conf_id: str | None) -> None:
+    """Record an explicit refusal of a staged partner send so nothing re-attempts it.
+
+    Call BEFORE cancel_pending (the payload is gone afterwards). Only explicit
+    denials are recorded: an unanswered prompt simply expires without sending,
+    and the next command the owner gives is a fresh decision, not a re-ask.
+    """
+    try:
+        payload = governance_manager.get_pending_payload(conf_id) if conf_id else None
+        if not isinstance(payload, dict):
+            return
+        if (payload.get("action_type") or "").lower() != partner_messaging.ACTION_SEND:
+            return
+        name, body = partner_messaging.parse_target(payload.get("target"))
+        res = partner_registry.resolve(name)
+        partner_messaging.guard.note_denied(res.slot or name, body)
+        print(f"[PARTNER] ⛔ send declined by the owner — refusal is terminal "
+              f"({res.display_name or name}).", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[PARTNER] denial note failed: {e}", flush=True)
 
 
 async def run_remote_command(command_text: str, channel) -> None:
@@ -1276,11 +1332,32 @@ async def run_remote_command(command_text: str, channel) -> None:
     honor = getattr(channel, "honorific", "Sir")
     print(f"\n[REMOTE:{kind}] Command from {user} (tier={tier}): {command_text}", flush=True)
 
-    # Background memory extraction — identical to the HUD path.
+    # Background memory extraction — identical to the HUD path. Runs for EVERY
+    # recognised caller, partners included, and is deliberately NOT behind the
+    # partner-log flag: it is how JARVIS knows Mousumi warmly in her own chat.
     try:
         asyncio.create_task(asyncio.to_thread(extract_and_store_memory, command_text, user))
     except Exception:
         pass
+
+    # ── Partner-chat log (opt-in; JARVIS_LOG_PARTNER_CHATS, default OFF) ──────
+    # Channel isolation means this conversation is invisible to the owner's
+    # session, which is why "what did my girlfriend tell you" used to fail. When
+    # the owner has consciously switched logging on, a partner's INBOUND message
+    # is filed under her slot so `summarize_partner_chat` can answer later. With
+    # the flag off nothing is written — no table, no rows. Never applied to the
+    # admin's own messages, and never to an unrecognised sender (they are
+    # firewalled before they reach this function).
+    if tier != ADMIN_TIER:
+        _pslot = partner_registry.slot_for_user(user)
+        if _pslot:
+            try:
+                asyncio.create_task(asyncio.to_thread(
+                    partner_log.log_inbound, _pslot, command_text,
+                    partner_name=partner_registry.SLOTS[_pslot]["display_name"],
+                ))
+            except Exception as e:  # noqa: BLE001 — logging never breaks her chat
+                print(f"[PARTNER-LOG] skipped: {e}", flush=True)
 
     # ── Phase 4 item 3: session-scoped governance confirmation (remote) ─────
     # If THIS channel was asked to authorise a CONFIRM-tier action, a short
@@ -1319,6 +1396,7 @@ async def run_remote_command(command_text: str, channel) -> None:
                 spoken = _sanitize_for_speech(conf_atype, result_str) or result_str
                 await channel.reply(spoken or f"Done, {honor}.")
             else:
+                _partner_note_denial(cid)
                 governance_manager.cancel_pending(cid)
                 await channel.reply(f"Cancelled, {honor}. Standing by.")
             return
@@ -1525,9 +1603,12 @@ async def run_remote_command(command_text: str, channel) -> None:
                         governance_manager.cancel_pending(prev.get("cid"))
                     sess.pending["governance"] = {"cid": conf_id, "atype": conf_action}
                     await channel.reply(
-                        f"Authorisation required, {honor}: '{conf_action}' is a "
-                        f"CONFIRM-tier action. Reply 'confirm' to execute it or "
-                        f"'cancel' to drop it."
+                        _partner_confirm_text(conf_action, conf_id, honor)
+                        or (
+                            f"Authorisation required, {honor}: '{conf_action}' is a "
+                            f"CONFIRM-tier action. Reply 'confirm' to execute it or "
+                            f"'cancel' to drop it."
+                        )
                     )
                 else:
                     # Non-admin caller (or malformed sentinel): refuse and clear
@@ -1698,6 +1779,7 @@ async def backdoor_command(req: BackdoorRequest):
                     await safe_send_all({"status": "complete", "result": msg})
                     asyncio.create_task(speaker.speak_text(msg))
             else:
+                _partner_note_denial(_DESK_PENDING["cid"])
                 governance_manager.cancel_pending(_DESK_PENDING["cid"])
                 _DESK_PENDING["cid"] = None
                 msg = "Action cancelled, Sir. Standing by."
@@ -2148,7 +2230,7 @@ async def backdoor_command(req: BackdoorRequest):
                         # whatever last landed in the global pending slot.
                         _DESK_PENDING["cid"] = parts[2] if len(parts) > 2 else None
                         title = "Madam" if active_user == "MOUSUMI" else "Sir"
-                        msg = (
+                        msg = _partner_confirm_text(conf_action, _DESK_PENDING["cid"], title) or (
                             f"Authorisation required, {title}. I would like to execute ‘{conf_action}’. "
                             f"Do you authorise this action? Please say ‘confirm’ or ‘cancel’."
                         )
@@ -2727,6 +2809,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                             await safe_send({"status": "complete", "result": msg})
                                             asyncio.create_task(speaker.speak_text(msg))
                                     else:
+                                        _partner_note_denial(_DESK_PENDING["cid"])
                                         governance_manager.cancel_pending(_DESK_PENDING["cid"])
                                         _DESK_PENDING["cid"] = None
                                         msg = "Action cancelled, Sir. Standing by."
@@ -2953,7 +3036,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                                 # Phase 4 item 4: pin the desk's confirmation id.
                                                 _DESK_PENDING["cid"] = parts[2] if len(parts) > 2 else None
                                                 title = "Madam" if active_user == "MOUSUMI" else "Sir"
-                                                msg = (
+                                                msg = _partner_confirm_text(conf_action, _DESK_PENDING["cid"], title) or (
                                                     f"Authorisation required, {title}. I would like to execute ‘{conf_action}’. "
                                                     f"Do you authorise this action? Please say ‘confirm’ or ‘cancel’."
                                                 )

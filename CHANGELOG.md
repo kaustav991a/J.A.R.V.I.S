@@ -5,6 +5,60 @@ This file follows the spirit of [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [A Butler Who Can Carry a Message — and Remember Who Said What] — 2026-07-26
+
+Two owner-facing capabilities around the Telegram gateway, which until now could message
+exactly one person (the owner) and could not tell him anything a partner had said, because
+channel isolation kept her conversation inside her own session. Guests gained no new powers
+in either direction.
+
+### Added
+- **`message_partner` (CONFIRM-tier) — propose and approve.** "Ask my girlfriend if she's
+  eaten" → JARVIS drafts → the authorisation read-back names the **resolved partner** and
+  quotes the **entire message verbatim** → "confirm" sends it, "cancel" does not. Works
+  identically at the desk, on the HUD command line, and from the owner's own Telegram chat
+  (session-scoped by `confirmation_id`, so a phone "yes" can only answer what that phone was
+  asked). New `modules/partner_registry.py` resolves role words *and* first names
+  (girlfriend/gf/mousumi, brother/kinshuk) to `TELEGRAM_GF_ID` / `TELEGRAM_BROTHER_ID` —
+  **allowlist-only**: anything containing a digit is refused as a raw-chat-id attempt before
+  the alias table is consulted, and unknown ("Priya") or vague ("her", "someone") recipients
+  are refused honestly rather than guessed. A private message to the wrong person is the
+  failure this path exists to prevent.
+- **`summarize_partner_chat` (admin-only) — pull, never push.** "What did my girlfriend tell
+  you" now answers instead of denying. Reads one partner's slot only, and every answer leads
+  with a disclosure that it is logged data.
+- **`telegram_bot.send_text_to_partner`** — the first outbound path with a recipient other
+  than the owner. Re-checks the id against the recognised-identity registry and refuses the
+  admin id, so a "partner" send cannot be redirected. Two callers only (transport + engine),
+  asserted by the harness. Not exposed as an agent tool: the loop cannot message a person.
+
+### Opt-in, by design
+- **`JARVIS_LOG_PARTNER_CHATS`, default OFF.** `modules/partner_log.py` records a partner's
+  INBOUND messages into a new `partner_messages` table **inside the existing
+  `jarvis_longterm.db`** (no new store). With the flag off nothing is written — not even the
+  table — so no later change of mind can read a conversation that happened while it was off.
+- **Scope, ruled explicitly by the owner:** the flag governs that raw store only. Per-user
+  memory extraction (`extract_and_store_memory` → `memory_manager`, keyed `user='MOUSUMI'`)
+  has always run for every recognised caller and keeps running either way — it is what makes
+  JARVIS know her warmly in her own chat. "Off" therefore means *no verbatim transcript*, not
+  *nothing retained*. These rows are third-party personal data and belong under the planned
+  encryption-at-rest work (roadmap TIER C #11); the module says so.
+
+### Unchanged (deliberately)
+- `tier_allows` and `VIP_GUEST_ALLOWED_ACTIONS` are untouched — neither new action is on the
+  guest allowlist, so a guest is refused before dispatch, logging, or a governance pend.
+  `governance_manager.check` is unmodified; the new rules are two lines of `governance.json`.
+
+### Tests
+- `test_partner_messaging.py` — 34 checks, weighted toward the refusals: raw ids rejected in
+  every shape (string, int, embedded, phone-formatted), unknown/vague/double-named recipients
+  refused, verbatim read-back proven longer than the generic 120-char one, **deny is terminal**
+  across routes with a TTL so the owner can still change his mind, a staged send is not staged
+  twice, admin-only summary, one partner's history never visible in another's, and the OFF
+  default proven by asserting the table does not exist. Suite: **787/787, 32/32 harnesses**.
+
+---
+
 ## [The Dev Backdoor Stops Being a Free Biometric Bypass] — 2026-07-26
 
 `POST /api/backdoor` — the HUD command line, the regression driver, every `test:` hook —

@@ -4,7 +4,7 @@
 > Electron build. Split into **PART A — Automatic** (Claude runs, no human/hardware)
 > and **PART B — Manual** (Kaustav runs: voice / camera / phone / GUI). Run PART A
 > after every change; run PART B once, right before Electron. Roadmap: `JARVIS_MASTER_ROADMAP.md`.
-> Last automatic baseline: **2026-07-26 — 753/753 green, 31/31 harnesses, ~12 s warm (~36 s cold).**
+> Last automatic baseline: **2026-07-26 — 787/787 green, 32/32 harnesses, ~14 s warm (~36 s cold).**
 > Legend: ✅ pass · ⚠️ partial · ❌ fail · ☐ not yet run.
 
 ---
@@ -50,12 +50,13 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 | `test_listen_request.py` | 12 | click-to-talk flag: one-shot, expiry, cross-thread exactly-once | ✅ |
 | `test_llm_failover.py` | 7 | ollama empty-200 raises → cascade escalates instead of "" | ✅ |
 | `test_owner_notify.py` | 20 | owner fan-out (desk/TTS/phone) + presence-aware legs | ✅ |
+| `test_partner_messaging.py` | 34 | partner send/pull gates: allowlist-only recipient, raw-id refused, verbatim confirm, terminal deny, admin-only summary, logging OFF default | ✅ |
 | `test_presence_probe.py` | 25 | ARP/TCP/ICMP ladder, asymmetric debounce, fuse + routing | ✅ |
 | `test_speaker_errors.py` | 5 | TTS failure logged + swallowed, flag still resets | ✅ |
 | `test_tool_call.py` | 35 | tool-turn normalisation + `universal_tool_call` cascade (fake HTTP) | ✅ |
 | `test_watchdog_policy.py` | 14 | respawn give-up policy + owner-down alert (live log untouched) | ✅ |
 | `test_working_memory_lock.py` | 4 | RLock concurrency + snapshot copies | ✅ |
-| **Total** | **753** | | **✅ 0 failed** |
+| **Total** | **787** | | **✅ 0 failed** |
 
 **A2 — semi-automatic (need the backend up; Claude can drive):** `test_ping.py`,
 `test_ui_bridge_e2e.py`. Start `uvicorn main:app --host 127.0.0.1 --port 8000`, then run.
@@ -485,6 +486,29 @@ at 1500 the model loses context and starts guessing wildcards — honest, but th
 the default is 20000. A desk prompt needs `presence: at_desk` **at run start**; the
 10 s desk-freshness bound means a stale verdict routes to the away park instead, which
 is correct and was observed.
+
+---
+
+## 24. Partner messaging — outbound propose-and-approve + inbound pull (2026-07-26)
+
+> Needs the Telegram gateway up (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_USER_ID`, `TELEGRAM_GF_ID`)
+> and a partner who can reply. Logging is opt-in: `JARVIS_LOG_PARTNER_CHATS=1` is set in
+> Kaustav's `.env` (2026-07-26). Rows 24.7–24.8 need it **unset** — restart without it.
+> ⚠️ 24.1–24.4 send real messages to a real person. Use wording you don't mind her reading.
+
+| # | Test | Steps | Expected | ✓ |
+|---|---|---|---|---|
+| 24.1 | Draft + verbatim confirm | desk: "ask my girlfriend if she's eaten" | prompt names **Mousumi** and reads back the FULL draft verbatim (no "…"), asks confirm/cancel; **nothing sent yet** | ☐ |
+| 24.2 | Approve → delivered | say "confirm" | message arrives on her Telegram exactly as read back; JARVIS says "Sent to Mousumi, Sir." | ☐ |
+| 24.3 | Deny is terminal | new draft, say "cancel", then immediately ask for the *same* message again | nothing sent; the re-attempt is refused ("You declined that message… I won't re-attempt it"); no second prompt from any route | ☐ |
+| 24.4 | From Telegram | same flow, typed to the bot from your own phone | same read-back in chat; "confirm" from that chat sends; "cancel" is terminal there too | ☐ |
+| 24.5 | Unknown recipient | "text Priya that I'll be late" | refused honestly, names who he *can* reach; no message sent to anyone | ☐ |
+| 24.6 | Raw id refused | "message 111222333 saying hi" | refused — "I won't message a raw chat id" | ☐ |
+| 24.7 | Pull the summary (logging ON) | after she has sent a few messages: "what did my girlfriend tell you" | a summary of her recent messages **plus the disclosure** that this is logged data | ☐ |
+| 24.8 | Logging OFF is honest | restart without `JARVIS_LOG_PARTNER_CHATS`, ask 24.7 again | says he keeps no record and names the flag; `sqlite3 jarvis_longterm.db ".tables"` shows **no new rows** from that session | ☐ |
+| 24.9 | Guest can't pull | from *her* Telegram: "what did Kinshuk tell you" | the standard VIP refusal; nothing from anyone else's history appears | ☐ |
+| 24.10 | Guest can't send | from her Telegram: "message my brother saying hi" | refused (tier gate) — guests gained no new powers | ☐ |
+| 24.11 | Her warmth is unchanged | chat with JARVIS from her account | he still knows her (persona + extracted facts work with logging on **or** off) | ☐ |
 
 ---
 

@@ -63,6 +63,7 @@ HARNESSES = [
     "test_listen_request.py",
     "test_llm_failover.py",
     "test_owner_notify.py",
+    "test_partner_messaging.py",
     "test_presence_probe.py",
     "test_speaker_errors.py",
     "test_tool_call.py",
