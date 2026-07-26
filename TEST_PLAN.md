@@ -422,20 +422,32 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 
 | # | Test | Steps | Expected | ✓ |
 |---|---|---|---|---|
-| 23.1 | Flag off = nothing changes | backend **without** the flag, say the demo phrase | answered by the normal pipeline; **no** AGENT panel appears | ☐ |
-| 23.2 | The trace is watchable | flag on, say the demo phrase at the desk | AGENT panel: THINKING → TOOL → RESULT rows appear **as they happen**, then ANSWER naming the real file | ☐ |
-| 23.3 | Nothing invented | check the answer against the actual file | it quotes what is really in the file, or says it could not read it — never a plausible guess | ☐ |
-| 23.4 | Desk confirm (approve) | a write goal while sitting at the desk | prompt appears; `Y`/APPROVE → the write happens and the run **continues in place** | ☐ |
-| 23.5 | Desk confirm (deny) | same, press `N` | nothing is written and the model says so | ☐ |
-| 23.6 | Ignored prompt is a refusal | same, leave it alone ~2 min | run ends honestly ("timed out unanswered"); the file is untouched | ☐ |
-| 23.7 | 🔴 Away park | phone off WiFi (presence `away`), trigger a write goal | HUD shows a **PARKED** row, the **phone gets a message** naming `approve task <id>`, and nothing is written | ☐ |
-| 23.8 | Resume from the phone | reply `approve task <id>` in Telegram | "Authorised… resuming"; the worker runs the write and reports; the file now exists | ☐ |
-| 23.9 | Resume at the desk | park another one, then say/type `approve task <id>` at the HUD | same behaviour as 23.8 — the phrase works on both surfaces | ☐ |
-| 23.10 | Deny a parked task | park one, say `deny task <id>` | "Dropped" — and it never runs, at any later point | ☐ |
-| 23.11 | One ping per run | ask for two writes in one goal while away | exactly ONE task parked and ONE phone message | ☐ |
-| 23.12 | From the phone, end to end | send the demo phrase over Telegram while away | typing indicator, then the answer in chat (no eight-step play-by-play) | ☐ |
-| 23.13 | Nothing else freezes | while a confirm prompt is open, run an unrelated command | it executes immediately — the engine lock is not held across the wait | ☐ |
-| 23.14 | Long run trims itself | a goal that needs several big reads | a TRIMMED row appears and the run still finishes; no provider 400 in the log | ☐ |
+| 23.1 | Flag off = nothing changes | backend **without** the flag, say the demo phrase | answered by the normal pipeline; **no** AGENT panel appears | ✅ 0 wired-intent hits; one-shot said "outside my permitted area" |
+| 23.2 | The trace is watchable | flag on, say the demo phrase at the desk | AGENT panel: THINKING → TOOL → RESULT rows appear **as they happen**, then ANSWER naming the real file | ✅ |
+| 23.3 | Nothing invented | check the answer against the actual file | it quotes what is really in the file, or says it could not read it — never a plausible guess | ✅ twice: refused before the fixes, correct after |
+| 23.4 | Desk confirm (approve) | a write goal while sitting at the desk | prompt appears; `Y`/APPROVE → the write happens and the run **continues in place** | ✅ `af39d7f8… → approved` |
+| 23.5 | Desk confirm (deny) | same, press `N` | nothing is written and the model says so | ✅ `20e26534… → denied`, no file |
+| 23.6 | Ignored prompt is a refusal | same, leave it alone ~2 min | run ends honestly ("timed out unanswered"); the file is untouched | ✅ gone at ~124 s, no file, **0 tasks parked** |
+| 23.7 | 🔴 Away park | not at the desk, trigger a write goal | HUD shows a **PARKED** row, the **phone gets a message** naming `approve task <id>`, and nothing is written | ✅ `e85193c6`, phone delivered |
+| 23.8 | Resume from the phone | reply `approve task <id>` in Telegram | "Authorised… resuming"; the worker runs the write and reports; the file now exists | ✅ via the cloud bridge |
+| 23.9 | Resume at the desk | park another one, then say/type `approve task <id>` at the HUD | same behaviour as 23.8 — the phrase works on both surfaces | ✅ `94b19231` |
+| 23.10 | Deny a parked task | park one, say `deny task <id>` | "Dropped" — and it never runs, at any later point | ✅ `cancelled`, no file |
+| 23.11 | One ping per run | ask for two writes in one goal while away | exactly ONE task parked and ONE phone message | ✅ |
+| 23.12 | From the phone, end to end | send the demo phrase over Telegram | typing indicator, then the answer in chat (no eight-step play-by-play) | ✅ named the right file |
+| 23.13 | Nothing else freezes | while a confirm prompt is open, run an unrelated command | it executes immediately — the engine lock is not held across the wait | ✅ answered in <1 s |
+| 23.14 | Long run trims itself | a goal that needs several big reads | a TRIMMED row appears and the run still finishes; no provider 400 in the log | ✅ 10 compactions, 5 rows |
+
+**Gate notes (2026-07-26 session).** Three bugs only a live model could find, all fixed
+in `eee4b3a`: `list_directory`'s HUD payload (epoch floats in a `render_file_list`
+wrapper) made the model declare mtimes "not provided"; bare filenames from a listing
+resolve against a *different* root than the reader tool uses; and `list_directory`
+(home-only) and `workspace_read` (WORKSPACE_ROOTS) do not share a sandbox, while the
+sandbox refusal came back as ordinary data so the loop thrashed roots until the step
+cap. Set `JARVIS_AGENT_TRANSCRIPT_CHARS` low to exercise 23.14 on a small filesystem;
+at 1500 the model loses context and starts guessing wildcards — honest, but the reason
+the default is 20000. A desk prompt needs `presence: at_desk` **at run start**; the
+10 s desk-freshness bound means a stale verdict routes to the away park instead, which
+is correct and was observed.
 
 ---
 

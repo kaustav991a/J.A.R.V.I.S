@@ -466,9 +466,28 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
       A SECOND intent is now wired — a narrow **write** ("write a note called todo.md saying
       …") routed to the `authoring` set via `tool_set_for()` — because the read intent's set is
       read-only by construction, which made the desk-confirm and away-park paths code nobody
-      could exercise. **NEXT:** Kaustav's live gate — `JARVIS_AGENT_LOOP=1`, real Groq,
-      TEST_PLAN §23 (14 rows: trace, approve/deny/ignore at the desk, park + resume from the
-      phone and from the desk, one-ping cap, nothing-else-freezes, compaction).
+      could exercise.
+    - ✅ **LIVE-GATED 2026-07-26 — TEST_PLAN §23, 14/14 rows PASS** (`eee4b3a`, `7db371f`,
+      and the fallback fix). Real `llama-3.3-70b-versatile` against the real filesystem found
+      **four** bugs no harness could reach, because each lived in the gap between what a tool
+      returns and what a model can do with it: (1) `list_directory`'s HUD `render_file_list`
+      payload made the model declare modification times "not provided" and abandon "most
+      recent"; (2) a bare filename from a listing resolves against a DIFFERENT root than the
+      reader tool's; (3) `list_directory` (home-only) and `workspace_read` (WORKSPACE_ROOTS)
+      do not share a sandbox and the sandbox refusal arrived as ordinary DATA, so the loop
+      thrashed roots to the step cap; (4) after a DENIED loop main.py fell back to the
+      one-shot path, which re-attempted the write as `create_note` and staged a fresh VOICE
+      confirmation — declining by silence got the owner asked again by another route. Fixes:
+      `ToolEntry.format_output` + `format_directory_listing`, full paths in listing rows,
+      `workspace_note()` naming listable-vs-readable separately, "Access denied" as a
+      raise-sentinel, and no one-shot fallback on an authorisation boundary (desk + remote).
+      Also `JARVIS_AGENT_TRANSCRIPT_CHARS`/`JARVIS_AGENT_MAX_STEPS` plus `[AGENT] limits` and
+      `[AGENT] compacted` log lines — compaction was previously invisible outside the HUD.
+      Evidence worth keeping: Telegram approve arrived **via the cloud bridge**; a desk expiry
+      at ~124 s left **0 tasks parked** (expiry is a refusal, not a yield); an unrelated
+      command answered in **under 1 s** with a prompt open; 10 compactions and 5 TRIMMED rows
+      with no provider 400. Gotcha: a desk prompt needs `at_desk` **at run start** — the 10 s
+      desk-freshness bound correctly routes a stale verdict to the away park instead.
     - **Reference path (NOT chosen — paid): Claude Agent SDK** (Anthropic's lib — gives an app the exact
       Claude-Code capabilities: agentic tool loop, sub-agents, MCP client, skills, context
       compaction). JARVIS already runs Anthropic cloud (cloud_first reasoning) so this is

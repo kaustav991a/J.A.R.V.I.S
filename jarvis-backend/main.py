@@ -59,6 +59,7 @@ from modules import telegram_bot  # --- Telegram Remote Gateway ---
 from modules import planner  # --- ReAct Orchestrator (Roadmap §1.2) ---
 from modules import agent_runner  # --- Agentic core, phase 4 (flagged, one intent) ---
 from modules import agent_yield  # --- Agentic core, phase 5 (away yield + resume) ---
+from modules import agent_core  # --- Agentic core: stop_reason constants ---
 from modules import fast_path  # --- Deterministic low-latency lane (Roadmap §3.4) ---
 from modules import action_parser  # --- Unified LLM-reply → action(s) parse spine ---
 # Phase 6 – Governance Engine
@@ -1408,9 +1409,11 @@ async def run_remote_command(command_text: str, channel) -> None:
             if _ares.ok and _ares.answer:
                 await channel.reply(_ares.answer)
                 return
-            if _ares.notes:
-                # Parked for authorisation — tell him the phrase that resumes it.
-                await channel.reply(" ".join(_ares.notes))
+            if _ares.notes or _ares.stop_reason == agent_core.DENIED:
+                # Parked for authorisation, or refused outright. Either way the
+                # one-shot path must not re-attempt it behind the refusal (see the
+                # desk path — it staged a second confirmation by another route).
+                await channel.reply(" ".join(_ares.notes) or _ares.summary())
                 return
             print(f"[REMOTE:{kind}] Agent loop did not finish "
                   f"({_ares.stop_reason}: {_ares.error}) — falling back.", flush=True)
@@ -1998,12 +2001,16 @@ async def backdoor_command(req: BackdoorRequest):
                     await safe_send_all({"status": "complete", "result": _res.answer})
                     asyncio.create_task(speaker.speak_text(_res.answer))
                     return {"status": "success"}
-                if _res.notes:
-                    # Phase 5: the run stopped because something needs his
-                    # authorisation and it has been PARKED as a queued task. Say
-                    # so — falling through to the one-shot path here would re-stage
-                    # the same confirmation nobody is present to answer.
-                    _parked_say = " ".join(_res.notes)
+                if _res.notes or _res.stop_reason == agent_core.DENIED:
+                    # Phase 5: the run stopped on an authorisation boundary —
+                    # either PARKED as a queued task (notes) or refused outright:
+                    # declined at the HUD, or a prompt left unanswered until it
+                    # expired. Either way the one-shot path must NOT have a go.
+                    # Live 2026-07-26 it did, re-attempted the same write as
+                    # `create_note`, and staged a fresh voice confirmation — so
+                    # declining by silence got the owner asked again by another
+                    # route, which empties the meaning of the refusal.
+                    _parked_say = " ".join(_res.notes) or _res.summary()
                     await safe_send_all({"status": "complete", "result": _parked_say})
                     asyncio.create_task(speaker.speak_text(_parked_say))
                     return {"status": "success"}
