@@ -543,6 +543,43 @@ def test_helper_steps_are_narrated_under_their_own_label():
     assert [f["event"] for f in frames if f["status"] == "complete"] == ["answer"]
 
 
+def test_the_system_prompt_names_the_real_workspace_roots():
+    """Live 2026-07-26: the loop listed the user's HOME (list_directory's sandbox),
+    then handed the newest name to workspace_read, whose roots are different — it
+    could name a file it could not open. The model cannot infer either sandbox."""
+    prompt = ar.system_prompt()
+    note = ar.workspace_note()
+    assert note, "workspace roots must resolve in this repo"
+    assert note in prompt and prompt.startswith("You are JARVIS")
+    assert "FULL paths" in prompt
+
+
+def test_the_note_separates_what_is_listable_from_what_is_readable():
+    """The two file tools do not share a sandbox. Told only about the readable
+    roots, the model tried to LIST F:\\work, was refused, and thrashed until the
+    step cap — so the note must name the browsable intersection."""
+    from pathlib import Path
+    note = ar.workspace_note()
+    assert "READ" in note and "LIST" in note
+    assert str(Path.home()) in note
+    assert "do not retry" in note.lower()
+
+
+def test_the_prompt_survives_an_unresolvable_workspace(monkeypatch=None):
+    """No roots (or an import fault) must degrade to the plain prompt, not crash."""
+    import sys as _sys
+    real = _sys.modules.get("modules.workspace_agent")
+    _sys.modules["modules.workspace_agent"] = None      # forces an import fault
+    try:
+        assert ar.workspace_note() == ""
+        assert ar.system_prompt() == ar.SYSTEM_PROMPT
+    finally:
+        if real is not None:
+            _sys.modules["modules.workspace_agent"] = real
+        else:
+            del _sys.modules["modules.workspace_agent"]
+
+
 def test_the_system_prompt_forbids_inventing_file_contents():
     assert "Never invent" in ar.SYSTEM_PROMPT
     assert "no tool call" in ar.SYSTEM_PROMPT

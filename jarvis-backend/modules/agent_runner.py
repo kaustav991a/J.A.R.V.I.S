@@ -60,6 +60,8 @@ SYSTEM_PROMPT = (
     "You are JARVIS, working through a task for Kaustav with tools.\n"
     "Rules:\n"
     "- Call ONE tool at a time and read its result before deciding the next step.\n"
+    "- Pass FULL paths to file tools. If a listing gave you a path, copy it "
+    "verbatim — a bare filename is resolved against a different root and fails.\n"
     "- Use the tools to find things out. Never invent a filename, a path or a "
     "file's contents — if a tool did not tell you, you do not know it.\n"
     "- When you have the answer, reply in plain prose with no tool call. Be brief "
@@ -104,6 +106,49 @@ def tool_set_for(text: str) -> str:
     """Which curated set this request needs. Read-only unless it asks to write."""
     return "authoring" if _is_write_intent(f" {(text or '').lower().strip()} ") \
         else "files"
+
+
+def workspace_note() -> str:
+    """One line naming the directories the file tools can actually reach.
+
+    Live 2026-07-26 the loop listed the user's HOME (that is `list_directory`'s
+    sandbox), picked the newest file there, and handed it to `workspace_read`,
+    whose roots are entirely different — so the read failed and the run ended with
+    a file it could name but not open. The model cannot infer either sandbox; the
+    honest fix is to tell it where its territory is.
+    """
+    try:
+        from pathlib import Path
+
+        from modules.workspace_agent import WORKSPACE_ROOTS
+        roots = [Path(p) for p in WORKSPACE_ROOTS]
+    except Exception:  # noqa: BLE001 — a missing root list must not break a run
+        return ""
+    if not roots:
+        return ""
+    # The two file tools do NOT share a sandbox: `list_directory` (terminal_agent)
+    # refuses anything outside the user's home, while `workspace_read` allows the
+    # workspace roots — which mostly sit on another drive. Only their INTERSECTION
+    # can be browsed and then read, and that is what the model must be told to
+    # start from. Live 2026-07-26 it was told "list the workspace roots", dutifully
+    # tried F:\work, got "Access denied" as an ordinary result, and thrashed
+    # between roots until the step cap stopped it.
+    home = Path.home()
+    listable = [r for r in roots if r == home or home in r.parents]
+    note = "- Files you can READ live under: " + "; ".join(str(r) for r in roots) + ".\n"
+    note += (f"- But you can only LIST directories inside {home}"
+             + (f" — start from: {'; '.join(str(r) for r in listable)}"
+                if listable else "")
+             + ". Listing anything outside it is refused, so do not retry it.\n")
+    return note
+
+
+def system_prompt() -> str:
+    """The system prompt with the live workspace roots spliced in."""
+    note = workspace_note()
+    if not note:
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT.replace("Rules:\n", "Rules:\n" + note, 1)
 
 
 def flag_enabled(env: dict | None = None) -> bool:
@@ -353,7 +398,7 @@ async def run_agent_command(
         goal,
         tools,
         execute,
-        system=SYSTEM_PROMPT,
+        system=system_prompt(),
         authorize=authorize,
         call_model=call_model,
         limits=limits,

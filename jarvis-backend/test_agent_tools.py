@@ -11,6 +11,7 @@ no ruleset file is read. The invariants under test are the dangerous ones:
 """
 
 import asyncio
+import json
 import sys
 
 from modules import agent_core as ac
@@ -430,6 +431,100 @@ def test_every_registered_action_type_is_dispatched_by_action_engine():
     missing = [r.get(n).action_type for n in r.names()
                if f'action == "{r.get(n).action_type}"' not in src]
     assert not missing, f"no dispatch branch in action_engine.py: {missing}"
+
+
+# ---- output formatting (found by the 2026-07-26 live gate) ---------------- #
+
+_LISTING = json.dumps({
+    "ui_action": "render_file_list",
+    "path": "C:\\Users\\KINGSHUK\\Documents",
+    "data": [
+        {"name": "old.txt", "type": "file", "size": 10, "modified": 1000.0},
+        {"name": "newest.md", "type": "file", "size": 20, "modified": 9000.0},
+        {"name": "JarvisNotes", "type": "folder", "size": None, "modified": 5000.0},
+    ],
+})
+
+
+def test_a_listing_is_sorted_newest_first():
+    """The live gate failed exactly here: the model could not tell which file was
+    most recent from epoch floats in a render payload, and said so."""
+    out = at.format_directory_listing(_LISTING)
+    lines = out.splitlines()
+    assert "NEWEST FIRST" in lines[0]
+    assert "newest.md" in lines[1] and "JarvisNotes" in lines[2] and "old.txt" in lines[3]
+
+
+def test_every_row_carries_a_full_path():
+    """Second live failure: handed a bare name, `workspace_read` resolved it
+    against a different root — "File not found: F:\\work\\.claude.json"."""
+    out = at.format_directory_listing(_LISTING)
+    assert "C:\\Users\\KINGSHUK\\Documents\\newest.md" in out
+    assert "pass these verbatim" in out.splitlines()[0]
+
+
+def test_a_listing_with_no_path_still_lists_names():
+    out = at.format_directory_listing(json.dumps(
+        {"ui_action": "render_file_list",
+         "data": [{"name": "a.txt", "type": "file", "size": 1, "modified": 5.0}]}))
+    assert "a.txt" in out
+
+
+def test_a_listing_shows_readable_timestamps_not_epochs():
+    out = at.format_directory_listing(_LISTING)
+    assert "9000.0" not in out
+    assert "1970-" in out or ":" in out.splitlines()[1]
+
+
+def test_folders_are_labelled_so_the_model_does_not_read_one():
+    """It tried `workspace_read` on a folder and got "Path is not a file"."""
+    out = at.format_directory_listing(_LISTING)
+    assert "folder | - | C:\\Users\\KINGSHUK\\Documents\\JarvisNotes" in out
+
+
+def test_a_long_listing_truncates_the_OLD_end():
+    entries = [{"name": f"f{i}.txt", "type": "file", "size": 1, "modified": float(i)}
+               for i in range(at.MAX_LISTED_ENTRIES + 15)]
+    out = at.format_directory_listing(json.dumps(
+        {"ui_action": "render_file_list", "path": "x", "data": entries}))
+    assert "older entries not shown" in out
+    assert f"f{at.MAX_LISTED_ENTRIES + 14}.txt" in out, "the newest must survive"
+    assert "f0.txt" not in out
+
+
+def test_a_sandbox_refusal_raises_instead_of_reading_as_data():
+    """Live 2026-07-26: "Access denied: path is outside the permitted user
+    directory" came back as a tool RESULT, so the loop treated a refusal as
+    information and burned its step cap retrying other roots."""
+    for text in ("Access denied: path is outside the permitted user directory.",
+                 "Access denied reading directory: C:\\x"):
+        try:
+            at.interpret_result(text)
+        except PermissionError as e:
+            assert "Access denied" in str(e)
+        else:
+            raise AssertionError(f"should have raised for: {text}")
+
+
+def test_anything_that_is_not_a_listing_passes_through():
+    for raw in ("plain output", "", '{"broken": ', 42, None):
+        assert at.format_directory_listing(raw) == raw
+
+
+def test_a_broken_formatter_never_loses_a_real_result():
+    reg = registry()
+    reg.register("noisy_tool", "t", {"type": "object", "properties": {}},
+                 action_type="system_status",
+                 format_output=lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
+    engine = FakeEngine("REAL RESULT")
+    out = run(reg.executor(engine)(ToolCall(id="c1", name="noisy_tool")))
+    assert out == "REAL RESULT"
+
+
+def test_the_listing_description_tells_the_model_times_are_there():
+    reg = registry()
+    desc = reg.get("list_directory").description
+    assert "LAST-MODIFIED" in desc and "newest first" in desc
 
 
 if __name__ == "__main__":

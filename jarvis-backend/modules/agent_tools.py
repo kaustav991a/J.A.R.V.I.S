@@ -55,7 +55,12 @@ MAX_SET_SIZE = 8
 # Sentinel prefixes emitted by ActionEngine.execute (mirrored, not imported, so
 # this module stays importable without the whole action stack).
 SENTINELS = ("GOVERNANCE_BLOCKED:", "GOVERNANCE_CONFIRM:", "TIER_BLOCKED:",
-             "Validation Error:")
+             "Validation Error:",
+             # terminal_agent's sandbox refusal. Live 2026-07-26 this came back as
+             # an ordinary tool RESULT, so the loop read a refusal as data and
+             # retried other roots until the step cap stopped it. As an error it
+             # counts against the error streak and the model is told plainly.
+             "Access denied")
 
 
 class BlockedToolError(ValueError):
@@ -73,6 +78,12 @@ class ToolEntry:
     tier: str
     target_from: str | None = None
     build_target: Callable[[dict], Any] | None = None
+    #: Optional adapter applied to a SUCCESSFUL result before the model sees it.
+    #: Some handlers answer to the HUD first — `list_directory` returns a
+    #: `render_file_list` payload with epoch floats — and a model reading that
+    #: concludes the information it needs isn't there. Reshaping belongs here, in
+    #: the agent layer, so the HUD's own contract is untouched.
+    format_output: Callable[[Any], Any] | None = None
 
     @property
     def definition(self) -> dict:
@@ -105,7 +116,8 @@ class ToolRegistry:
     def register(self, name: str, description: str, input_schema: dict, *,
                  action_type: str | None = None,
                  target_from: str | None = None,
-                 build_target: Callable[[dict], Any] | None = None) -> ToolEntry:
+                 build_target: Callable[[dict], Any] | None = None,
+                 format_output: Callable[[Any], Any] | None = None) -> ToolEntry:
         """Add one tool. Raises `BlockedToolError` if governance says BLOCK.
 
         `target_from` names the argument that becomes `payload["target"]` (the
@@ -137,7 +149,7 @@ class ToolRegistry:
             name=name, description=description, input_schema=input_schema,
             action_type=atype, tier=tier,
             target_from=target_from or (next(iter(props), None) if not build_target else None),
-            build_target=build_target,
+            build_target=build_target, format_output=format_output,
         )
         self._tools[name] = entry
         return entry
@@ -300,6 +312,12 @@ class ToolRegistry:
             output = interpret_result(result)
             if state == "FAILED":
                 raise ToolFailure(str(output))
+            entry = self._tools.get(call.name)
+            if entry is not None and entry.format_output is not None:
+                try:
+                    output = entry.format_output(output)
+                except Exception:  # noqa: BLE001 — a formatter must never lose a
+                    pass           # real result; the raw output still answers.
             return output
 
         return execute
@@ -333,6 +351,60 @@ def _obj(properties: dict, required: list[str] | None = None) -> dict:
 
 _QUERY = {"query": {"type": "string", "description": "What to look for."}}
 
+#: Entries shown to the model per directory. Newest-first, so a truncated tail is
+#: the OLD end of the list — the part a "most recent" question never needs.
+MAX_LISTED_ENTRIES = 40
+
+
+def format_directory_listing(raw: Any) -> Any:
+    """Turn `list_directory`'s HUD payload into something a model can reason over.
+
+    The handler answers to the HUD first: it returns
+    `{"ui_action": "render_file_list", "data": [{"modified": 1785048651.07, …}]}`.
+    Every fact needed is in there, but a 70B model reading epoch floats wrapped in
+    a render instruction concluded (live, 2026-07-26) that modification times were
+    "not provided" and gave up on "which file is most recent" — the exact question
+    the wired intent asks. So: sort newest-first, print ISO minutes, and label the
+    columns. Anything unexpected passes through untouched.
+    """
+    if not isinstance(raw, str) or "render_file_list" not in raw:
+        return raw
+    import datetime
+    import json as _json
+    try:
+        payload = _json.loads(raw)
+        entries = payload.get("data")
+        if not isinstance(entries, list):
+            return raw
+    except Exception:  # noqa: BLE001
+        return raw
+
+    def when(e):
+        try:
+            return float(e.get("modified") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    rows = sorted((e for e in entries if isinstance(e, dict)), key=when, reverse=True)
+    base = str(payload.get("path") or "").rstrip("\\/")
+    lines = [f"Contents of {base or '?'}, NEWEST FIRST ({len(rows)} entries). "
+             f"Columns: modified | type | size | FULL PATH (pass these verbatim to "
+             f"other tools)"]
+    for e in rows[:MAX_LISTED_ENTRIES]:
+        stamp = (datetime.datetime.fromtimestamp(when(e)).strftime("%Y-%m-%d %H:%M")
+                 if when(e) else "unknown")
+        size = e.get("size")
+        name = e.get("name", "?")
+        # FULL path, not the bare name: live 2026-07-26 the model passed `.claude.json`
+        # to workspace_read, which resolved it against a DIFFERENT root and reported
+        # "File not found: F:\work\.claude.json". A name alone is a trap.
+        full = f"{base}\\{name}" if base else name
+        lines.append(f"{stamp} | {e.get('type', '?')} | "
+                     f"{size if size is not None else '-'} | {full}")
+    if len(rows) > MAX_LISTED_ENTRIES:
+        lines.append(f"… {len(rows) - MAX_LISTED_ENTRIES} older entries not shown.")
+    return "\n".join(lines)
+
 
 def build_default_registry(get_tier: Callable[[str], str] | None = None) -> ToolRegistry:
     """Register the curated tools and the per-intent sets.
@@ -365,9 +437,12 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                _obj({"path": {"type": "string",
                               "description": "File path, absolute or workspace-relative."}}))
     r.register("list_directory",
-               "List the contents of a directory (read-only, sandboxed to the "
-               "user's home).",
-               _obj({"path": {"type": "string", "description": "Directory path."}}))
+               "List a directory (read-only, sandboxed to the user's home). Each "
+               "entry comes back with its LAST-MODIFIED time, type and size, "
+               "sorted newest first — so this is how you find the most recent "
+               "file. Folders are listed too; read a file, not a folder.",
+               _obj({"path": {"type": "string", "description": "Directory path."}}),
+               format_output=format_directory_listing)
     r.register("find_file",
                "Locate a file by name when its directory is unknown.",
                _obj({"name": {"type": "string",
