@@ -404,6 +404,9 @@ async def run_agent_loop(
         if dropped:
             await emit("compacted", groups=dropped, tools=dropped_tools,
                        chars=transcript_chars(messages))
+            print(f"[AGENT] compacted {dropped} step group(s) "
+                  f"({', '.join(dropped_tools) or 'no tools'}) — transcript now "
+                  f"{transcript_chars(messages)} chars", flush=True)
 
         steps += 1
         await emit("model_turn", step=steps)

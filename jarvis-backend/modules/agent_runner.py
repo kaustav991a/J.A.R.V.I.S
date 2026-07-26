@@ -156,6 +156,34 @@ def flag_enabled(env: dict | None = None) -> bool:
     return str(env.get(FLAG_ENV, "0")).strip().lower() in ("1", "true", "yes", "on")
 
 
+def limits_from_env(env: dict | None = None) -> AgentLimits:
+    """Default caps, with the two that need tuning against a live rate limit.
+
+    `JARVIS_AGENT_TRANSCRIPT_CHARS` is the compaction threshold and
+    `JARVIS_AGENT_MAX_STEPS` the step ceiling. Both are here because the right
+    value depends on the provider's tokens-per-minute allowance on the day, not on
+    anything the code can know — and turning compaction down is how you verify it
+    engages at all without a filesystem big enough to trigger it naturally.
+    A junk value is ignored rather than crashing a run.
+    """
+    env = os.environ if env is None else env
+    limits = AgentLimits()
+    for key, field in (("JARVIS_AGENT_TRANSCRIPT_CHARS", "max_transcript_chars"),
+                       ("JARVIS_AGENT_MAX_STEPS", "max_steps")):
+        raw = str(env.get(key, "")).strip()
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            print(f"[AGENT] ignoring {key}={raw!r} — not an integer", flush=True)
+            continue
+        if value < 0:
+            continue
+        setattr(limits, field, value)
+    return limits
+
+
 def should_use_agent(text: str, env: dict | None = None) -> bool:
     """True only for a wired intent, and only when the flag is on."""
     if not text or not flag_enabled(env):
@@ -343,6 +371,14 @@ async def run_agent_command(
     if send is None:
         from socket_manager import send_ui_update as send
 
+    limits = limits or limits_from_env()
+    # The caps decide whether a run finishes, and two of them are env-tunable, so
+    # say which ones were actually in force. Diagnosing "did compaction engage?"
+    # from the outside is otherwise impossible: it is a HUD event, not a log line.
+    print(f"[AGENT] limits: steps={limits.max_steps} "
+          f"transcript={limits.max_transcript_chars} "
+          f"keep_groups={limits.keep_recent_groups} tools={limits.max_tools}",
+          flush=True)
     presence = presence or _presence()
     at_desk = presence == "at_desk"
     parked: list = []

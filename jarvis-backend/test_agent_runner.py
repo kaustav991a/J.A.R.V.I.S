@@ -543,6 +543,31 @@ def test_helper_steps_are_narrated_under_their_own_label():
     assert [f["event"] for f in frames if f["status"] == "complete"] == ["answer"]
 
 
+def test_limits_default_when_nothing_is_set():
+    lim = ar.limits_from_env({})
+    assert lim.max_transcript_chars == ac.AgentLimits().max_transcript_chars
+    assert lim.max_steps == ac.AgentLimits().max_steps
+
+
+def test_the_transcript_budget_and_step_cap_are_tunable():
+    """The right value depends on the provider's tokens-per-minute on the day."""
+    lim = ar.limits_from_env({"JARVIS_AGENT_TRANSCRIPT_CHARS": "3000",
+                              "JARVIS_AGENT_MAX_STEPS": "4"})
+    assert lim.max_transcript_chars == 3000 and lim.max_steps == 4
+
+
+def test_a_junk_limit_is_ignored_not_fatal():
+    lim = ar.limits_from_env({"JARVIS_AGENT_TRANSCRIPT_CHARS": "lots",
+                              "JARVIS_AGENT_MAX_STEPS": "-3"})
+    assert lim.max_transcript_chars == ac.AgentLimits().max_transcript_chars
+    assert lim.max_steps == ac.AgentLimits().max_steps
+
+
+def test_zero_disables_compaction_deliberately():
+    assert ar.limits_from_env({"JARVIS_AGENT_TRANSCRIPT_CHARS": "0"}
+                              ).max_transcript_chars == 0
+
+
 def test_the_system_prompt_names_the_real_workspace_roots():
     """Live 2026-07-26: the loop listed the user's HOME (list_directory's sandbox),
     then handed the newest name to workspace_read, whose roots are different — it
