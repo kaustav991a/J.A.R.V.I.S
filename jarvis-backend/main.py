@@ -62,6 +62,7 @@ from modules import agent_yield  # --- Agentic core, phase 5 (away yield + resum
 from modules import agent_core  # --- Agentic core: stop_reason constants ---
 from modules import fast_path  # --- Deterministic low-latency lane (Roadmap §3.4) ---
 from modules import action_parser  # --- Unified LLM-reply → action(s) parse spine ---
+from modules import backdoor_gate  # --- /api/backdoor is a biometric bypass: gated, default OFF ---
 # Phase 6 – Governance Engine
 from governance_manager import governance_manager
 from socket_manager import register_client, unregister_client, send_ui_update, set_app_loop
@@ -1630,8 +1631,28 @@ async def remote_status() -> str:
 async def backdoor_command(req: BackdoorRequest):
     global active_user, _last_command_time
     command_text = req.command
+
+    # ── AUTH GATE (Task 3) ──────────────────────────────────────────────────
+    # This endpoint used to dispatch with no face scan at all — "wake up" typed
+    # into the HUD ran the morning briefing while the system was locked. The
+    # bypass now has to be switched on deliberately (JARVIS_ALLOW_BACKDOOR=1);
+    # otherwise the command line only works on an already-authenticated session.
+    # Decided BEFORE _last_command_time / any dispatch, so a refused attempt
+    # leaves no trace of "recent activity" for the briefing logic to read.
+    _gate = backdoor_gate.decide(
+        command_text,
+        enabled=backdoor_gate.flag_enabled(),
+        system_online=SYSTEM_ONLINE,
+    )
+    if not _gate.allowed:
+        from fastapi.responses import JSONResponse
+        print(f"\n[BACKDOOR] REFUSED ({_gate.reason}) — not authenticated and "
+              f"{backdoor_gate.ENV_FLAG} is off. Command dropped: "
+              f"'{command_text[:60]}'", flush=True)
+        return JSONResponse(status_code=_gate.status, content=_gate.as_payload())
+
     _last_command_time = _dt.datetime.now()
-    print(f"\n[BACKDOOR] Received command: {command_text}")
+    print(f"\n[BACKDOOR] Received command: {command_text} [auth: {_gate.reason}]")
     
     async def safe_send_all(payload):
         await send_ui_update(payload)

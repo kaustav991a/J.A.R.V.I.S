@@ -4,7 +4,7 @@
 > Electron build. Split into **PART A — Automatic** (Claude runs, no human/hardware)
 > and **PART B — Manual** (Kaustav runs: voice / camera / phone / GUI). Run PART A
 > after every change; run PART B once, right before Electron. Roadmap: `JARVIS_MASTER_ROADMAP.md`.
-> Last automatic baseline: **2026-07-26 — 717/717 green, 29/29 harnesses, ~13 s.**
+> Last automatic baseline: **2026-07-26 — 753/753 green, 31/31 harnesses, ~12 s warm (~36 s cold).**
 > Legend: ✅ pass · ⚠️ partial · ❌ fail · ☐ not yet run.
 
 ---
@@ -26,12 +26,13 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 |---|---:|---|---|
 | `test_action_parser.py` | 24 | LLM-reply → action parse spine (fences, prose, arrays, truncation) | ✅ |
 | `test_agent_core.py` | 44 | agentic loop: caps, one-repair, governance hook, honest stops, compaction | ✅ |
-| `test_agent_runner.py` | 33 | wired intents + flag, desk confirm, away park, delegation, narration | ✅ |
+| `test_agent_runner.py` | 40 | wired intents + flag, desk confirm, away park, delegation, narration | ✅ |
 | `test_agent_subagents.py` | 14 | sub-agent: depth 1, read-only check, answer-not-output, honest failure | ✅ |
-| `test_agent_tools.py` | 39 | tool registry: curated sets, tier adapter, refusal sentinels | ✅ |
+| `test_agent_tools.py` | 49 | tool registry: curated sets, tier adapter, refusal sentinels | ✅ |
 | `test_agent_yield.py` | 15 | away yield: exact payload parked, one ping, "approve task &lt;id&gt;" resume | ✅ |
 | `test_ambient_camera.py` | 15 | `ambient_vision` resolves its camera off `JARVIS_CAM_SOURCES` | ✅ |
 | `test_auth_status.py` | 18 | face-auth WS frame contract + `normalise_box` (G6.1) | ✅ |
+| `test_backdoor_gate.py` | 15 | `/api/backdoor` auth gate: flag OFF ⇒ 403 while locked, ON ⇒ bypass, wiring | ✅ |
 | `test_boot_preflight.py` | 14 | boot preflight: required/recommended env + model files | ✅ |
 | `test_calibrate_gesture.py` | 14 | G5.2 wizard derivations (palm_sign, pinch, reach) | ✅ |
 | `test_camera_stream.py` | 13 | MJPEG re-broadcast generator, **loopback-only** guard, feed advertisement | ✅ |
@@ -45,6 +46,7 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 | `test_gesture_camera.py` | 46 | source list parse, reachability probe, open-first-available | ✅ |
 | `test_gesture_engine.py` | 64 | gesture state machine: relative/clutch/dwell/precision/grab-transit | ✅ |
 | `test_gesture_roi.py` | 29 | distance ROI crop + landmark remap (no-jump proof) | ✅ |
+| `test_governance.py` | 4 | **risk tiers**: AUTO pass, BLOCK, CONFIRM pending→consume, unknown-action fail-safe | ✅ |
 | `test_listen_request.py` | 12 | click-to-talk flag: one-shot, expiry, cross-thread exactly-once | ✅ |
 | `test_llm_failover.py` | 7 | ollama empty-200 raises → cascade escalates instead of "" | ✅ |
 | `test_owner_notify.py` | 20 | owner fan-out (desk/TTS/phone) + presence-aware legs | ✅ |
@@ -53,15 +55,37 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 | `test_tool_call.py` | 35 | tool-turn normalisation + `universal_tool_call` cascade (fake HTTP) | ✅ |
 | `test_watchdog_policy.py` | 14 | respawn give-up policy + owner-down alert (live log untouched) | ✅ |
 | `test_working_memory_lock.py` | 4 | RLock concurrency + snapshot copies | ✅ |
-| **Total** | **717** | | **✅ 0 failed** |
+| **Total** | **753** | | **✅ 0 failed** |
 
 **A2 — semi-automatic (need the backend up; Claude can drive):** `test_ping.py`,
 `test_ui_bridge_e2e.py`. Start `uvicorn main:app --host 127.0.0.1 --port 8000`, then run.
+⚠️ `test_ui_bridge_e2e.py` drives `POST /api/backdoor`, which is now gated: boot that
+backend with **`JARVIS_ALLOW_BACKDOOR=1`** (or authenticate first by wake word), else the
+POST comes back `403 {"status":"refused"}` and the harness sees no UI frames.
 
-**A3 — blocked-automatic (need `pytest`, not in the venv):** `test_governance.py`,
-`test_android_tv_agent.py`, `test_github_agent.py`, `test_gmail_agent.py`,
-`tests/test_briefing.py`, `tests/test_hardware.py`, `tests/test_scheduler.py`.
-Decision owed: `pip install pytest` (dev-only) to unlock, or convert to self-running.
+**A3 — blocked-automatic (need `pytest`, not in the venv):** `test_android_tv_agent.py`,
+`test_github_agent.py`, `test_gmail_agent.py`, `tests/test_briefing.py`,
+`tests/test_hardware.py`, `tests/test_scheduler.py` — 20 tests.
+
+*Measured 2026-07-26 (a pytest **stub** ran them; nothing installed) — installing pytest
+does NOT buy 24 green tests:*
+
+| File | Tests | Would pass | pytest-only features | Verdict |
+|---|---:|---|---|---|
+| ~~`test_governance.py`~~ | 4 | **4/4** | one `autouse` fixture | ✅ **CONVERTED 2026-07-26** — the risk-tier guard now runs inside PART A |
+| `test_android_tv_agent.py` | 6 | **6/6** | fixture + `monkeypatch` | convert — `monkeypatch` → `mock.patch` |
+| `test_gmail_agent.py` | 3 | 2/3 | fixture | 1 stale mock: it wires a `messages.get` metadata call, but `reply_email` reads the headers straight off the `threads().get(format="metadata")` response (`gmail_agent.py:516`). Production is right, the mock is a shape behind |
+| `test_github_agent.py` | 5 | not measured | fixture chain + `tmp_path` | real `git` in a temp repo; `tmp_path` → `tempfile` |
+| `tests/test_briefing.py` | 2 | **0/2** | — (`import pytest` unused) | **stale**: patches `action_engine.CalendarAgent`, which is a function-local import (`action_engine.py:1062`) |
+| `tests/test_hardware.py` | 2 | **0/2** | — (unused) | **stale**: calls `ActionEngine.execute` synchronously; it is `async def` (`action_engine.py:363`) |
+| `tests/test_scheduler.py` | 2 | **0/2** | — (unused) | **stale**: patches `background_monitor.speaker`; that module no longer imports `speaker` |
+
+**Decision 2026-07-26 (Kaustav): no pytest install.** The cost isn't the ~5 MB, it's a second
+command `run_harnesses.py` doesn't gate — which is exactly how a suite starts drifting.
+`test_governance.py` was converted instead (4/4 inside PART A). Still open, as a separate
+cleanup: `test_android_tv_agent.py` / `test_github_agent.py` convert next, and the three
+`tests/` files plus the one `test_gmail_agent.py` mock are **pre-async fossils** —
+rewrite or retire, tracked in the roadmap. They are counted nowhere and gate nothing.
 
 **Not a harness:** `test_screen_reader.py` takes a real screenshot and calls the VLM —
 a live script, deliberately excluded from the total.
@@ -93,6 +117,12 @@ a live script, deliberately excluded from the total.
 | 0.5 | Health check | `curl http://127.0.0.1:8009/health` → `watchdog: alive` | ☐ |
 
 > Tip: to send a text command without voice, `curl -X POST http://127.0.0.1:8000/api/backdoor -H "Content-Type: application/json" -d '{"command":"<text>"}'`
+>
+> ⚠️ **The backdoor is gated (2026-07-26).** With `JARVIS_ALLOW_BACKDOOR` unset it only
+> works on an already-authenticated session; while JARVIS is locked/asleep it answers
+> `403 {"status":"refused","reason":"locked"}` and dispatches nothing. To run a whole gate
+> from the HUD command line without face-scanning first (how §23 was driven), boot with
+> `$env:JARVIS_ALLOW_BACKDOOR="1"` — a conscious, per-run choice, not a default.
 
 ---
 
@@ -290,7 +320,8 @@ a live script, deliberately excluded from the total.
 ## 15. Regression Suites (live backend — ⚠️ command files missing)
 
 `run_phase1_regression.py` drives real commands through `POST /api/backdoor`, so it
-needs the backend up. It reads a JSON command list:
+needs the backend up **and** `JARVIS_ALLOW_BACKDOOR=1` on that backend (the endpoint is
+gated as of 2026-07-26 — see §17.6). It reads a JSON command list:
 
 ```bash
 cd jarvis-backend
@@ -326,7 +357,9 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 | 17.3 | Kaustav face-auth | say "kaustav" | scan states progress; green lock-on on match; red reject → name fallback on miss | ☐ |
 | 17.4 | Kinshuk | say "kinshuk" → relation "brother" → passkey "brotherhood" | access granted; JARVIS treats him as brother (Level 2) | ☐ |
 | 17.5 | Mousumi | say "mousumi" | V.I.P. ceremony; direct in; Madam persona | ☐ |
-| 17.6 | Backdoor | `POST /api/backdoor` | no face auth; command runs (test path) | ☐ |
+| 17.6 | Backdoor gated (flag OFF) | boot **without** `JARVIS_ALLOW_BACKDOOR`, stay locked, `POST /api/backdoor {"command":"wake up"}` | `403 {"status":"refused","reason":"locked"}`; console logs `[BACKDOOR] REFUSED (locked)`; **no** briefing, no face scan skipped | ☐ |
+| 17.7 | Backdoor after real auth (flag OFF) | same backend: wake word + face scan, then repeat the POST | `200`; command runs; console shows `[auth: authenticated]` | ☐ |
+| 17.8 | Backdoor bypass (flag ON) | reboot with `$env:JARVIS_ALLOW_BACKDOOR="1"`, stay locked, repeat the POST | `200`; command runs with no face scan; console shows `[auth: flagged_bypass]` (the old behaviour, now deliberate) | ☐ |
 
 ## 18. G5.0 resilience (frontend + backend)
 
@@ -419,6 +452,10 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 > read-only `files` set, and a **write** ("write a note called todo.md saying …")
 > on `authoring`. Only the write can reach a CONFIRM, so every approve/park row
 > below uses that phrasing.
+>
+> The 2026-07-26 gate was driven by typing into the HUD command line, which is now
+> auth-gated: to re-run these rows that way, boot with `JARVIS_ALLOW_BACKDOOR=1`
+> **as well as** `JARVIS_AGENT_LOOP=1`, or wake + face-scan first and then type.
 
 | # | Test | Steps | Expected | ✓ |
 |---|---|---|---|---|

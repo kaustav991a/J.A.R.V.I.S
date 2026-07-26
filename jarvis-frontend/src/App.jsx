@@ -722,7 +722,15 @@ function App() {
       if (!res.ok) {
         const t = await res.text();
         console.error("[Backdoor] HTTP", res.status, t);
-        surfaceTerminalError(`COMMAND REJECTED // HTTP ${res.status}`);
+        // The backdoor is auth-gated (JARVIS_ALLOW_BACKDOOR, default off). A 403
+        // "locked" is not a fault — it means nobody authenticated, so say that
+        // instead of a bare status code the user can't act on.
+        let refusal = null;
+        try {
+          const body = JSON.parse(t);
+          if (body?.reason === "locked") refusal = "BIOMETRIC AUTH REQUIRED // SAY THE WAKE WORD & COMPLETE THE FACE SCAN";
+        } catch { /* not our JSON — fall through to the generic line */ }
+        surfaceTerminalError(refusal || `COMMAND REJECTED // HTTP ${res.status}`);
         return;
       }
       setBackdoorCommand("");

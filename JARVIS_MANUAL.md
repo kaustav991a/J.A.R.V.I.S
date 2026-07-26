@@ -175,6 +175,10 @@ autonomous butler safe.
 - **Backend:** FastAPI (`jarvis-backend/main.py`). Persona/routing brain: `brain.py`.
   Tool execution: `action_engine.py`. LLM routing (Groq → local Ollama fallback): `modules/llm_router.py`.
 - **Dev backdoor:** `POST /api/backdoor` with `{"command": "<text>"}` drives him without voice.
+  **Gated since 2026-07-26:** by default it only works on an already-authenticated session
+  (a real face scan happened and he is awake); while locked it returns `403 refused`.
+  Set `JARVIS_ALLOW_BACKDOOR=1` before boot to reopen the full auth bypass for a test run.
+  Risk tiers and governance are unaffected either way.
 - **Test hooks (backdoor commands):**
   - `test:morning_briefing` — replay the comprehensive morning briefing on demand
   - `test:deep_work_ui` — run the deep-work macro + UI bridge

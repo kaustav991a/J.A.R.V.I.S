@@ -16,8 +16,11 @@ Exits 1 if any harness fails, so this is safe to use as a gate.
 
 NOT included (and why):
   test_ping.py, test_ui_bridge_e2e.py    need the backend running  (PART A2)
-  test_governance.py, test_android_tv_agent.py, test_github_agent.py,
-  test_gmail_agent.py, tests/*           need pytest, not in the venv (PART A3)
+  test_android_tv_agent.py, test_github_agent.py,
+  test_gmail_agent.py, tests/*           need pytest, not in the venv (PART A3).
+                                         test_governance.py used to be here — the
+                                         risk-tier guard was converted 2026-07-26
+                                         so the safety spine is inside this gate.
   test_screen_reader.py                  live VLM script (screenshots + a real
                                          model call) — not a deterministic harness
 """
@@ -42,6 +45,7 @@ HARNESSES = [
     "test_agent_yield.py",
     "test_ambient_camera.py",
     "test_auth_status.py",
+    "test_backdoor_gate.py",
     "test_boot_preflight.py",
     "test_calibrate_gesture.py",
     "test_camera_stream.py",
@@ -55,6 +59,7 @@ HARNESSES = [
     "test_gesture_camera.py",
     "test_gesture_engine.py",
     "test_gesture_roi.py",
+    "test_governance.py",
     "test_listen_request.py",
     "test_llm_failover.py",
     "test_owner_notify.py",

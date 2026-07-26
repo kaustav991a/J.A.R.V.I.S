@@ -5,6 +5,46 @@ This file follows the spirit of [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [The Dev Backdoor Stops Being a Free Biometric Bypass] — 2026-07-26
+
+`POST /api/backdoor` — the HUD command line, the regression driver, every `test:` hook —
+dispatched commands with **no face scan at all**: typing "wake up" ran the full morning
+briefing while the system was still locked. Convenient for testing, but the entire optical
+biometrics layer was skippable by one loopback POST that nothing announced.
+
+### Changed
+- **The bypass is now opt-in** (`jarvis-backend/modules/backdoor_gate.py`, wired at the top
+  of `backdoor_command` in `main.py`). Flag unset/`0` (the default): the endpoint dispatches
+  only when the session is already authenticated (`SYSTEM_ONLINE`); while locked it returns
+  `403 {"status":"refused","reason":"locked"}`, logs `[BACKDOOR] REFUSED (locked)`, and does
+  not even record "recent activity". `JARVIS_ALLOW_BACKDOOR=1`: the old behaviour, kept for
+  harnesses (`run_phase1_regression.py`, `test_ui_bridge_e2e.py`) and manual gate runs — now
+  a conscious per-boot choice.
+- **`test:` hooks get no special pass.** They reach the same dispatcher, so a per-command
+  allowlist would just be a softer bypass.
+- **HUD** surfaces the refusal as `BIOMETRIC AUTH REQUIRED // SAY THE WAKE WORD …` instead
+  of a bare HTTP status (`App.jsx`).
+
+### Unchanged (deliberately)
+- Risk tiers and governance (`tier_allows`, `governance_manager.check`) are untouched — this
+  gates *authentication only*. An authenticated backdoor command is exactly as constrained
+  as a spoken one; the gate module is harness-asserted to never reference either.
+
+### Tests
+- `test_backdoor_gate.py` — 15 checks: full truth table (flag × auth), flag spellings,
+  refusal payload shape, immutability, purity, and a source assertion that the gate runs
+  **before** `_last_command_time`/`classify_intent`/`process_command` (a late gate is no gate).
+- **The risk-tier guard joined the gated suite.** `test_governance.py` was the one
+  pytest-gated file nobody wanted skipped, and it needed exactly one thing pytest provided
+  (an `autouse` fixture clearing the pending-confirmation slot). It is now self-running —
+  `_reset()` at the top of each test, and again in the runner's `finally`, so a CONFIRM
+  pending in one test cannot leak into the next one's `has_pending()`. No pytest installed:
+  measurement showed the install would unlock ~12–17 green tests and 6–7 red ones, and the
+  real cost was a second command `run_harnesses.py` can't gate (see TEST_PLAN PART A3).
+- Suite: **753/753 green, 31/31 harnesses, ~12 s**.
+
+---
+
 ## [Level-3 Desk↔Cloud Bridge — One J.A.R.V.I.S., One Front Door] — 2026-07-04
 
 Fuses the always-on cloud gateway and the real desk brain into a single assistant.

@@ -1,4 +1,8 @@
 import cv2
+# DeepFace (TensorFlow, ~295 MB measured) is EAGER here on purpose: making it lazy
+# was measured 2026-07-26 and reverted — every wake scans, so the RAM is not kept
+# saved, while the 5.35 s import lands on the first wake and risks GIL stalls
+# during the FaceAuthOverlay animation. Boot hides that cost; do not re-try this.
 from deepface import DeepFace
 import os
 import time

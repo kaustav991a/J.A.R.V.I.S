@@ -125,7 +125,10 @@ brain on Render, answers when PC off; Tavily live-info).
   `main.py:2254-2293`) + face path + "brother" persona (`brain.py:1101-1106`).
 - **Mousumi** → V.I.P. cinematic ceremony (`IntroductionCeremony.jsx`, `main.py:2177-2216`)
   + Madam persona (`brain.py:1093-1100`).
-- **Backdoor** → `/api/backdoor` bypasses auth for testing (`main.py:1590-1609`).
+- **Backdoor** → `/api/backdoor`, the auth bypass for testing. **Gated 2026-07-26**
+  (`modules/backdoor_gate.py`): default OFF ⇒ dispatch only when `SYSTEM_ONLINE`
+  (a real auth passed), locked ⇒ `403 refused`; `JARVIS_ALLOW_BACKDOOR=1` restores the
+  bypass consciously. Tiers/governance untouched. Harness: `test_backdoor_gate.py`.
 
 ---
 
@@ -519,7 +522,23 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
     rewrite — only the runner survives), home/away presence moved out of "known
     limitations", and the dead `ROADMAP_TO_FULL_JARVIS.md` pointer now points here.
     `test_screen_reader.py` is a LIVE VLM script, excluded from the total on purpose.
-    REMAINING for a real pass: A2 (backend up), A3 (needs pytest), and the manual §0–§22.
+    REMAINING for a real pass: A2 (backend up), A3, and the manual §0–§22.
+
+    **Update 2026-07-26 — A3 settled, no pytest.** Measured with a stub `pytest` (nothing
+    installed): the 24 pytest-gated tests would give ~12–17 green and 6–7 red, so the install
+    buys red tests. Decision: **do not install** — a second command `run_harnesses.py` cannot
+    gate is the real cost. `test_governance.py` (the risk-tier guard, 4/4) was **converted to
+    self-running** and is now inside the one command; suite **753/753, 31/31 harnesses, ~12 s**.
+    Left as a separate cleanup, in priority order:
+    - **convert next (both would pass as-is):** `test_android_tv_agent.py` (6, needs
+      `monkeypatch` → `mock.patch`), `test_github_agent.py` (5, `tmp_path` → `tempfile`).
+    - **pre-async fossils — rewrite or retire, do NOT trust:** `tests/test_briefing.py`
+      (patches `action_engine.CalendarAgent`, a function-local import), `tests/test_hardware.py`
+      (calls `ActionEngine.execute` synchronously; it is `async def` since the event-loop fix),
+      `tests/test_scheduler.py` (patches `background_monitor.speaker`, no longer imported), plus
+      one stale mock in `test_gmail_agent.py` (wires a `messages.get` metadata call the current
+      `reply_email` doesn't make — production is correct, the mock is a shape behind). They
+      describe an architecture JARVIS has already left; they gate nothing and count nowhere.
 14. **Electron packaging** — single .exe boots FE+BE; notch → fullscreen takeover
     overlay (live agent-cam). ⚠️ `jarvis-frontend/package.json` lost its electron config
     in the Jul-4 history rewrite (no `main`/builder block/deps) though `node_modules`
