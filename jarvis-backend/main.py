@@ -58,6 +58,7 @@ from modules.session_manager import COMMAND_LOCK, CallbackChannel, SESSIONS  # -
 from modules import telegram_bot  # --- Telegram Remote Gateway ---
 from modules import planner  # --- ReAct Orchestrator (Roadmap §1.2) ---
 from modules import agent_runner  # --- Agentic core, phase 4 (flagged, one intent) ---
+from modules import agent_yield  # --- Agentic core, phase 5 (away yield + resume) ---
 from modules import fast_path  # --- Deterministic low-latency lane (Roadmap §3.4) ---
 from modules import action_parser  # --- Unified LLM-reply → action(s) parse spine ---
 # Phase 6 – Governance Engine
@@ -1381,6 +1382,41 @@ async def run_remote_command(command_text: str, channel) -> None:
         await channel.reply(_fp.get("say") or f"Done, {honor}.")
         return
 
+    # ── Agentic core (Tier C #12, phase 5) — the wired intent, from the phone ─
+    # This is where an away command actually arrives, so it is where the away
+    # yield earns its keep: a CONFIRM-tier step is parked as a queued task and
+    # authorised later with "approve task <id>" in this same chat.
+    # presence is forced to "remote" deliberately: the desk confirm prompt is a
+    # HUD frame answered by POST /api/agent/confirm, which a Telegram reply cannot
+    # reach — so the channel, not the owner's location, decides which
+    # authorisation surface exists. Admin only, and any failure falls through to
+    # the paths below exactly as on the desk.
+    if tier == ADMIN_TIER and agent_runner.should_use_agent(command_text):
+        print(f"[REMOTE:{kind}] Wired intent → agentic loop.", flush=True)
+        try:
+            async def _agent_notify(payload):
+                # A typing ping, not a play-by-play: narrating eight steps into a
+                # chat window is noise, and Telegram rate-limits it anyway. The
+                # full trace stays in the server log.
+                await channel.notify("processing_llm", payload.get("message") or "")
+
+            _ares = await agent_runner.run_agent_command(
+                command_text, engine, lock=COMMAND_LOCK, send=_agent_notify,
+                tool_set=agent_runner.tool_set_for(command_text),
+                presence="remote",
+            )
+            if _ares.ok and _ares.answer:
+                await channel.reply(_ares.answer)
+                return
+            if _ares.notes:
+                # Parked for authorisation — tell him the phrase that resumes it.
+                await channel.reply(" ".join(_ares.notes))
+                return
+            print(f"[REMOTE:{kind}] Agent loop did not finish "
+                  f"({_ares.stop_reason}: {_ares.error}) — falling back.", flush=True)
+        except Exception as _ae:
+            print(f"[REMOTE:{kind}] Agent loop fault, falling back: {_ae}", flush=True)
+
     # ── ReAct planner fast-path bypass (Roadmap §1.2) ────────────────────────
     # Only CLEARLY multi-step goals enter the heavy Think→Act→Observe loop;
     # simple commands fall straight through to the low-latency single-shot path.
@@ -1926,6 +1962,23 @@ async def backdoor_command(req: BackdoorRequest):
             asyncio.create_task(speaker.speak_text(_fp_say))
             return {"status": "success"}
 
+        # ── Phase 5: "approve task <id>" also works AT THE DESK ──────────────
+        # The away-yield tells him to say this from his phone; he may well be back
+        # at the desk by the time he does. Deterministic, before any LLM, so the
+        # authorisation is exact — and owner-only, like the remote branch.
+        _appr = agent_yield.parse_approval(command_text)
+        if _appr:
+            if active_user != "KAUSTAV":
+                _deny = ("I'm afraid I cannot perform that action without direct "
+                         "authorization from Sir.")
+                await safe_send_all({"status": "complete", "result": _deny})
+                asyncio.create_task(speaker.speak_text(_deny))
+                return {"status": "success"}
+            _said = await agent_yield.apply_approval(_appr[0], _appr[1])
+            await safe_send_all({"status": "complete", "result": _said})
+            asyncio.create_task(speaker.speak_text(_said))
+            return {"status": "success"}
+
         # ── Agentic core (Tier C #12, phase 4) — ONE wired intent, flagged ───
         # JARVIS_AGENT_LOOP=1 plus a match on the wired intent routes to the
         # structured tool loop, which narrates every step to the HUD and can ask
@@ -1938,11 +1991,21 @@ async def backdoor_command(req: BackdoorRequest):
             try:
                 _res = await agent_runner.run_agent_command(
                     command_text, engine, lock=COMMAND_LOCK,
-                    send=safe_send_all, tool_set="files",
+                    send=safe_send_all,
+                    tool_set=agent_runner.tool_set_for(command_text),
                 )
                 if _res.ok and _res.answer:
                     await safe_send_all({"status": "complete", "result": _res.answer})
                     asyncio.create_task(speaker.speak_text(_res.answer))
+                    return {"status": "success"}
+                if _res.notes:
+                    # Phase 5: the run stopped because something needs his
+                    # authorisation and it has been PARKED as a queued task. Say
+                    # so — falling through to the one-shot path here would re-stage
+                    # the same confirmation nobody is present to answer.
+                    _parked_say = " ".join(_res.notes)
+                    await safe_send_all({"status": "complete", "result": _parked_say})
+                    asyncio.create_task(speaker.speak_text(_parked_say))
                     return {"status": "success"}
                 # Honest failure, then the safety net: report what happened and
                 # let the one-shot path have a go rather than dead-ending.

@@ -190,6 +190,12 @@ class ToolRegistry:
     def sets(self) -> list[str]:
         return sorted(self._sets)
 
+    def set_names(self, set_name: str) -> list[str]:
+        """The tool names in one curated set (a copy — callers may filter it)."""
+        if set_name not in self._sets:
+            raise KeyError(f"unknown tool set '{set_name}'; have {self.sets()}")
+        return list(self._sets[set_name])
+
     def defs(self, names: list[str] | str) -> list[dict]:
         """Anthropic tool definitions for a set name or an explicit name list."""
         if isinstance(names, str):

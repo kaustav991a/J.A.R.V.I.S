@@ -4,7 +4,7 @@
 > Electron build. Split into **PART A — Automatic** (Claude runs, no human/hardware)
 > and **PART B — Manual** (Kaustav runs: voice / camera / phone / GUI). Run PART A
 > after every change; run PART B once, right before Electron. Roadmap: `JARVIS_MASTER_ROADMAP.md`.
-> Last automatic baseline: **2026-07-26 — 616/616 green, 26/26 harnesses, ~11 s.**
+> Last automatic baseline: **2026-07-26 — 717/717 green, 29/29 harnesses, ~13 s.**
 > Legend: ✅ pass · ⚠️ partial · ❌ fail · ☐ not yet run.
 
 ---
@@ -25,8 +25,11 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 | Harness | Checks | Covers | Status |
 |---|---:|---|---|
 | `test_action_parser.py` | 24 | LLM-reply → action parse spine (fences, prose, arrays, truncation) | ✅ |
-| `test_agent_core.py` | 24 | agentic loop: caps, one-repair, governance hook, honest stops | ✅ |
-| `test_agent_tools.py` | 27 | tool registry: curated sets, tier adapter, refusal sentinels | ✅ |
+| `test_agent_core.py` | 44 | agentic loop: caps, one-repair, governance hook, honest stops, compaction | ✅ |
+| `test_agent_runner.py` | 33 | wired intents + flag, desk confirm, away park, delegation, narration | ✅ |
+| `test_agent_subagents.py` | 14 | sub-agent: depth 1, read-only check, answer-not-output, honest failure | ✅ |
+| `test_agent_tools.py` | 39 | tool registry: curated sets, tier adapter, refusal sentinels | ✅ |
+| `test_agent_yield.py` | 15 | away yield: exact payload parked, one ping, "approve task &lt;id&gt;" resume | ✅ |
 | `test_ambient_camera.py` | 15 | `ambient_vision` resolves its camera off `JARVIS_CAM_SOURCES` | ✅ |
 | `test_auth_status.py` | 18 | face-auth WS frame contract + `normalise_box` (G6.1) | ✅ |
 | `test_boot_preflight.py` | 14 | boot preflight: required/recommended env + model files | ✅ |
@@ -47,10 +50,10 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 | `test_owner_notify.py` | 20 | owner fan-out (desk/TTS/phone) + presence-aware legs | ✅ |
 | `test_presence_probe.py` | 25 | ARP/TCP/ICMP ladder, asymmetric debounce, fuse + routing | ✅ |
 | `test_speaker_errors.py` | 5 | TTS failure logged + swallowed, flag still resets | ✅ |
-| `test_tool_call.py` | 28 | tool-turn normalisation + `universal_tool_call` cascade (fake HTTP) | ✅ |
+| `test_tool_call.py` | 35 | tool-turn normalisation + `universal_tool_call` cascade (fake HTTP) | ✅ |
 | `test_watchdog_policy.py` | 14 | respawn give-up policy + owner-down alert (live log untouched) | ✅ |
 | `test_working_memory_lock.py` | 4 | RLock concurrency + snapshot copies | ✅ |
-| **Total** | **616** | | **✅ 0 failed** |
+| **Total** | **717** | | **✅ 0 failed** |
 
 **A2 — semi-automatic (need the backend up; Claude can drive):** `test_ping.py`,
 `test_ui_bridge_e2e.py`. Start `uvicorn main:app --host 127.0.0.1 --port 8000`, then run.
@@ -403,6 +406,36 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 | 22.4 | Away | take the phone off WiFi, wait out `JARVIS_PRESENCE_AWAY_GRACE` | `"away"`; proactive alerts stop talking to an empty room | ☐ |
 | 22.5 | 🔴 The asymmetry | lock the phone screen and idle **5 min without leaving** | must STAY `"home"` — this is the exact failure the asymmetric debounce exists to prevent | ☐ |
 | 22.6 | Unknown = everywhere | stop the presence monitor (unset `JARVIS_PHONE_IP`) | verdict `unknown`, alerts go **everywhere** (pre-Track-B behaviour is the fallback) | ☐ |
+
+---
+
+## 23. Agentic core — the tool loop (roadmap §5 Tier C #12, phases 4–5)
+
+> **Off unless you turn it on:** start the backend with `JARVIS_AGENT_LOOP=1`, and
+> only the wired intent routes here ("find my most recent workspace file and tell
+> me what's in it"). Everything else still takes the one-shot path, and any loop
+> failure falls back to it — so a red row here should never break a normal command.
+> Two intents are wired: a **read** ("…most recent file…what's in it") on the
+> read-only `files` set, and a **write** ("write a note called todo.md saying …")
+> on `authoring`. Only the write can reach a CONFIRM, so every approve/park row
+> below uses that phrasing.
+
+| # | Test | Steps | Expected | ✓ |
+|---|---|---|---|---|
+| 23.1 | Flag off = nothing changes | backend **without** the flag, say the demo phrase | answered by the normal pipeline; **no** AGENT panel appears | ☐ |
+| 23.2 | The trace is watchable | flag on, say the demo phrase at the desk | AGENT panel: THINKING → TOOL → RESULT rows appear **as they happen**, then ANSWER naming the real file | ☐ |
+| 23.3 | Nothing invented | check the answer against the actual file | it quotes what is really in the file, or says it could not read it — never a plausible guess | ☐ |
+| 23.4 | Desk confirm (approve) | a write goal while sitting at the desk | prompt appears; `Y`/APPROVE → the write happens and the run **continues in place** | ☐ |
+| 23.5 | Desk confirm (deny) | same, press `N` | nothing is written and the model says so | ☐ |
+| 23.6 | Ignored prompt is a refusal | same, leave it alone ~2 min | run ends honestly ("timed out unanswered"); the file is untouched | ☐ |
+| 23.7 | 🔴 Away park | phone off WiFi (presence `away`), trigger a write goal | HUD shows a **PARKED** row, the **phone gets a message** naming `approve task <id>`, and nothing is written | ☐ |
+| 23.8 | Resume from the phone | reply `approve task <id>` in Telegram | "Authorised… resuming"; the worker runs the write and reports; the file now exists | ☐ |
+| 23.9 | Resume at the desk | park another one, then say/type `approve task <id>` at the HUD | same behaviour as 23.8 — the phrase works on both surfaces | ☐ |
+| 23.10 | Deny a parked task | park one, say `deny task <id>` | "Dropped" — and it never runs, at any later point | ☐ |
+| 23.11 | One ping per run | ask for two writes in one goal while away | exactly ONE task parked and ONE phone message | ☐ |
+| 23.12 | From the phone, end to end | send the demo phrase over Telegram while away | typing indicator, then the answer in chat (no eight-step play-by-play) | ☐ |
+| 23.13 | Nothing else freezes | while a confirm prompt is open, run an unrelated command | it executes immediately — the engine lock is not held across the wait | ☐ |
+| 23.14 | Long run trims itself | a goal that needs several big reads | a TRIMMED row appears and the run still finishes; no provider 400 in the log | ☐ |
 
 ---
 

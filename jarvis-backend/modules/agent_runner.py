@@ -4,7 +4,8 @@ Agentic core, phase 4. Everything before this was plumbing with no caller. This
 is the glue that lets ONE kind of request run through the tool loop while every
 other command keeps taking the existing one-shot path:
 
-    should_use_agent(text)  -> is this the wired intent, and is the flag on?
+    should_use_agent(text)  -> is this a wired intent, and is the flag on?
+    tool_set_for(text)      -> which curated set that intent needs
     run_agent_command(...)  -> run it, narrate it, return an AgentResult
 
 Deliberately narrow. `JARVIS_AGENT_LOOP` defaults to **off**, and even switched
@@ -18,9 +19,15 @@ lost by turning the flag on.
     asked, the loop parks on a Future (outside the engine lock, so nothing else
     freezes), and on approval it executes with `governance_bypass=True` and
     continues IN PLACE. No serialisation, no Telegram, no exit.
-  * anything else — refused with an honest explanation. The AWAY yield (serialise
-    to `Session.pending`, ping the phone, resume on "approve task <id>") is the
-    next phase; until it exists, saying so beats pretending.
+  * anything else (phase 5) — the action is PARKED as a durable queued task and
+    the owner is pinged wherever he is; "approve task ab12cd34" from his phone
+    runs it later (see `modules/agent_yield.py`). The loop is told the call was
+    refused, because parked is not done.
+
+Phase 5 also gives the parent a `delegate_subtask` tool when asked for it: one
+sub-question, one read-only helper agent, one sentence back
+(`modules/agent_subagents.py`). The transcript budget that makes that worth doing
+lives in `agent_core.compact_messages`.
 
 Narration is first-class: every step is pushed to the HUD through
 `socket_manager` as it happens, so the ReAct trace is watchable live rather than
@@ -33,7 +40,7 @@ import os
 import re
 from typing import Any
 
-from modules import agent_confirm, agent_core
+from modules import agent_confirm, agent_core, agent_subagents, agent_yield
 from modules.agent_core import AgentLimits, Decision
 from modules.tool_calls import ToolCall
 
@@ -43,6 +50,11 @@ FLAG_ENV = "JARVIS_AGENT_LOOP"
 #: WebSocket frame type the HUD listens for. Additive: no existing frame changes.
 FRAME = "agent_step"
 CONFIRM_FRAME = "agent_confirm"
+PARKED_FRAME = "agent_parked"
+
+#: How many CONFIRM actions one away run may park. One. A model that keeps
+#: reaching for a writing tool must not turn into five phone notifications.
+MAX_PARKS_PER_RUN = 1
 
 SYSTEM_PROMPT = (
     "You are JARVIS, working through a task for Kaustav with tools.\n"
@@ -56,14 +68,42 @@ SYSTEM_PROMPT = (
     "Never claim something was done when it was not."
 )
 
-# The wired intent: "find my most recent workspace file and tell me what's in it".
-# Conservative on purpose, in the spirit of planner.should_plan — a false
-# negative just keeps today's path, a false positive routes a trivial command
-# through a multi-step loop.
+# The wired intents. Conservative on purpose, in the spirit of
+# planner.should_plan — a false negative just keeps today's path, a false positive
+# routes a trivial command through a multi-step loop.
+#
+# 1. READ: "find my most recent workspace file and tell me what's in it".
 _FIND = ("recent", "latest", "last", "newest")
 _THING = ("file", "files", "script", "document", "note")
 _READ = ("what's in", "whats in", "what is in", "tell me what", "read it",
          "contents", "summarise", "summarize", "inside")
+
+# 2. WRITE: "write a note called x.md saying y". Narrower still, and the reason it
+#    exists is that the read intent can never reach a CONFIRM — the `files` set is
+#    read-only by construction, so without this the desk-confirm and away-park
+#    paths would be code nobody can actually exercise. The write itself is still
+#    CONFIRM-tier: this only decides which loop looks at the request.
+_WRITE = ("write", "save", "create", "append")
+_CONTENT = ("saying", "that says", "with the text", "containing", "contents:",
+            "with content")
+
+
+def _is_read_intent(t: str) -> bool:
+    return (any(w in t for w in _FIND)
+            and any(f" {w} " in t or f" {w}," in t for w in _THING)
+            and any(w in t for w in _READ))
+
+
+def _is_write_intent(t: str) -> bool:
+    return (any(f" {w} " in t for w in _WRITE)
+            and any(f" {w} " in t or f" {w}," in t for w in _THING)
+            and any(w in t for w in _CONTENT))
+
+
+def tool_set_for(text: str) -> str:
+    """Which curated set this request needs. Read-only unless it asks to write."""
+    return "authoring" if _is_write_intent(f" {(text or '').lower().strip()} ") \
+        else "files"
 
 
 def flag_enabled(env: dict | None = None) -> bool:
@@ -72,15 +112,13 @@ def flag_enabled(env: dict | None = None) -> bool:
 
 
 def should_use_agent(text: str, env: dict | None = None) -> bool:
-    """True only for the ONE wired intent, and only when the flag is on."""
+    """True only for a wired intent, and only when the flag is on."""
     if not text or not flag_enabled(env):
         return False
     t = f" {text.lower().strip()} "
     if len(t) < 15:
         return False
-    return (any(w in t for w in _FIND)
-            and any(f" {w} " in t or f" {w}," in t for w in _THING)
-            and any(w in t for w in _READ))
+    return _is_read_intent(t) or _is_write_intent(t)
 
 
 def _presence() -> str:
@@ -102,6 +140,12 @@ def make_narrator(send, goal: str):
     """
     async def on_event(kind: str, data: dict):
         text = None
+        # A sub-agent's events arrive with their kind prefixed `sub:`. They are
+        # narrated with the same wording under a "Helper:" label rather than
+        # silently, so a long delegation doesn't look like a hang — and the frame
+        # keeps the prefixed `event` so the HUD can nest them.
+        event = kind
+        label, kind = ("Helper: ", kind[4:]) if kind.startswith("sub:") else ("", kind)
         if kind == "model_turn":
             text = f"Thinking… (step {data.get('step')})"
         elif kind == "tool_start":
@@ -123,11 +167,16 @@ def make_narrator(send, goal: str):
             text = data.get("text") or "Done."
         elif kind == "provider_failed":
             text = f"Reasoning core unreachable: {data.get('error')}"
+        elif kind == "compacted":
+            text = (f"Trimming context — dropped {data.get('groups')} earlier "
+                    f"step(s) to stay inside the token budget")
         await send({
-            "type": FRAME, "event": kind, "goal": goal, "detail": data,
-            # Mirrored into the fields today's HUD already displays.
-            "status": "processing_llm" if kind != "answer" else "complete",
-            "message": text or kind,
+            "type": FRAME, "event": event, "goal": goal, "detail": data,
+            # Mirrored into the fields today's HUD already displays. Only the
+            # PARENT's answer is "complete" — a helper finishing mid-run must not
+            # tell the HUD the whole task is done.
+            "status": "complete" if event == "answer" else "processing_llm",
+            "message": (label + text) if text else event,
         })
 
     return on_event
@@ -173,6 +222,52 @@ def make_desk_authorizer(registry, send, confirms=None, timeout: float | None = 
     return authorize
 
 
+def make_away_authorizer(registry, send, goal: str, *, parked: list,
+                         notes: list, queue=None, notify=None,
+                         max_parks: int = MAX_PARKS_PER_RUN):
+    """AWAY governance: AUTO runs, CONFIRM is PARKED for the owner's phone.
+
+    Phase 5. The refusal handed back to the loop names the task id and says NOT
+    DONE, so the model can neither retry it nor narrate it as finished. `parked`
+    and `notes` are the caller's lists — `run_agent_command` copies the notes onto
+    the result so the reply tells the owner his next move ("approve task ab12cd34")
+    even though the run itself failed.
+    """
+    base = registry.authorizer(allow_confirm=False)
+
+    async def authorize(call: ToolCall) -> Decision:
+        entry = registry.get(call.name)
+        decision = base(call)
+        if decision.allowed or entry is None or entry.tier != "CONFIRM":
+            return decision
+        # A CONFIRM tool called with arguments missing is the model's mistake, not
+        # something to wake the owner about — let the base refusal stand so the
+        # loop spends its repair on the real problem.
+        if registry.missing_required(call):
+            return decision
+        if len(parked) >= max_parks:
+            return Decision(False, (
+                f"an action is already waiting for the owner's authorisation "
+                f"(task {parked[-1].short}); do not queue another — finish with "
+                f"what you have or stop"))
+
+        payload = registry.to_payload(call)
+        target = str(payload.get("target", ""))
+        question = agent_confirm.question_for(entry.action_type, target)
+        park = await agent_yield.park_for_approval(
+            payload, goal=goal, question=question, queue=queue, notify=notify)
+        parked.append(park)
+        notes.append(park.message)
+        await send({
+            "type": PARKED_FRAME, "task_id": park.id, "short": park.short,
+            "tool": entry.action_type, "target": target,
+            "status": "awaiting_confirmation", "message": park.message,
+        })
+        return Decision(False, agent_yield.refusal_reason(park, entry.action_type))
+
+    return authorize
+
+
 async def run_agent_command(
     goal: str,
     engine,
@@ -186,6 +281,10 @@ async def run_agent_command(
     confirms=None,
     call_model=None,
     confirm_timeout: float | None = None,
+    delegate: bool = False,
+    delegate_set: str = "research",
+    queue=None,
+    notify=None,
 ):
     """Run one goal through the tool loop, narrating to the HUD as it goes.
 
@@ -201,33 +300,72 @@ async def run_agent_command(
 
     presence = presence or _presence()
     at_desk = presence == "at_desk"
+    parked: list = []
+    notes: list[str] = []
 
     if at_desk:
         authorize = make_desk_authorizer(registry, send, confirms, confirm_timeout)
     else:
-        # No interactive channel: CONFIRM is refused with a reason the model can
-        # act on. Phase 5 turns this into the Telegram yield + resume.
-        authorize = registry.authorizer(allow_confirm=False)
+        # Nobody to ask in the moment — park it durably and ping the phone
+        # (phase 5). The loop still gets a refusal: parked is not done.
+        authorize = make_away_authorizer(registry, send, goal, parked=parked,
+                                         notes=notes, queue=queue, notify=notify)
 
     # Two-tier CONFIRM execution: an approved tool must run with
     # governance_bypass=True, or the engine would re-pend it and hand back a
     # GOVERNANCE_CONFIRM sentinel that the loop (correctly) treats as a refusal.
     auto_exec = registry.executor(engine)
     approved_exec = registry.executor(engine, governance_bypass=True)
+    narrate = make_narrator(send, goal)
+
+    tools = registry.defs(tool_set)
+    delegate_run = None
+    delegate_name = None
+    if delegate:
+        # One extra tool that is itself a read-only agent run. Counted against the
+        # same max_tools cap, so a set of 8 + delegate is refused by agent_core
+        # rather than silently degrading the model.
+        delegate_def, delegate_run = agent_subagents.make_delegate(
+            registry, engine, tool_set=delegate_set, lock=lock,
+            call_model=call_model, on_event=narrate)
+        delegate_name = delegate_def["name"]
+        tools = tools + [delegate_def]
+
+        inner_authorize = authorize
+
+        async def authorize(call: ToolCall) -> Decision:  # noqa: F811 — wraps it
+            if call.name == delegate_name:
+                # The delegate touches no action_type of its own; its governance
+                # is the sub-agent's per-call check over a read-only set.
+                if not str((call.arguments or {}).get("question") or "").strip():
+                    return Decision(False, "missing required argument(s): question")
+                return Decision(True, "delegation to a read-only helper")
+            return await agent_core._maybe_await(inner_authorize, call)
 
     async def execute(call: ToolCall):
+        if delegate_run is not None and call.name == delegate_name:
+            return await delegate_run(call)
         entry = registry.get(call.name)
         runner = approved_exec if (entry and entry.tier == "CONFIRM") else auto_exec
         return await runner(call)
 
-    return await agent_core.run_agent_loop(
+    result = await agent_core.run_agent_loop(
         goal,
-        registry.defs(tool_set),
+        tools,
         execute,
         system=SYSTEM_PROMPT,
         authorize=authorize,
         call_model=call_model,
         limits=limits,
         lock=lock,
-        on_event=make_narrator(send, goal),
+        # The delegate is exempt from the engine lock: the sub-agent takes it
+        # around each of its OWN tool calls, and asyncio locks aren't reentrant.
+        unlocked_tools={delegate_name} if delegate_name else None,
+        on_event=narrate,
     )
+    # Anything the OWNER has to be told regardless of how the run ended — today
+    # that is "I parked it as task ab12cd34". The caller speaks these even when
+    # `ok` is False, instead of falling back to a path that would re-stage the
+    # same confirmation nobody is there to answer.
+    result.notes.extend(notes)
+    return result

@@ -41,6 +41,17 @@ The five rules from the roadmap, and where they live here:
    another route; repeated denial ends the run.
 5. **Never lose today's behaviour** — this module is standalone. Nothing calls it
    until an intent is deliberately wired to it (phase 4).
+
+Phase 5 adds the token half of rule 3. Every step re-sends the entire transcript,
+so the cost of a run is quadratic in its length and the free tiers meter
+tokens-per-minute, not requests. `compact_messages` drops the OLDEST completed
+steps once the history outgrows `max_transcript_chars`, in whole
+assistant+tool-result groups (an orphaned `tool` message is a 400 from every
+provider) and replaced by a note that says the detail is gone rather than
+paraphrasing it — a paraphrase would let the model keep quoting a file it can no
+longer see. `unlocked_tools` is the other phase-5 seam: a delegate tool is a
+nested loop that takes the same engine lock itself, so it must not be wrapped in
+it here.
 """
 
 from __future__ import annotations
@@ -88,6 +99,13 @@ class AgentLimits:
     max_repairs: int = 1             # ONE correction per bad call, then stop
     max_consecutive_errors: int = 3  # tool keeps blowing up -> stop, don't grind
     max_tool_output_chars: int = 4000
+    #: Phase 5: transcript budget. Every step re-sends the WHOLE history, so an
+    #: 8-step run costs ~8x its own tokens on a free tier where tokens-per-minute
+    #: is the real ceiling. Past this, the oldest completed steps are compacted.
+    #: 0 disables compaction entirely.
+    max_transcript_chars: int = 20000
+    #: How many of the most recent step-groups survive compaction untouched.
+    keep_recent_groups: int = 2
 
 
 @dataclass
@@ -119,6 +137,11 @@ class AgentResult:
     tool_runs: list[ToolRun] = field(default_factory=list)
     error: str | None = None
     messages: list = field(default_factory=list)
+    #: Out-of-band things the CALLER must tell the owner regardless of ok/answer —
+    #: phase 5's away-yield writes the "parked as task ab12cd34" sentence here.
+    #: The loop itself never reads these; they exist so a run that legitimately
+    #: could not finish still hands the user their next move.
+    notes: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         """One honest line. Used when the loop has to explain itself out loud."""
@@ -171,6 +194,100 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit] + f"\n… [truncated {len(text) - limit} more characters]"
 
 
+def message_chars(message: Any) -> int:
+    """Rough size of one message on the wire — content plus serialised call args."""
+    if not isinstance(message, dict):
+        return len(str(message))
+    total = len(str(message.get("content") or ""))
+    for tc in message.get("tool_calls") or []:
+        fn = tc.get("function") if isinstance(tc, dict) else None
+        if isinstance(fn, dict):
+            total += len(str(fn.get("name") or "")) + len(str(fn.get("arguments") or ""))
+    return total
+
+
+def transcript_chars(messages: list) -> int:
+    return sum(message_chars(m) for m in messages)
+
+
+def _split_groups(messages: list) -> tuple[list, list[list]]:
+    """Split a transcript into (head, step_groups).
+
+    `head` is the system prompt plus the opening user message(s) — the goal, which
+    can never be dropped. Each group after it starts at an assistant message and
+    carries the `tool` results that answer it. Grouping this way is not cosmetic:
+    a `tool` message whose assistant turn has been removed is a 400 from every
+    OpenAI-compatible provider ("tool_call_id not found"), so compaction must move
+    whole groups or nothing.
+    """
+    head: list = []
+    groups: list[list] = []
+    for m in messages:
+        role = m.get("role") if isinstance(m, dict) else None
+        if role == "assistant":
+            groups.append([m])
+        elif groups:
+            groups[-1].append(m)
+        else:
+            head.append(m)
+    return head, groups
+
+
+def compact_messages(messages: list, max_chars: int,
+                     keep_recent_groups: int = 2) -> tuple[list, int, list[str]]:
+    """Drop the oldest completed steps once the transcript outgrows its budget.
+
+    Returns `(messages, groups_dropped, tool_names_dropped)`. What replaces them
+    is one honest note saying the detail is GONE — a summary that merely
+    paraphrased the old output would let the model keep quoting a file it can no
+    longer see. If dropping everything droppable still doesn't fit, the transcript
+    is returned as short as it can be: refusing to run is worse than one oversized
+    request, and per-tool truncation already caps the biggest single message.
+    """
+    if max_chars <= 0 or transcript_chars(messages) <= max_chars:
+        return messages, 0, []
+    head, groups = _split_groups(messages)
+    keep = max(1, int(keep_recent_groups))
+    dropped: list[list] = []
+    while len(groups) > keep:
+        note = [_compaction_note(dropped)] if dropped else []
+        if transcript_chars(head + note + _flatten(groups)) <= max_chars:
+            break
+        dropped.append(groups.pop(0))
+    if not dropped:
+        return messages, 0, []
+    names = _dropped_tool_names(dropped)
+    return head + [_compaction_note(dropped)] + _flatten(groups), len(dropped), names
+
+
+def _flatten(groups: list[list]) -> list:
+    return [m for g in groups for m in g]
+
+
+def _dropped_tool_names(dropped: list[list]) -> list[str]:
+    names: list[str] = []
+    for group in dropped:
+        for m in group:
+            for tc in (m.get("tool_calls") or []) if isinstance(m, dict) else []:
+                fn = tc.get("function") if isinstance(tc, dict) else None
+                name = (fn or {}).get("name")
+                if name and name not in names:
+                    names.append(str(name))
+    return names
+
+
+def _compaction_note(dropped: list[list]) -> dict:
+    """The one message that stands in for everything removed."""
+    names = _dropped_tool_names(dropped)
+    used = ", ".join(names) if names else "no tools"
+    return {"role": "user", "content": (
+        f"[Context note: the earliest {len(dropped)} step(s) of this task were "
+        f"removed to stay inside the context budget. Tools used there: {used}. "
+        "Their output is NO LONGER AVAILABLE to you — do not quote or summarise "
+        "it from memory. If you need a detail from one of them, call the tool "
+        "again.]")}
+
+
 def _stringify(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -193,6 +310,7 @@ async def run_agent_loop(
     clock: Callable[[], float] = time.monotonic,
     on_event: Callable[[str, dict], Any] | None = None,
     lock: Any | None = None,
+    unlocked_tools: set | None = None,
 ) -> AgentResult:
     """Run the decide→act→observe loop until the model answers or a cap trips.
 
@@ -253,8 +371,15 @@ async def run_agent_loop(
         Everything slow-but-cooperative (deciding, authorising, waiting on a
         human) happens outside this function, so a loop parked on a confirmation
         never holds the lock that the rest of JARVIS needs.
+
+        `unlocked_tools` is exempt, and phase 5's sub-agent depends on it: a
+        delegate tool is not one engine action, it is a whole nested loop that
+        takes the SAME lock around each of its own tool calls. Holding it here too
+        would deadlock on the first inner call (`asyncio.Lock` is not reentrant),
+        and holding it for the entire delegation would freeze every other command
+        for the length of the sub-run.
         """
-        if lock is None:
+        if lock is None or (unlocked_tools and call.name in unlocked_tools):
             return await _offload(execute, call)
         async with lock:
             return await _offload(execute, call)
@@ -269,6 +394,16 @@ async def run_agent_loop(
             await emit("cap", reason=TIMEOUT, steps=steps)
             return AgentResult(False, None, TIMEOUT, steps, runs,
                                error=f"exceeded {limits.max_seconds}s", messages=messages)
+
+        # --- compaction (rule: rate limits are the ceiling) -----------------
+        # Every step re-sends the whole history, so a long run pays for its own
+        # early steps again and again. Trim before the request, never after — the
+        # point is the tokens that leave the machine.
+        messages, dropped, dropped_tools = compact_messages(
+            messages, limits.max_transcript_chars, limits.keep_recent_groups)
+        if dropped:
+            await emit("compacted", groups=dropped, tools=dropped_tools,
+                       chars=transcript_chars(messages))
 
         steps += 1
         await emit("model_turn", step=steps)

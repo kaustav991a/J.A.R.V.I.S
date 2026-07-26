@@ -421,10 +421,54 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
       in `governance.json` AND has a dispatch branch in `action_engine.py` (a typo would
       fail-safe to BLOCK and look like policy rather than a bug). test_tool_call 28 +
       test_agent_core 24 + test_agent_tools 27 → **SUITE 537 → 616, 26 harnesses.**
-      **NEXT = phase 4:** wire ONE intent (the `research` set) behind an opt-in flag, with a
-      `runner` that hands the coroutine to the MAIN event loop — the engine shares state
-      with the running app, so spinning a second loop is not a safe default. Phase 4 is the
-      first phase that changes live behaviour, so it ships with a live gate.
+    - ✅ **PHASE 4 DONE 2026-07-26** (`dbb5fc6`) — ONE wired intent, flagged off. NEW
+      `modules/agent_runner.py`: `JARVIS_AGENT_LOOP` (default OFF) plus a narrow
+      `should_use_agent()` gate, wired in main.py's backdoor/HUD path BEFORE the planner,
+      falling back to the one-shot pipeline on any failure — so the flag cannot cost a
+      working command. `agent_core` became **async** with the engine lock taken ONLY around
+      tool execution, never across a model turn, an authorisation or a human wait; sync tools
+      go to `asyncio.to_thread`. CONFIRM resolves **by presence**: AT_DESK asks the HUD and
+      continues in place with `governance_bypass=True`. Inbound answers arrive as
+      **`POST /api/agent/confirm`** (nothing reads client→server WS frames — the same reason
+      click-to-talk is a POST) and land in NEW `modules/agent_confirm.py` (Future keyed by
+      `secrets.token_hex`; unanswered = REFUSAL, double-resolve is a no-op). `agent_tools`
+      became a `ToolRegistry` that refuses BLOCK **at registration**. Live-verified against
+      real Groq: `llama-3.3-70b-versatile` does invoke tools, and that call caught what no
+      harness could — Groq sends `arguments="null"` for zero-arg tools, which the parser was
+      flagging as malformed and would have burnt the ONE repair on every `system_status`.
+    - ✅ **PHASE 5 DONE 2026-07-26** — the away yield, compaction, sub-agents. **Away yield:**
+      NEW `modules/agent_yield.py` — when the owner is not at the desk a CONFIRM-tier call is
+      **parked as a durable task** (`enqueue` → `mark_needs_confirmation` → `mark_reported`)
+      and `owner_notify` pings his phone with the phrase that resumes it; "approve task
+      &lt;id&gt;" then flips it to pending and the `OvernightWorker` re-runs the EXACT payload with
+      `governance_bypass=True`. It writes into the task-queue lane, NOT the governance pending
+      slot — that slot is an in-memory singleton the next unrelated command supersedes, and an
+      away yield has to survive a restart and an overnight wait. `mark_reported` is immediate
+      so the worker's report sweeper doesn't buzz the phone twice about one action; the LOOP is
+      told the call was REFUSED and "NOT DONE" (a parked action returned as a tool result reads
+      as success); at most ONE park per run. The phrase now also works at the desk, and the
+      remote/Telegram path is wired to the loop with `presence="remote"` forced — a HUD confirm
+      frame cannot be answered from Telegram, so the *channel* decides which authorisation
+      surface exists. **Compaction:** `agent_core.compact_messages` drops the OLDEST completed
+      steps past `max_transcript_chars` (20k) in whole assistant+tool-result groups — an
+      orphaned `tool` message is a 400 from every provider — and replaces them with a note
+      saying the detail is GONE rather than paraphrasing it (a paraphrase lets the model keep
+      quoting a file it can no longer see). Trimming happens BEFORE the request, since the
+      point is the tokens that leave the machine. **Sub-agents:** NEW
+      `modules/agent_subagents.py` — one `delegate_subtask` tool that runs the same loop on a
+      read-only set and returns ONE sentence. Depth 1 by construction (the helper's tool list
+      cannot contain the delegate), read-only checked at build time (`UnsafeSubagentError`), a
+      failed helper raises `ToolFailure` instead of an empty success, and `unlocked_tools`
+      exempts the delegate from the engine lock — a nested loop takes that same lock itself and
+      `asyncio.Lock` is not reentrant. HUD: `agent_parked` frame + `sub:`-tagged nested steps +
+      a TRIMMED row. test_agent_core 44 + test_agent_runner 33 + test_agent_subagents 14 +
+      test_agent_yield 15 → **SUITE 666 → 717, 29 harnesses.**
+      A SECOND intent is now wired — a narrow **write** ("write a note called todo.md saying
+      …") routed to the `authoring` set via `tool_set_for()` — because the read intent's set is
+      read-only by construction, which made the desk-confirm and away-park paths code nobody
+      could exercise. **NEXT:** Kaustav's live gate — `JARVIS_AGENT_LOOP=1`, real Groq,
+      TEST_PLAN §23 (14 rows: trace, approve/deny/ignore at the desk, park + resume from the
+      phone and from the desk, one-ping cap, nothing-else-freezes, compaction).
     - **Reference path (NOT chosen — paid): Claude Agent SDK** (Anthropic's lib — gives an app the exact
       Claude-Code capabilities: agentic tool loop, sub-agents, MCP client, skills, context
       compaction). JARVIS already runs Anthropic cloud (cloud_first reasoning) so this is

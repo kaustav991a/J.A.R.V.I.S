@@ -1,0 +1,202 @@
+// AGENT TRACE — live ReAct trace + approve/deny prompt (GestureChip-family styling)
+$cyan: #00ffcc;
+$accent-red: #ff3366;
+$gold: #ffd700;
+$violet: #b48cff;
+$panel-bg: rgba(6, 10, 14, 0.9);
+
+.agent-trace {
+  position: fixed;
+  right: 16px;
+  bottom: 96px; // clear of the command terminal
+  z-index: 58; // above the HUD, below the gesture guide (60) and modals
+  width: min(420px, 38vw);
+  max-height: 46vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: $panel-bg;
+  border: 1px solid rgba(0, 255, 204, 0.26);
+  backdrop-filter: blur(10px) saturate(1.2);
+  box-shadow: 0 0 22px rgba(0, 0, 0, 0.5);
+  font-family: "Orbitron", sans-serif;
+  color: rgba(0, 255, 204, 0.85);
+  overflow: hidden;
+
+  &__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(0, 255, 204, 0.16);
+    font-size: 0.55rem;
+    letter-spacing: 0.14em;
+  }
+
+  &__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: $cyan;
+    box-shadow: 0 0 8px $cyan;
+    animation: agent-pulse 1.6s ease-in-out infinite;
+  }
+
+  &__title {
+    color: $cyan;
+  }
+
+  &__goal {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: "Share Tech Mono", monospace;
+    font-size: 0.62rem;
+    letter-spacing: 0.02em;
+    color: rgba(0, 255, 204, 0.5);
+    text-transform: none;
+  }
+
+  &__list {
+    // Shrink to make room for the confirm block: the prompt must never be the
+    // thing that gets clipped, since it is the only actionable part.
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 6px 0;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 255, 204, 0.3) transparent;
+
+    &::-webkit-scrollbar {
+      width: 5px;
+    }
+    &::-webkit-scrollbar-thumb {
+      background: rgba(0, 255, 204, 0.25);
+      border-radius: 3px;
+    }
+  }
+}
+
+.agent-step {
+  display: grid;
+  grid-template-columns: 18px 68px 1fr;
+  align-items: start;
+  gap: 6px;
+  padding: 4px 12px;
+  font-family: "Share Tech Mono", monospace;
+  font-size: 0.68rem;
+  line-height: 1.35;
+
+  &__icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 15px;
+    opacity: 0.9;
+  }
+
+  &__label {
+    font-family: "Orbitron", sans-serif;
+    font-size: 0.5rem;
+    letter-spacing: 0.1em;
+    opacity: 0.75;
+    padding-top: 2px;
+  }
+
+  &__msg {
+    color: rgba(220, 245, 255, 0.82);
+    word-break: break-word;
+  }
+
+  // Tone drives the icon/label colour only — the message stays readable.
+  &.is-think { color: rgba(0, 255, 204, 0.7); }
+  &.is-act { color: $cyan; }
+  &.is-ok { color: rgba(0, 255, 204, 0.9); }
+  &.is-done {
+    color: $cyan;
+    .agent-step__msg { color: $cyan; }
+  }
+  &.is-warn { color: $gold; }
+  &.is-danger { color: $accent-red; }
+
+  // A sub-agent's step (phase 5). Indented and dimmed so a delegation reads as
+  // work happening INSIDE a parent step, not as another step of the main run.
+  &.is-sub {
+    padding-left: 26px;
+    opacity: 0.74;
+    border-left: 1px solid rgba(0, 255, 204, 0.18);
+    margin-left: 12px;
+  }
+}
+
+.agent-confirm {
+  flex: 0 0 auto;   // never squeezed by the trace above it
+  border-top: 1px solid rgba(180, 140, 255, 0.35);
+  background: rgba(180, 140, 255, 0.08);
+  overflow: hidden;
+
+  &__q {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px 8px;
+    font-family: "Share Tech Mono", monospace;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: $violet;
+  }
+
+  &__actions {
+    display: flex;
+    gap: 8px;
+    padding: 0 12px 10px;
+  }
+
+  &__btn {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    background: transparent;
+    font-family: "Orbitron", sans-serif;
+    font-size: 0.55rem;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: background 0.18s ease, box-shadow 0.18s ease;
+
+    kbd {
+      font-family: "Share Tech Mono", monospace;
+      font-size: 0.55rem;
+      opacity: 0.6;
+      border: 1px solid currentColor;
+      border-radius: 3px;
+      padding: 0 3px;
+    }
+
+    &.is-approve {
+      border: 1px solid rgba(0, 255, 204, 0.5);
+      color: $cyan;
+      &:hover { background: rgba(0, 255, 204, 0.12); box-shadow: 0 0 14px rgba(0, 255, 204, 0.25); }
+    }
+
+    &.is-deny {
+      border: 1px solid rgba(255, 51, 102, 0.45);
+      color: $accent-red;
+      &:hover { background: rgba(255, 51, 102, 0.12); }
+    }
+  }
+}
+
+@keyframes agent-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-trace__dot { animation: none; }
+}

@@ -483,6 +483,122 @@ def test_a_broken_event_hook_cannot_break_the_run():
     assert res.ok and res.answer == "Fine."
 
 
+# ---- compaction (phase 5) ------------------------------------------------- #
+
+def transcript(steps: int, chars: int = 500) -> list:
+    """system + goal, then `steps` complete assistant→tool groups."""
+    msgs: list = [{"role": "system", "content": "sys"},
+                  {"role": "user", "content": "the goal"}]
+    for i in range(steps):
+        msgs.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": f"c{i}", "type": "function",
+             "function": {"name": f"tool_{i}", "arguments": '{"path": "a"}'}}]})
+        msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": "x" * chars})
+    return msgs
+
+
+def test_a_short_transcript_is_left_alone():
+    msgs = transcript(2, 100)
+    out, dropped, names = ac.compact_messages(msgs, 20000)
+    assert out is msgs and dropped == 0 and names == []
+
+
+def test_compaction_is_disabled_by_a_zero_budget():
+    msgs = transcript(20, 500)
+    out, dropped, _ = ac.compact_messages(msgs, 0)
+    assert out is msgs and dropped == 0
+
+
+def test_the_oldest_steps_go_first():
+    msgs = transcript(6, 500)
+    out, dropped, names = ac.compact_messages(msgs, 1600, keep_recent_groups=2)
+    assert dropped >= 1
+    assert names[0] == "tool_0", "compaction must drop the OLDEST step, not the newest"
+    assert ac.transcript_chars(out) <= 1600
+
+
+def test_the_goal_and_system_prompt_are_never_dropped():
+    """Losing the goal turns a struggling run into a confidently wrong one."""
+    msgs = transcript(8, 800)
+    out, dropped, _ = ac.compact_messages(msgs, 900, keep_recent_groups=1)
+    assert dropped == 7
+    assert out[0]["role"] == "system" and out[1]["content"] == "the goal"
+
+
+def test_no_tool_result_is_ever_orphaned():
+    """A `tool` message whose assistant turn was dropped is a 400 from every
+    OpenAI-compatible provider."""
+    msgs = transcript(6, 700)
+    out, _, _ = ac.compact_messages(msgs, 1500, keep_recent_groups=1)
+    live_ids = {tc["id"] for m in out if m.get("role") == "assistant"
+                for tc in (m.get("tool_calls") or [])}
+    for m in out:
+        if m.get("role") == "tool":
+            assert m["tool_call_id"] in live_ids, m
+
+
+def test_the_replacement_note_says_the_detail_is_gone():
+    """A paraphrase would let the model keep quoting a file it can no longer see."""
+    msgs = transcript(6, 700)
+    out, _, _ = ac.compact_messages(msgs, 1500, keep_recent_groups=1)
+    note = next(m for m in out if "Context note" in str(m.get("content")))
+    assert "NO LONGER AVAILABLE" in note["content"]
+    assert "call the tool again" in note["content"]
+    assert "tool_0" in note["content"], "name what was dropped, so it can be redone"
+
+
+def test_the_most_recent_steps_survive():
+    msgs = transcript(5, 600)
+    out, _, _ = ac.compact_messages(msgs, 1400, keep_recent_groups=2)
+    kept = [tc["function"]["name"] for m in out if m.get("role") == "assistant"
+            for tc in (m.get("tool_calls") or [])]
+    assert kept == ["tool_3", "tool_4"]
+
+
+def test_one_oversized_step_is_kept_rather_than_refusing_to_run():
+    msgs = transcript(1, 50000)
+    out, dropped, _ = ac.compact_messages(msgs, 1000, keep_recent_groups=1)
+    assert dropped == 0 and out is msgs
+
+
+def test_the_loop_compacts_before_it_calls_the_model():
+    """Trimming after the request would save nothing — the tokens already left."""
+    events = []
+    big = "y" * 6000
+    script = Script(turn_with(call(args={"path": "a"})),
+                    turn_with(call(args={"path": "b"}, cid="c2")),
+                    turn_with(call(args={"path": "c"}, cid="c3")),
+                    answer("Done."))
+    res = run(ac.run_agent_loop(
+        "goal", TOOLS, lambda c: big, call_model=script,
+        limits=ac.AgentLimits(max_transcript_chars=8000, keep_recent_groups=1),
+        on_event=lambda k, d: events.append(k)))
+    assert res.ok
+    assert "compacted" in events
+    # Whatever the model was last shown must already be inside the budget.
+    assert ac.transcript_chars(script.seen_messages[-1]) <= 8000
+
+
+def test_a_compacted_run_still_ends_with_a_valid_transcript():
+    script = Script(turn_with(call(args={"path": "a"})),
+                    turn_with(call(args={"path": "b"}, cid="c2")),
+                    answer("Done."))
+    res = run(ac.run_agent_loop(
+        "goal", TOOLS, lambda c: "z" * 5000, call_model=script, system="sys",
+        limits=ac.AgentLimits(max_transcript_chars=4000, keep_recent_groups=1)))
+    assert res.ok and res.steps == 3
+    roles = [m["role"] for m in res.messages]
+    assert roles[0] == "system", roles
+    assert res.messages[1]["content"] == "goal", "the goal stays directly after the system prompt"
+
+
+def test_message_chars_counts_tool_call_arguments():
+    m = {"role": "assistant", "content": "hi", "tool_calls": [
+        {"id": "c1", "type": "function",
+         "function": {"name": "read_file", "arguments": '{"path":"aaaa"}'}}]}
+    assert ac.message_chars(m) == len("hi") + len("read_file") + len('{"path":"aaaa"}')
+
+
 if __name__ == "__main__":
     import traceback
 

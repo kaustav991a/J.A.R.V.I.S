@@ -27,6 +27,7 @@ import DataOverlay from "./components/DataOverlay";
 import ChatPanel from "./components/ChatPanel";
 import GestureGuide from "./components/GestureGuide";
 import GestureChip from "./components/GestureChip";
+import AgentTrace from "./components/AgentTrace";
 import MicIndicator from "./components/MicIndicator";
 import TaskHud from "./components/TaskHud";
 import { API_BASE, WS_BASE, API_HOST } from "./api";
@@ -215,6 +216,9 @@ function App() {
   const [isTaskHudOpen, setIsTaskHudOpen] = useState(false);
   const [isGestureGuideOpen, setIsGestureGuideOpen] = useState(false);
   const [gestureState, setGestureState] = useState(null);
+  // Agentic core (phase 4): the live ReAct trace and its open confirm prompt.
+  const [agentSteps, setAgentSteps] = useState([]);
+  const [agentConfirm, setAgentConfirm] = useState(null);
   const [taskRefresh, setTaskRefresh] = useState(0);
 
   const socket = useRef(null);
@@ -331,6 +335,38 @@ function App() {
       // goes silent (daemon sends a ~2s heartbeat, so real silence == daemon dead).
       if (data.type === "gesture_state") {
         setGestureState({ ...data, _rxAt: Date.now() });
+        return;
+      }
+
+      // --- Agentic core (phase 4): live ReAct trace + approve/deny prompt ---
+      // Both frames also carry status/message, so returning here is what stops
+      // the trace from ALSO spamming the system log line by line.
+      if (data.type === "agent_step") {
+        setAgentSteps((prev) => {
+          // A new goal starts a fresh trace rather than appending forever.
+          const fresh = prev.length && prev[0].goal !== data.goal ? [] : prev;
+          return [...fresh, data].slice(-40);
+        });
+        if (data.event === "answer" || data.event === "cap"
+            || data.event === "provider_failed") {
+          setAgentConfirm(null);
+        }
+        return;
+      }
+      if (data.type === "agent_parked") {
+        // Phase 5: nobody was at the desk, so the action was queued for his
+        // phone instead. Nothing to click — it goes in the trace so the desk can
+        // see WHY the run stopped, and any open prompt is stale now.
+        setAgentSteps((prev) => [
+          ...prev, { ...data, event: "parked", goal: prev[0]?.goal },
+        ].slice(-40));
+        setAgentConfirm(null);
+        return;
+      }
+      if (data.type === "agent_confirm") {
+        // The same frame type reports the resolution, so a resolved prompt
+        // clears rather than lingering with dead buttons.
+        setAgentConfirm(data.resolved ? null : data);
         return;
       }
 
@@ -1053,6 +1089,15 @@ function App() {
       <GestureChip
         gesture={gestureState}
         onClick={() => setIsGestureGuideOpen(true)}
+      />
+
+      {/* Agentic core (phase 4): the ReAct trace, live, plus its confirm prompt.
+          Renders only once frames arrive, so it is invisible unless
+          JARVIS_AGENT_LOOP is on and a wired intent is running. */}
+      <AgentTrace
+        steps={agentSteps}
+        confirm={agentConfirm}
+        onAnswered={() => setAgentConfirm(null)}
       />
 
       {backendUnreachable && (
