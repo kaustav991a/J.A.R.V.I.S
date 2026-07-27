@@ -129,7 +129,7 @@ ormsgpack==1.12.2
 overrides==7.7.0
 packaging==26.2
 pandas==3.0.3
-pillow==12.2.0
+pillow==12.3.0
 playwright==1.60.0
 polars==1.41.2
 polars-runtime-32==1.41.2
