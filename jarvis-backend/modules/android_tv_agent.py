@@ -279,7 +279,7 @@ class AndroidTVAgent:
                 print(f"[TV AGENT] mDNS selected {self._target}", flush=True)
             else:
                 self._target = _get_tv_target()
-                print(f"[TV AGENT] mDNS found no TV; using JARVIS_TV_IP → {self._target}", flush=True)
+                print(f"[TV AGENT] mDNS found no TV; using JARVIS_TV_IP -> {self._target}", flush=True)
 
         print(f"[TV AGENT] Connecting to {self._target}...", flush=True)
 

@@ -115,18 +115,18 @@ class GovernanceManager:
                 if not k.startswith("===")     # skip human-readable separator keys
             }
             print(
-                f"[GOVERNANCE] Ruleset loaded — {len(self._rules)} action types indexed.",
+                f"[GOVERNANCE] Ruleset loaded - {len(self._rules)} action types indexed.",
                 flush=True,
             )
         except FileNotFoundError:
             print(
-                f"[GOVERNANCE] ⚠️  governance.json not found at {self._RULESET_PATH}. "
+                f"[GOVERNANCE] [WARN] governance.json not found at {self._RULESET_PATH}. "
                 "Defaulting ALL actions to BLOCK.",
                 flush=True,
             )
             self._rules = {}
         except Exception as exc:
-            print(f"[GOVERNANCE] ⚠️  Failed to load ruleset: {exc}. Defaulting to BLOCK.", flush=True)
+            print(f"[GOVERNANCE] [WARN] Failed to load ruleset: {exc}. Defaulting to BLOCK.", flush=True)
             self._rules = {}
 
     def reload_ruleset(self) -> None:
@@ -156,7 +156,7 @@ class GovernanceManager:
 
         # --- Validate payload has an action_type ---
         if not action_type:
-            print("[GOVERNANCE] ❌ Payload has no action_type — BLOCKED.", flush=True)
+            print("[GOVERNANCE] [BLOCKED] Payload has no action_type.", flush=True)
             return _make_result(
                 GovernanceSignal.BLOCKED,
                 GovernanceTier.BLOCK,
@@ -172,7 +172,9 @@ class GovernanceManager:
             tier = GovernanceTier.BLOCK
 
         print(
-            f"[GOVERNANCE] action='{action_type}' → tier={tier.value}",
+            # ASCII arrow on purpose: this is the safety spine, and it must not
+            # be able to die on its own log line where stdout is cp1252.
+            f"[GOVERNANCE] action='{action_type}' -> tier={tier.value}",
             flush=True,
         )
 
@@ -194,7 +196,7 @@ class GovernanceManager:
                 f"Action '{action_type}' is not recognised in the governance ruleset. "
                 "Defaulting to BLOCK (fail-safe policy)."
             )
-            print(f"[GOVERNANCE] 🚫 BLOCKED — {reason}", flush=True)
+            print(f"[GOVERNANCE] [BLOCKED] {reason}", flush=True)
             return _make_result(
                 GovernanceSignal.BLOCKED,
                 GovernanceTier.BLOCK,
@@ -213,7 +215,7 @@ class GovernanceManager:
         self._pending_registry[cid] = entry
 
         print(
-            f"[GOVERNANCE] ⏸  PENDING_CONFIRMATION — id={cid} action='{action_type}'",
+            f"[GOVERNANCE] [PENDING] PENDING_CONFIRMATION id={cid} action='{action_type}'",
             flush=True,
         )
         return _make_result(
@@ -271,7 +273,7 @@ class GovernanceManager:
             cid = self._pending_slot["id"]
             self._pending_slot = None
             self._pending_registry.pop(cid, None)
-            print(f"[GOVERNANCE] ✅ Confirmation consumed (id={cid}).", flush=True)
+            print(f"[GOVERNANCE] [OK] Confirmation consumed (id={cid}).", flush=True)
             return payload
 
         entry = self._pending_registry.pop(confirmation_id, None)
@@ -279,7 +281,7 @@ class GovernanceManager:
             return None
         if self._pending_slot and self._pending_slot["id"] == confirmation_id:
             self._pending_slot = None
-        print(f"[GOVERNANCE] ✅ Confirmation consumed (id={confirmation_id}).", flush=True)
+        print(f"[GOVERNANCE] [OK] Confirmation consumed (id={confirmation_id}).", flush=True)
         return entry["payload"]
 
     def cancel_pending(self, confirmation_id: Optional[str] = None) -> bool:
@@ -296,7 +298,7 @@ class GovernanceManager:
             cid = self._pending_slot["id"]
             self._pending_slot = None
             self._pending_registry.pop(cid, None)
-            print(f"[GOVERNANCE] ❌ Pending action cancelled (id={cid}).", flush=True)
+            print(f"[GOVERNANCE] [CANCELLED] Pending action cancelled (id={cid}).", flush=True)
             return True
 
         entry = self._pending_registry.pop(confirmation_id, None)
@@ -304,7 +306,7 @@ class GovernanceManager:
             return False
         if self._pending_slot and self._pending_slot["id"] == confirmation_id:
             self._pending_slot = None
-        print(f"[GOVERNANCE] ❌ Pending action cancelled (id={confirmation_id}).", flush=True)
+        print(f"[GOVERNANCE] [CANCELLED] Pending action cancelled (id={confirmation_id}).", flush=True)
         return True
 
     # -----------------------------------------------------------------------
@@ -316,7 +318,7 @@ class GovernanceManager:
         # Expire single slot
         if self._pending_slot and self._pending_slot["expires_at"] < now:
             print(
-                f"[GOVERNANCE] ⏱  Pending confirmation expired (id={self._pending_slot['id']}).",
+                f"[GOVERNANCE] [EXPIRED] Pending confirmation expired (id={self._pending_slot['id']}).",
                 flush=True,
             )
             self._pending_registry.pop(self._pending_slot["id"], None)

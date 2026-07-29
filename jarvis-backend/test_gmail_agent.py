@@ -1,11 +1,17 @@
-"""Phase 6 — GmailAgent tests with mocked Gmail API (no real network)."""
+"""Phase 6 — GmailAgent tests with mocked Gmail API (no real network).
+
+Converted to a self-running harness 2026-07-30 (D#13). It was slated for
+retirement as a "stale mock", but reading it first showed the opposite: the
+Gmail API is fully mocked, no network is touched, and the assertions still
+describe real behaviour (MIME multipart shape, threading headers). It only
+needed the pytest fixture turned into a helper.
+"""
 
 import base64
 import email
+import sys
 from email import policy
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from modules.gmail_agent import GmailAgent
 
@@ -30,8 +36,7 @@ def _sample_message_detail(msg_id: str = "m1") -> dict:
     }
 
 
-@pytest.fixture
-def mock_gmail_service() -> MagicMock:
+def _mock_gmail_service() -> MagicMock:
     svc = MagicMock()
     users = MagicMock()
     messages = MagicMock()
@@ -42,7 +47,8 @@ def mock_gmail_service() -> MagicMock:
     return svc
 
 
-def test_read_emails_formats_sender_subject_snippet(mock_gmail_service: MagicMock) -> None:
+def test_read_emails_formats_sender_subject_snippet() -> None:
+    mock_gmail_service = _mock_gmail_service()
     messages = mock_gmail_service.users.return_value.messages.return_value
 
     list_exec = MagicMock()
@@ -68,7 +74,8 @@ def test_read_emails_formats_sender_subject_snippet(mock_gmail_service: MagicMoc
     messages.get.assert_called()
 
 
-def test_send_email_builds_mime_multipart(mock_gmail_service: MagicMock) -> None:
+def test_send_email_builds_mime_multipart() -> None:
+    mock_gmail_service = _mock_gmail_service()
     messages = mock_gmail_service.users.return_value.messages.return_value
     send_exec = MagicMock()
     send_exec.execute.return_value = {"id": "sent123"}
@@ -94,27 +101,33 @@ def test_send_email_builds_mime_multipart(mock_gmail_service: MagicMock) -> None
     assert payloads and b"Plain body text." in payloads
 
 
-def test_reply_email_sets_thread_id_and_in_reply_to(mock_gmail_service: MagicMock) -> None:
+def test_reply_email_sets_thread_id_and_in_reply_to() -> None:
+    mock_gmail_service = _mock_gmail_service()
     users = mock_gmail_service.users.return_value
     messages = users.messages.return_value
     threads = users.threads.return_value
 
+    # `reply_email` fetches the thread with format="metadata", which returns each
+    # message WITH its payload inline — it never issues a second messages.get.
+    # The original mock put the headers behind messages.get instead, so the code
+    # under test saw a message with no payload and wrote an empty In-Reply-To.
+    # That was a wrong fixture, not a bug: this file had never run (pytest is not
+    # in the venv), so nothing had ever exercised the mock's shape.
     thread_exec = MagicMock()
-    thread_exec.execute.return_value = {"messages": [{"id": "last-msg-id"}]}
-    threads.get.return_value = thread_exec
-
-    meta_exec = MagicMock()
-    meta_exec.execute.return_value = {
-        "payload": {
-            "headers": [
-                {"name": "From", "value": "Alice <alice@example.com>"},
-                {"name": "Subject", "value": "Original"},
-                {"name": "Message-ID", "value": "<abc123@mail.example.com>"},
-                {"name": "References", "value": "<older@mail.example.com>"},
-            ]
-        }
+    thread_exec.execute.return_value = {
+        "messages": [{
+            "id": "last-msg-id",
+            "payload": {
+                "headers": [
+                    {"name": "From", "value": "Alice <alice@example.com>"},
+                    {"name": "Subject", "value": "Original"},
+                    {"name": "Message-ID", "value": "<abc123@mail.example.com>"},
+                    {"name": "References", "value": "<older@mail.example.com>"},
+                ]
+            },
+        }]
     }
-    messages.get.return_value = meta_exec
+    threads.get.return_value = thread_exec
 
     send_exec = MagicMock()
     send_exec.execute.return_value = {"id": "reply456"}
@@ -134,3 +147,21 @@ def test_reply_email_sets_thread_id_and_in_reply_to(mock_gmail_service: MagicMoc
     assert mime_msg["In-Reply-To"] == "<abc123@mail.example.com>"
     assert "<abc123@mail.example.com>" in (mime_msg["References"] or "")
     assert mime_msg["To"] == "Alice <alice@example.com>"
+
+
+if __name__ == "__main__":
+    import traceback
+
+    tests = [(n, f) for n, f in sorted(globals().items())
+             if n.startswith("test_") and callable(f)]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"PASS  {name}")
+        except Exception:
+            failed += 1
+            print(f"FAIL  {name}")
+            traceback.print_exc()
+    print(f"\n{len(tests) - failed}/{len(tests)} passed.")
+    sys.exit(1 if failed else 0)

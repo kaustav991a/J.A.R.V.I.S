@@ -16,22 +16,56 @@ Exits 1 if any harness fails, so this is safe to use as a gate.
 
 NOT included (and why):
   test_ping.py, test_ui_bridge_e2e.py    need the backend running  (PART A2)
-  test_android_tv_agent.py, test_github_agent.py,
-  test_gmail_agent.py, tests/*           need pytest, not in the venv (PART A3).
-                                         test_governance.py used to be here — the
-                                         risk-tier guard was converted 2026-07-26
-                                         so the safety spine is inside this gate.
   test_screen_reader.py                  live VLM script (screenshots + a real
                                          model call) — not a deterministic harness
+
+PART A3 is now EMPTY — the last pytest-only files were converted 2026-07-30 (D#13):
+  test_android_tv_agent.py (6), test_github_agent.py (5), test_gmail_agent.py (3)
+  are self-running and included above. Converting them found a real defect in the
+  last one: its `reply_email` mock put the thread headers behind a second
+  `messages.get` the implementation never calls, so the test had been asserting
+  against a shape the code does not produce. It had never run, so nobody knew.
+
+RETIRED 2026-07-30 (D#13) — `tests/` is gone; each was run first, and each failed
+for a structural reason, not a flake:
+  tests/test_briefing.py   patched `action_engine.CalendarAgent`, which no longer
+                           exists — the agent imports were restructured.
+  tests/test_hardware.py   `ActionEngine.execute` is a coroutine now; the test
+                           asserted on the un-awaited object ("'coroutine' object
+                           has no attribute 'lower'"). The genuine pre-async fossil.
+  tests/test_scheduler.py  patched `background_monitor.speaker`, an attribute the
+                           module no longer has.
+  COVERAGE HONESTLY LOST: briefing concurrency + degradation, TV intent routing +
+  unreachable-hardware fallback, scheduler dedup + midnight flush. Rewriting these
+  against the current async API is worth doing; it was not part of this chore.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+# Same hardening as main.py / watchdog.py: piped stdout falls back to cp1252 on
+# Windows and dies on any non-ASCII log line.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# The block above only protects THIS process. Each harness runs as a SEPARATE
+# process that picks its own stdout encoding from the locale, so a print with a
+# '→' in the code under test kills the child before the parent sees a byte —
+# which is exactly how test_governance and test_android_tv_agent "failed" with
+# every assertion still correct. The `encoding="utf-8"` on subprocess.run below
+# only says how the PARENT decodes; the child had already crashed encoding.
+# Forcing the child's encoding is the real fix, and it makes the suite
+# deterministic instead of depending on whichever shell invoked it.
+_CHILD_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 HERE = Path(__file__).resolve().parent
 
@@ -39,6 +73,7 @@ HERE = Path(__file__).resolve().parent
 HARNESSES = [
     "test_action_parser.py",
     "test_agent_core.py",
+    "test_android_tv_agent.py",
     "test_agent_runner.py",
     "test_agent_subagents.py",
     "test_agent_tools.py",
@@ -59,13 +94,19 @@ HARNESSES = [
     "test_gesture_camera.py",
     "test_gesture_engine.py",
     "test_gesture_roi.py",
+    "test_github_agent.py",
+    "test_gmail_agent.py",
     "test_governance.py",
     "test_listen_request.py",
     "test_llm_failover.py",
+    "test_memory_crypto.py",
+    "test_memory_extraction_guard.py",
+    "test_memory_store_encryption.py",
     "test_owner_notify.py",
     "test_partner_messaging.py",
     "test_presence_probe.py",
     "test_speaker_errors.py",
+    "test_store_retirement.py",
     "test_tool_call.py",
     "test_watchdog_policy.py",
     "test_working_memory_lock.py",
@@ -108,6 +149,7 @@ def main() -> int:
         proc = subprocess.run(
             [sys.executable, str(path)],
             cwd=HERE,
+            env=_CHILD_ENV,
             capture_output=True,
             text=True,
             encoding="utf-8",
