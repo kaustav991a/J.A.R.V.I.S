@@ -39,8 +39,9 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.6** gesture vocab decision | ✅ DONE | §4 |
 | **G5.1** relative trackpad + accel + clutch + dwell right-click | ✅ DONE, live-gate owed | §3.3, §4 |
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
-| **Automatic test baseline** | ✅ **616 checks / 26 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted) | `TEST_PLAN.md` |
-| **Agentic core** (Tier C #12) | 🟡 phases 1–3 done (router tools path, loop, tool registry) — **nothing wired yet**, phase 4 next | §5 Tier C |
+| **Automatic test baseline** | ✅ **874 checks / 39 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted; the pytest-only tier A3 was closed 2026-07-30) | `TEST_PLAN.md` |
+| **Agentic core** (Tier C #12) | ✅ **ALL 5 PHASES DONE + LIVE-GATED 2026-07-26** (14/14 §23 rows) — pushed | §5 Tier C |
+| **Memory-at-rest encryption** (Tier C #11a) | ✅ **DONE + LIVE 2026-07-30** — DPAPI + scrypt recovery, AES-256-GCM fields; `jarvis_longterm.db` encrypted, `jarvis_memory.db` retired into it | §5 #11a |
 | **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); **click-to-talk DONE 2026-07-26** (`POST /api/listen`), live-gate owed | §5 |
 | **G5.3** cursor-halo + edge-toast overlays | ✅ code done, live-gate owed | §5 |
@@ -51,7 +52,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **Away→mobile presence (Track B probe)** | ✅ DONE (code) — ARP/TCP/ICMP ladder + asymmetric debounce + owner_notify routing; live-gate owed | §5 #7, §6.2 |
 | **Smart-home / IoT agent** | ⬜ MISSING | §5 |
 | **Guarded self-improvement loop** | ⬜ MISSING | §5 |
-| **Agentic core (Claude-Code-grade tool loop)** | ⬜ MISSING — foundational for self-improvement | §5 (Tier C #12) |
+| ~~Agentic core (Claude-Code-grade tool loop)~~ | ✅ **DONE** — this row said "MISSING" until 2026-07-30 while the same doc recorded all 5 phases live-gated; the duplicate row is kept struck-through so the contradiction is not re-introduced | §5 (Tier C #12) |
 | **Presence/context state machine** | 🟡 partial | §5 |
 | **Electron packaging** | ⬜ PARKED (after all desktop) | §5 |
 | **Mobile app (Track C)** | ⬜ FUTURE (after Electron) | §6 |
@@ -351,11 +352,57 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
 10. **Guarded self-improvement loop** — propose→branch→test→PR→human-approve.
     **NEVER auto-merge.** (Primitives `workspace_write/patch` + `github_*` exist.)
 11. **Polish tier:** on-device AEC finishing; voice biometrics (face-only today);
-    generative HUD / brain-driven data-viz; memory-at-rest encryption (encrypt
-    `jarvis_*.db`/Chroma, secrets in a vault not `.env`); planner cost/risk budgeting +
+    generative HUD / brain-driven data-viz; planner cost/risk budgeting +
     hierarchical sub-plans; richer cross-task worker memory; per-session state for the
     pending-decision singletons; Telegram push + remote file search; PDF/docx RAG parsing
     + incremental re-index; life integrations (Spotify, Notion/Obsidian, banking, maps).
+
+11a. **Memory-at-rest encryption — ✅ DONE + LIVE 2026-07-30.** (Folded in from the
+    former `jarvis-backend/ENCRYPTION_DESIGN.md`, now deleted — the repo keeps 2 planning docs.)
+    His rule, and the reason the design came before any code: *"encryption you can't reverse
+    is data loss wearing a security costume."* Sign-off was required on the KEY STORY first.
+    - **Key scheme (b): Windows DPAPI + a two-wrap recovery.** One random 32-byte DEK, wrapped
+      twice — DPAPI (stdlib `ctypes`, entropy-bound, **no boot prompt**) for unattended boot,
+      and scrypt over a printed one-time recovery code for disaster recovery. Either wrap opens
+      the same DEK, so a rebuilt Windows profile is an inconvenience, not data loss.
+      Passphrase-at-boot was **rejected**: `watchdog` respawn, `OvernightWorker` and the cloud
+      gateway all boot unattended, so it would turn every crash into an outage.
+    - **Honest limit, stated and accepted:** DPAPI protects data **leaving the machine** (a
+      copied folder, a backup, a sync client, a repo accident). It does **not** protect against
+      code running as Kaustav on that box — that is exactly what "no boot prompt" costs.
+    - **App-level AES-256-GCM field encryption**, not a sqlite engine swap. `sqlcipher` was
+      rejected: a compiled extension under Chroma's own sqlite could take the whole vision venv
+      down for no gain. `cryptography` was already installed, so **zero new dependencies** and
+      `protobuf==6.33.6` is untouched.
+    - **Chroma decision (iii):** partner-derived data stays **out of Chroma entirely**. Chroma
+      keeps document text in plaintext and `.bin` vectors leak approximate content via embedding
+      inversion; keeping her data out removes the leak instead of managing it.
+    - **Failure is loud:** a missing/wrong key raises `MemoryLockedError` → *"Long-term memory is
+      LOCKED"*. Never a silent empty read, which is indistinguishable from having forgotten him.
+    - **The non-obvious trap:** `UNIQUE(user, content)` silently dies under encryption — random
+      nonces mean the same fact never yields the same ciphertext, so duplicates would pile up
+      unnoticed. Fixed with a keyed blind index (`memories.content_hash`). **Any future encrypted
+      column must be checked for the same thing.**
+    - **Ships:** `modules/memory_crypto.py`, `manage_keys.py` (init/status/verify/export-key/
+      restore-key/show-public), `backup_memory.py`, `migrate_memory_encryption.py`,
+      `retire_jarvis_memory_db.py`. Wired into `memory_manager`, `memory.py`, `partner_log`.
+      Harnesses: `test_memory_crypto` 29, `test_memory_store_encryption` 17,
+      `test_memory_extraction_guard` 12, `test_store_retirement` 15.
+    - **Store consolidation:** `jarvis_memory.db` **retired** — both its tables were still live
+      (`remember_fact`/wake-briefing, and sleep-wake `session_digest`), so it was a redirect, not
+      a delete. Everything now lives encrypted in `jarvis_longterm.db`; the old file is kept in
+      `JARVIS-BACKUPS\plaintext-originals\`.
+    - **STILL OPEN (needs his sign-off before code):**
+      (a) **Step 3 — `.env` secrets into the key store.** Deliberately last and separable.
+      (b) **Cloud→desk sealed fact backlog.** The gap: turns the cloud brain answered while the
+      desk was OFF are never persisted (the level-3 bridge already forwards fine when the desk is
+      UP — it shipped `b125b9a`; `cloud_gateway.py` stores nothing and Render's filesystem is
+      ephemeral). Design: desk owns an **X25519 keypair — already generated in the Step 1
+      ceremony**, only the PUBLIC half goes to Render; the cloud seals each turn, queues it
+      **before** replying, one file per record in a private GitHub repo (durable, zero new infra,
+      the PAT already exists); the desk drains on boot/reconnect, decrypts, and feeds each turn
+      through the **existing** `extract_and_store_memory` so attribution is unchanged by
+      construction. Records are idempotent by UUID; filenames carry no metadata.
 12. **Agentic core — "Claude-Code-grade" tool loop for JARVIS (NEW 2026-07-25).**
     Goal: give JARVIS the same agentic superpowers this Claude Code session has —
     decide → call tool → observe → repeat, with sub-agents, MCP, and skills — not the
@@ -863,8 +910,11 @@ per-user memory extraction (`brain.extract_and_store_memory` → `memory_manager
 `user='MOUSUMI'`) has always run for every recognised caller and keeps running either way —
 that is what makes him know her warmly in her own chat. So "off" means *no verbatim
 transcript*, not *nothing retained*.
-**TIER C #11 (encryption at rest) must cover `partner_messages`** — third-party personal
-data, currently plain SQLite. Noted in the module docstring too.
+**TIER C #11a (encryption at rest) — ✅ DONE 2026-07-30.** `partner_messages.content` and
+`.partner_name` are AES-256-GCM encrypted; `partner_slot`/`direction`/`timestamp` stay readable
+because every query filters on them. So a stolen copy of the file shows *that* a slot was active
+and when, but not a word of what she said. The opt-in flag is unchanged — off still writes
+nothing, not even the table.
 
 Harness: `test_partner_messaging.py` (34 checks, refusal-weighted). Live gate: TEST_PLAN §24.
 
@@ -882,7 +932,13 @@ Harness: `test_partner_messaging.py` (34 checks, refusal-weighted). Live gate: T
 > every new item ships with (a) a self-running harness and (b) a one-line gate recipe added
 > below — the harness is what keeps the stack honest until that session.
 
-**PUSH STATUS 2026-07-25:** commits landed since `99281e3`: `fb30e50` enroll mirror,
+**PUSH STATUS 2026-07-30:** `origin/feat/cloud-gateway` is caught up with HEAD. Suite
+**874 checks / 39 harnesses, 0 failures**; 3 environmental non-greens (`test_ping` and
+`test_ui_bridge_e2e` need the backend up; `test_screen_reader.py` is a live VLM script, not a
+counted harness). **The old "4 need pytest" line is gone — tier A3 was closed 2026-07-30**, the
+last three pytest-only files were converted, and `tests/` was retired.
+
+*Superseded, kept for the trail —* **PUSH STATUS 2026-07-25:** commits landed since `99281e3`: `fb30e50` enroll mirror,
 `c009d8e` camera unification, `6409adf` overlay blast-radius, `17185a9` auto-lock default +
 test log, `5f60a20` overlay TkTopLevel, `0863c7b` G6.4 closing-fist grab, `b7e771d` frame bus,
 + the stranger-confirmer above. Suite **478** automatic checks, 0 failures; 6 environmental
@@ -907,6 +963,18 @@ script, not a counted harness.
   `died=None`), cold-bus fallback intact.
 
 **STILL OWED** before push+merge:
+- **C#11a memory-at-rest encryption (NEW 2026-07-30) — the "locked, not amnesia" gate.**
+  Normal boot first: JARVIS must wake and recall facts with **no prompt for anything** (the
+  DPAPI wrap is the whole point — a key that asks for a passphrase would break watchdog
+  respawn and the overnight worker). Then rename `jarvis_key.dpapi` aside and restart: asking
+  him something he knows must produce **"Long-term memory is LOCKED — the key store is
+  unavailable"**, NOT a cheerful "you never told me that". *A silent empty read is the single
+  worst outcome here — it is indistinguishable from having forgotten you.* Rename the key
+  back → recall works again. Then prove recovery end to end:
+  `manage_keys.py restore-key` with the printed recovery code rebuilds the boot wrap on a
+  fresh profile and the same rows still decrypt. Finally `manage_keys.py verify` → canary OK.
+  Sanity-check the file itself: `jarvis_longterm.db` opened in any hex viewer must show no
+  readable fact text.
 - **G4 camera gates:** arbiter during a real ghost_type/autopilot (cursor mustn't fight,
   chip shows "JARVIS DRIVING"); guided re-enroll `enroll_face.py` (12 samples →
   re-seed `owner_embeddings.npz`, currently the 1-sample seed); calibration `w`-save

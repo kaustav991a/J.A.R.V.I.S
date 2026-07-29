@@ -4,7 +4,9 @@
 > Electron build. Split into **PART A — Automatic** (Claude runs, no human/hardware)
 > and **PART B — Manual** (Kaustav runs: voice / camera / phone / GUI). Run PART A
 > after every change; run PART B once, right before Electron. Roadmap: `JARVIS_MASTER_ROADMAP.md`.
-> Last automatic baseline: **2026-07-26 — 787/787 green, 32/32 harnesses, ~14 s warm (~36 s cold).**
+> Last automatic baseline: **2026-07-30 — 874/874 green, 39/39 harnesses, ~29 s.**
+> (Was 787/32 on 2026-07-26. +5 harnesses from C#11a memory-at-rest encryption, +3 from the
+> D#13 pytest conversions; A3 is closed and `tests/` is retired.)
 > Legend: ✅ pass · ⚠️ partial · ❌ fail · ☐ not yet run.
 
 ---
@@ -64,29 +66,35 @@ summary line. When a new harness lands, add its filename to `HARNESSES` in that 
 backend with **`JARVIS_ALLOW_BACKDOOR=1`** (or authenticate first by wake word), else the
 POST comes back `403 {"status":"refused"}` and the harness sees no UI frames.
 
-**A3 — blocked-automatic (need `pytest`, not in the venv):** `test_android_tv_agent.py`,
-`test_github_agent.py`, `test_gmail_agent.py`, `tests/test_briefing.py`,
-`tests/test_hardware.py`, `tests/test_scheduler.py` — 20 tests.
+**A3 — ✅ CLOSED 2026-07-30 (D#13). There is no pytest-only tier any more.**
 
-*Measured 2026-07-26 (a pytest **stub** ran them; nothing installed) — installing pytest
-does NOT buy 24 green tests:*
+Every prediction in the 2026-07-26 table below was confirmed by actually running the code.
 
-| File | Tests | Would pass | pytest-only features | Verdict |
-|---|---:|---|---|---|
-| ~~`test_governance.py`~~ | 4 | **4/4** | one `autouse` fixture | ✅ **CONVERTED 2026-07-26** — the risk-tier guard now runs inside PART A |
-| `test_android_tv_agent.py` | 6 | **6/6** | fixture + `monkeypatch` | convert — `monkeypatch` → `mock.patch` |
-| `test_gmail_agent.py` | 3 | 2/3 | fixture | 1 stale mock: it wires a `messages.get` metadata call, but `reply_email` reads the headers straight off the `threads().get(format="metadata")` response (`gmail_agent.py:516`). Production is right, the mock is a shape behind |
-| `test_github_agent.py` | 5 | not measured | fixture chain + `tmp_path` | real `git` in a temp repo; `tmp_path` → `tempfile` |
-| `tests/test_briefing.py` | 2 | **0/2** | — (`import pytest` unused) | **stale**: patches `action_engine.CalendarAgent`, which is a function-local import (`action_engine.py:1062`) |
-| `tests/test_hardware.py` | 2 | **0/2** | — (unused) | **stale**: calls `ActionEngine.execute` synchronously; it is `async def` (`action_engine.py:363`) |
-| `tests/test_scheduler.py` | 2 | **0/2** | — (unused) | **stale**: patches `background_monitor.speaker`; that module no longer imports `speaker` |
+| File | Tests | Outcome |
+|---|---:|---|
+| ~~`test_governance.py`~~ | 4 | ✅ converted 2026-07-26 — risk-tier guard runs inside PART A |
+| `test_android_tv_agent.py` | 6 | ✅ **converted, 6/6** — `monkeypatch` → an explicit save/restore context manager |
+| `test_github_agent.py` | 5 | ✅ **converted, 5/5** — `tmp_path` → `tempfile`, cleaned up by the harness |
+| `test_gmail_agent.py` | 3 | ✅ **converted, 3/3** — and the predicted defect was real (see below) |
+| ~~`tests/test_briefing.py`~~ | 2 | ❌ **RETIRED** — `action_engine.CalendarAgent` no longer exists (function-local import); 0/2 |
+| ~~`tests/test_hardware.py`~~ | 2 | ❌ **RETIRED** — `ActionEngine.execute` is a coroutine; the test asserts on the un-awaited object; 0/2 |
+| ~~`tests/test_scheduler.py`~~ | 2 | ❌ **RETIRED** — patches `background_monitor.speaker`, an attribute that module no longer has; 0/2 |
 
-**Decision 2026-07-26 (Kaustav): no pytest install.** The cost isn't the ~5 MB, it's a second
-command `run_harnesses.py` doesn't gate — which is exactly how a suite starts drifting.
-`test_governance.py` was converted instead (4/4 inside PART A). Still open, as a separate
-cleanup: `test_android_tv_agent.py` / `test_github_agent.py` convert next, and the three
-`tests/` files plus the one `test_gmail_agent.py` mock are **pre-async fossils** —
-rewrite or retire, tracked in the roadmap. They are counted nowhere and gate nothing.
+**`test_gmail_agent.py` was NOT a stale test — it was a stale *mock*, and the diagnosis here was
+exactly right.** Its `reply_email` fixture wired a second `messages.get` metadata call that the
+implementation never makes; `reply_email` reads the headers straight off the
+`threads().get(format="metadata")` response. Production was correct, the mock was a shape behind,
+so the test asserted an empty `In-Reply-To`. Fixed by moving the headers inline into the thread
+response. **The file had never once run, so nothing had ever caught it** — which is the argument
+for A3 existing at all.
+
+**`tests/` is deleted.** Coverage honestly lost: briefing concurrency + graceful degradation, TV
+intent routing + unreachable-hardware fallback, scheduler dedup + midnight flush. Rewriting those
+against the current async API is worth doing and is NOT done — it was outside this chore.
+
+**Decision 2026-07-26 (Kaustav), still standing: no pytest install.** The cost isn't the ~5 MB,
+it's a second command `run_harnesses.py` doesn't gate — which is exactly how a suite starts
+drifting. Everything worth keeping was converted instead, so PART A is now the whole automatic gate.
 
 **Not a harness:** `test_screen_reader.py` takes a real screenshot and calls the VLM —
 a live script, deliberately excluded from the total.
@@ -526,7 +534,7 @@ See `JARVIS_MASTER_ROADMAP.md` §5 for how each closes.
 ---
 
 ## Exit criteria for the Electron build
-1. `run_harnesses.py` green (PART A) + A2 green (and A3 if pytest is enabled).
+1. `run_harnesses.py` green (PART A) + A2 green. (A3 no longer exists — closed 2026-07-30.)
 2. Every PART B box ticked (§0–§22), no open ⚠️/❌ — one desk session, per the
    2026-07-25 decision. Long-form recipes: `JARVIS_MASTER_ROADMAP.md` §7.
 3. No uncommitted work; `feat/cloud-gateway` pushed.
