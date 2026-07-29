@@ -25,10 +25,15 @@ with the flag off — that is how the brain knows who she is and answers her
 naturally. Turning this flag off therefore means "no verbatim transcript is
 kept", NOT "nothing about her is retained". Owner's explicit ruling 2026-07-26.
 
-At-rest encryption: these rows are personal third-party data and belong under
-roadmap TIER C #11 (encrypted-at-rest store). Until that lands they are plain
-SQLite in `jarvis_longterm.db` — the SAME database `memory_manager` already
-owns, per the "reuse an existing db, don't invent a store" constraint.
+At-rest encryption (C#11a, landed 2026-07-30): `content` and `partner_name` are
+AES-256-GCM encrypted whenever a key set exists on this machine. They live in
+`jarvis_longterm.db` — the SAME database `memory_manager` already owns, per the
+"reuse an existing db, don't invent a store" constraint.
+
+`partner_slot`, `direction` and `timestamp` stay readable because every query
+filters on them; `partner_id` stays readable because it is a Telegram id the
+`.env` already holds in the clear. So the honest claim is: a stolen copy of this
+file reveals THAT a slot was active and when, but not a word of what she said.
 
 Standard library only (sqlite3), path- and env-injectable so the harness proves
 the OFF default against a temp file and never touches the real database.
@@ -39,6 +44,9 @@ from __future__ import annotations
 import os
 import sqlite3
 from datetime import datetime, timezone
+
+from modules import memory_crypto as _crypto
+from modules.memory_crypto import MemoryLockedError
 
 ENV_FLAG = "JARVIS_LOG_PARTNER_CHATS"
 _TRUE = frozenset({"1", "true", "yes", "on"})
@@ -54,6 +62,20 @@ DISCLOSURE = (
 )
 
 DIRECTION_INBOUND = "inbound"
+
+#: Columns encrypted at rest. Everything else is needed by a WHERE or ORDER BY.
+_ENC_COLUMNS = ("content", "partner_name")
+
+
+def _encrypt(value, column: str):
+    if not _crypto.keys_ready():
+        return value
+    return _crypto.encrypt_field(value, TABLE, column)
+
+
+def _decrypt(value, column: str):
+    """Plaintext passes through, so rows written before C#11a still read."""
+    return _crypto.decrypt_field(value, TABLE, column)
 
 
 def logging_enabled(env=None) -> bool:
@@ -112,7 +134,8 @@ def log_inbound(partner_slot: str, content: str, *, partner_id: int | None = Non
         conn.execute(
             f"INSERT INTO {TABLE} (partner_slot, partner_id, partner_name, "
             f"direction, content, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-            (slot, partner_id, partner_name, DIRECTION_INBOUND, text,
+            (slot, partner_id, _encrypt(partner_name, "partner_name"),
+             DIRECTION_INBOUND, _encrypt(text, "content"),
              datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
@@ -148,7 +171,10 @@ def recent(partner_slot: str, limit: int = 20,
         return []
     finally:
         conn.close()
-    return [{"content": r[0], "timestamp": r[1], "partner_name": r[2]}
+    # A locked key propagates: "I cannot open her messages" must never be
+    # rendered as "she never said anything".
+    return [{"content": _decrypt(r[0], "content"), "timestamp": r[1],
+             "partner_name": _decrypt(r[2], "partner_name")}
             for r in reversed(rows)]
 
 

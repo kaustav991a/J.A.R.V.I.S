@@ -6,9 +6,28 @@ import os
 import threading
 from dotenv import load_dotenv
 
+from modules import memory_crypto as _crypto
+
 load_dotenv(override=True)
 
-DB_PATH = "jarvis_memory.db"
+# ── Store consolidation (C#11a, 2026-07-30) ──────────────────────────────────
+# `jarvis_memory.db` is retired. It held two tables and BOTH were still live:
+#   long_term_memory — written by the `remember_fact` action, read into the wake
+#                      briefing. Superseded by the Memory OS, which has per-user
+#                      attribution and duplicate detection this one never had
+#                      (it accumulated six rephrasings of one coding-folder
+#                      preference because UNIQUE(fact) only catches exact text).
+#   session_digest   — sleep/wake continuity. Very much alive, and an LLM summary
+#                      of his actual conversations sitting outside everything the
+#                      encryption work just protected.
+# Both now live in `jarvis_longterm.db`, encrypted at rest. The old file is kept
+# under JARVIS-BACKUPS\plaintext-originals — moved aside, never deleted.
+#
+# The old path was relative, so it also silently depended on the process cwd.
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis_longterm.db")
+
+_DIGEST_TABLE = "session_digest"
+_DIGEST_COLUMN = "digest"
 
 # ==========================================
 # TIER 1: SHORT-TERM WORKING MEMORY
@@ -133,27 +152,43 @@ def clear_working_memory():
 SESSION_RECAP_PREFIX = "[PREVIOUS SESSION RECAP]"
 
 def save_session_digest(user: str, digest: str) -> None:
-    """Persists (or replaces) the single rolling session digest for a user."""
+    """Persists (or replaces) the single rolling session digest for a user.
+
+    Encrypted at rest: a digest is a condensed account of a real conversation,
+    which makes it some of the most revealing text the system stores.
+    """
+    stored = digest
+    if _crypto.keys_ready():
+        stored = _crypto.encrypt_field(digest, _DIGEST_TABLE, _DIGEST_COLUMN)
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.execute(
             "INSERT OR REPLACE INTO session_digest (user, digest, timestamp) VALUES (?, ?, ?)",
-            (user, digest, datetime.datetime.now().isoformat()),
+            (user, stored, datetime.datetime.now().isoformat()),
         )
         conn.commit()
     finally:
         conn.close()
 
 def get_last_session_digest(user: str) -> str | None:
-    """Returns the stored session digest for a user, or None if none exists."""
+    """Returns the stored session digest for a user, or None if none exists.
+
+    A locked key raises rather than returning None — None here means "there was
+    no previous session", and quietly waking with no recollection of yesterday
+    is precisely the amnesia this store exists to prevent.
+    """
     conn = sqlite3.connect(DB_PATH)
     try:
         row = conn.execute(
             "SELECT digest FROM session_digest WHERE user = ?", (user,)
         ).fetchone()
+    except sqlite3.OperationalError:
+        return None                     # table not created yet — a fresh install
     finally:
         conn.close()
-    return row[0] if row and row[0] else None
+    if not (row and row[0]):
+        return None
+    return _crypto.decrypt_field(row[0], _DIGEST_TABLE, _DIGEST_COLUMN)
 
 def consolidate_working_memory(user: str = "KAUSTAV") -> str | None:
     """
@@ -237,19 +272,14 @@ def seed_from_last_digest(user: str = "KAUSTAV") -> str | None:
 # TIER 2: LONG-TERM SQLITE MEMORY
 # ==========================================
 def init_db():
-    """Creates the SQLite database and tables if they don't exist."""
+    """Creates the session-digest table if it does not exist.
+
+    `long_term_memory` is deliberately NOT created any more — the Memory OS
+    (`memory_manager`) owns permanent facts now. Recreating the old table would
+    resurrect a second store the moment someone called the old writer.
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
-    # Create the table for persistent facts
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS long_term_memory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category TEXT,
-            fact TEXT UNIQUE,
-            timestamp TEXT
-        )
-    ''')
 
     # Holds ONE rolling "session digest" per user — the LLM-condensed recap of the
     # last conversation. Written just before working memory is wiped on sleep, and
@@ -264,38 +294,54 @@ def init_db():
     conn.commit()
     conn.close()
 
+#: Old free-text categories ("Location", "Family", "Category") mapped onto the
+#: three the Memory OS enforces. Anything unrecognised becomes a Fact, which is
+#: the honest default — it is a thing that is true, just not a stated preference.
+def _map_category(category: str) -> str:
+    text = (category or "").strip().casefold()
+    if "prefer" in text or text in {"preference", "general"}:
+        return "Preference"
+    if "correct" in text or "instruction" in text:
+        return "Correction"
+    return "Fact"
+
 def remember_fact(category, fact):
-    """Saves a permanent fact to the database."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    timestamp = datetime.datetime.now().isoformat()
-    
-    try:
-        cursor.execute('''
-            INSERT INTO long_term_memory (category, fact, timestamp)
-            VALUES (?, ?, ?)
-        ''', (category, fact, timestamp))
-        conn.commit()
+    """Saves a permanent fact — now via the encrypted Memory OS.
+
+    Kept as a function rather than deleted because `remember_fact` is a live
+    action type the model can still emit (action_engine, action_router, planner).
+    Redirecting it is what actually retires the old store; removing it would
+    just turn a working action into an AttributeError.
+    """
+    if not fact or not str(fact).strip():
+        return
+    import memory_manager
+    stored = memory_manager.add_memory(
+        content=str(fact).strip(),
+        category=_map_category(category),
+        user="KAUSTAV",
+    )
+    if stored:
         print(f"[MEMORY] Logged to permanent storage: {fact}")
-    except sqlite3.IntegrityError:
-        # Ignore duplicate facts
-        pass 
-    finally:
-        conn.close()
 
 def recall_all_facts():
-    """Retrieves all stored facts to inject into J.A.R.V.I.S.'s core system prompt."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('SELECT fact FROM long_term_memory')
-    rows = cursor.fetchall()
-    conn.close()
-    
+    """The permanent facts, for injection into the wake-up briefing prompt.
+
+    Capped, unlike the old version: this used to return all 11 rows of a store
+    that never grew, and the Memory OS holds far more. Sending every fact into
+    the briefing would bloat that prompt for no benefit.
+    """
+    import memory_manager
+    try:
+        rows = memory_manager.get_balanced_memories_for_prompt(user="KAUSTAV")
+    except Exception as exc:
+        print(f"[MEMORY] recall_all_facts failed: {exc}", flush=True)
+        return "No specific user preferences saved yet."
+
     if not rows:
         return "No specific user preferences saved yet."
-        
-    memory_strings = [f"- {row[0]}" for row in rows]
-    return "\n".join(memory_strings)
+
+    return "\n".join(f"- {r['content']}" for r in rows)
 
 # Initialize the database immediately when the backend boots
 init_db()

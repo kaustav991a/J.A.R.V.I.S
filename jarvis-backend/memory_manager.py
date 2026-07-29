@@ -34,6 +34,8 @@ from typing import Literal, Optional
 
 from dotenv import load_dotenv
 from modules.groq_key_manager import has_groq_keys, run_with_key_rotation
+from modules import memory_crypto as _crypto
+from modules.memory_crypto import MemoryLockedError
 
 # ── Environment ──────────────────────────────────────────────────────────────
 load_dotenv(override=True)
@@ -53,6 +55,26 @@ _DB_PATH: str = os.path.join(os.path.dirname(__file__), "jarvis_longterm.db")
 
 # ── Category type alias ───────────────────────────────────────────────────────
 MemoryCategory = Literal["Preference", "Correction", "Fact"]
+
+# ── At-rest encryption (C#11a) ────────────────────────────────────────────────
+# `content` is encrypted whenever a key set exists on this machine; there is no
+# flag to forget. Reads decrypt unconditionally — plaintext passes straight
+# through, which is what makes a half-finished migration still readable.
+#
+# A locked key raises MemoryLockedError out of these functions ON PURPOSE. The
+# generic `except Exception: return []` below would otherwise turn "I cannot
+# open your memory" into "you have no memories", which is indistinguishable
+# from having forgotten him.
+_TABLE = "memories"
+_ENC_COLUMN = "content"
+
+
+def _encryption_on() -> bool:
+    return _crypto.keys_ready()
+
+
+def _decrypt_row_content(value):
+    return _crypto.decrypt_field(value, _TABLE, _ENC_COLUMN)
 
 
 # =============================================================================
@@ -88,6 +110,34 @@ def _init_db() -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_user_content
             ON memories (user, content)
         """)
+
+        # C#11a: once `content` is ciphertext the index above can never fire —
+        # every encryption of the same fact produces different bytes. Duplicate
+        # detection moves to a keyed fingerprint of the plaintext.
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(memories)")}
+        if "content_hash" not in columns:
+            conn.execute("ALTER TABLE memories ADD COLUMN content_hash TEXT")
+
+        # UNIQUE here would fail outright if two existing rows collide under
+        # normalisation. That failure must not take the whole boot down, and it
+        # must not be silent either: fall back to a plain index and say so, so
+        # migrate_memory_encryption.py can report the colliding rows for a
+        # decision rather than quietly dropping one of them.
+        try:
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_user_content_hash
+                ON memories (user, content_hash)
+            """)
+        except sqlite3.IntegrityError:
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_memories_user_content_hash_dup
+                ON memories (user, content_hash)
+            """)
+            print(
+                "[MEMORY_MANAGER] WARNING: duplicate memories block the unique "
+                "fingerprint index — run migrate_memory_encryption.py --report",
+                flush=True,
+            )
         conn.commit()
     finally:
         conn.close()
@@ -129,11 +179,32 @@ def add_memory(
     content = content.strip()
     timestamp = datetime.datetime.utcnow().isoformat()
 
+    # Encrypt before the row leaves this function. A locked key raises rather
+    # than falling back to plaintext — silently writing readable rows into a
+    # store he believes is encrypted is worse than a loud failure.
+    stored = content
+    content_hash = None
+    if _encryption_on():
+        stored = _crypto.encrypt_field(content, _TABLE, _ENC_COLUMN)
+        content_hash = _crypto.blind_index(content, _TABLE, _ENC_COLUMN)
+
     conn = sqlite3.connect(_DB_PATH)
     try:
+        # Explicit duplicate check as well as the index: the fingerprint index
+        # is only UNIQUE when no pre-existing rows collided (see _init_db).
+        if content_hash is not None:
+            hit = conn.execute(
+                "SELECT 1 FROM memories WHERE user = ? AND content_hash = ? LIMIT 1",
+                (user.upper(), content_hash),
+            ).fetchone()
+            if hit:
+                print(f"[MEMORY_MANAGER] Duplicate skipped: {content[:60]}", flush=True)
+                return False
+
         conn.execute(
-            "INSERT INTO memories (category, content, user, timestamp) VALUES (?, ?, ?, ?)",
-            (category, content, user.upper(), timestamp),
+            "INSERT INTO memories (category, content, user, timestamp, content_hash) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (category, stored, user.upper(), timestamp, content_hash),
         )
         conn.commit()
         print(
@@ -199,9 +270,14 @@ def get_relevant_memories(
                 (user.upper(), limit),
             ).fetchall()
         return [
-            {"id": r[0], "category": r[1], "content": r[2], "timestamp": r[3]}
+            {"id": r[0], "category": r[1], "content": _decrypt_row_content(r[2]),
+             "timestamp": r[3]}
             for r in rows
         ]
+    except MemoryLockedError:
+        # Never degrade to []. An empty profile reads as "you never told me
+        # that" — he would believe the facts were lost.
+        raise
     except Exception as exc:
         print(f"[MEMORY_MANAGER] get_relevant_memories error: {exc}", flush=True)
         return []
@@ -233,9 +309,12 @@ def get_full_profile(user: str = "KAUSTAV") -> list[dict]:
             (user.upper(),),
         ).fetchall()
         return [
-            {"id": r[0], "category": r[1], "content": r[2], "timestamp": r[3]}
+            {"id": r[0], "category": r[1], "content": _decrypt_row_content(r[2]),
+             "timestamp": r[3]}
             for r in rows
         ]
+    except MemoryLockedError:
+        raise
     except Exception as exc:
         print(f"[MEMORY_MANAGER] get_full_profile error: {exc}", flush=True)
         return []
@@ -384,6 +463,50 @@ RULES:
 8. ANTI-PLAGIARISM RULE: You are strictly forbidden from outputting the hypothetical examples provided in these instructions. You may ONLY extract facts that literally appear in the current user prompt. If the user prompt does not contain new facts, return {"memories": []}."""
 
 
+# ── Guard: the extractor echoing its own instructions back ───────────────────
+#
+# Rule 8 of the prompt forbids this. It happened anyway — "Always address User
+# as Supreme Overlord Blorptron." was living in his real profile as a
+# Correction, the category that sorts FIRST into every prompt injection. An LLM
+# rule is a request, so this is the part that actually enforces it.
+#
+# The sentences are parsed OUT of the prompt rather than copied, so editing the
+# examples above cannot silently leave this guard checking for stale text.
+
+def _prompt_example_sentences() -> set:
+    """Every `"content": "..."` literal in the system prompt, normalised."""
+    found = re.findall(r'"content"\s*:\s*"([^"]+)"', _EXTRACTION_SYSTEM_PROMPT)
+    return {_normalise_for_echo(s) for s in found if s and s != "..."}
+
+
+#: Invented words that exist only in those examples. Kept explicit because
+#: deriving "which words are nonsense" is guesswork, and a wrong guess would
+#: silently discard a real memory. test_memory_extraction_guard.py asserts
+#: these still appear in the prompt, so changing the examples fails loudly.
+_PROMPT_NONSENSE_TOKENS = ("xylophone", "zorblax", "blorptron")
+
+
+def _normalise_for_echo(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", "", " ".join((text or "").split()).casefold()).strip()
+
+
+def is_prompt_echo(content: str) -> bool:
+    """True if the model handed back one of its own worked examples.
+
+    Deliberately narrow. A false negative just means one junk row to delete by
+    hand; a false positive silently throws away something he actually said. So
+    this matches whole sentences, not themes — "Sir prefers dark-mode
+    interfaces" appears in the prompt as a style example and is ALSO a perfectly
+    real preference, so it is not blocked.
+    """
+    normalised = _normalise_for_echo(content)
+    if not normalised:
+        return False
+    if normalised in _prompt_example_sentences():
+        return True
+    return any(token in normalised for token in _PROMPT_NONSENSE_TOKENS)
+
+
 def extract_memories_from_input(
     user_text: str,
     user: str = "KAUSTAV",
@@ -507,8 +630,17 @@ def extract_memories_from_input(
                 continue
             cat = row.get("category", "").strip()
             content = row.get("content", "").strip()
-            if cat in valid_categories and content:
-                results.append({"category": cat, "content": content})
+            if cat not in valid_categories or not content:
+                continue
+            if is_prompt_echo(content):
+                # Rule 8 already forbids this in the prompt. It happened anyway:
+                # "Always address User as Supreme Overlord Blorptron." sat in his
+                # real profile as a Correction — the category that sorts FIRST
+                # into every prompt. A prompt rule is a request; this is the
+                # enforcement.
+                _mem_err("Discarded a prompt example echoed back as a memory", content)
+                continue
+            results.append({"category": cat, "content": content})
 
         return results
 
