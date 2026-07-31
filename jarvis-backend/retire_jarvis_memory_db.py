@@ -26,6 +26,15 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr, same hardening as main.py \ watchdog.py \
+# run_harnesses.py. This CLI moves a live database aside; a cp1252
+# UnicodeEncodeError on a status line must not be what stops it half-way.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 BACKEND_DIR = Path(__file__).resolve().parent
 OLD_DB = BACKEND_DIR / "jarvis_memory.db"
 ASIDE_DIR = BACKEND_DIR.parent.parent / "JARVIS-BACKUPS" / "plaintext-originals"

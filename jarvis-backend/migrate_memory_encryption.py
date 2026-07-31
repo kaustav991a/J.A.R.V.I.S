@@ -28,6 +28,15 @@ from pathlib import Path
 
 from modules import memory_crypto as mc
 
+# Force UTF-8 on stdout/stderr, same hardening as main.py \ watchdog.py \
+# run_harnesses.py. A migration run is long and destructive-adjacent; dying on a
+# '→' in a progress line under a piped/cp1252 stdout would abort it mid-verify.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 BACKEND_DIR = Path(__file__).resolve().parent
 DB_PATH = BACKEND_DIR / "jarvis_longterm.db"
 BACKUP_ROOT = BACKEND_DIR.parent.parent / "JARVIS-BACKUPS"

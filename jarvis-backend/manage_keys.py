@@ -19,6 +19,17 @@ import sys
 
 from modules import memory_crypto as mc
 
+# Force UTF-8 on stdout/stderr, same hardening as main.py \ watchdog.py \
+# run_harnesses.py. This CLI prints the recovery code inside a box of non-ASCII
+# rules, and it is the ONE print in the repo that can never be repeated — a
+# cp1252 UnicodeEncodeError here (piped stdout, service, Electron shell) would
+# kill the ceremony after the key exists but before the human can read the code.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 RULE = "=" * 72
 
 
