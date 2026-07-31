@@ -4,9 +4,11 @@
 > the old `ROADMAP_TO_FULL_JARVIS.md`, `RELIABILITY_HARDENING.md`,
 > `HAND_GESTURE_CONTROL_PLAN.md`, `UPGRADES_AND_FLUIDITY.md`, `MOBILE_PRESENCE_PLAN.md`,
 > and `LOGIN_REVAMP_PLAN.md` (all deleted 2026-07-19). The **test plan lives
-> separately** in `TEST_PLAN.md`. Last updated 2026-07-26.
+> separately** in `TEST_PLAN.md`. Last updated 2026-08-01 at `9c8c5eb`.
 >
-> **Working branch:** `feat/cloud-gateway`, fully pushed as of 2026-07-26 (see §7).
+> **Working branch:** `feat/cloud-gateway`, fully pushed as of 2026-08-01 (see §7).
+> Not merged to `main` — and `main` carries one commit this branch does not
+> (`8d0ea4f` "Add GNU General Public License v3"), so the merge is not a fast-forward.
 > **Deep code detail:** query the `codebase-memory-mcp` graph, don't re-read whole files.
 
 ---
@@ -39,7 +41,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.6** gesture vocab decision | ✅ DONE | §4 |
 | **G5.1** relative trackpad + accel + clutch + dwell right-click | ✅ DONE, live-gate owed | §3.3, §4 |
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
-| **Automatic test baseline** | ✅ **874 checks / 39 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted; the pytest-only tier A3 was closed 2026-07-30) | `TEST_PLAN.md` |
+| **Automatic test baseline** | ✅ **876 checks / 39 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted; the pytest-only tier A3 was closed 2026-07-30) | `TEST_PLAN.md` |
 | **Agentic core** (Tier C #12) | ✅ **ALL 5 PHASES DONE + LIVE-GATED 2026-07-26** (14/14 §23 rows) — pushed | §5 Tier C |
 | **Memory-at-rest encryption** (Tier C #11a) | ✅ **DONE + LIVE 2026-07-30** — DPAPI + scrypt recovery, AES-256-GCM fields; `jarvis_longterm.db` encrypted, `jarvis_memory.db` retired into it | §5 #11a |
 | **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
@@ -90,7 +92,9 @@ Root problem was reliability, not missing features (~90% was already built). Fix
   `modules/face_gate.py` (YuNet+SFace ONNX) owner gate on gesture frames; away
   soft-lock (`lock_overlay.py`, 6 s no-face+no-motion → all-monitor lock + screen off);
   tiered loop LOCKED 2 / IDLE 9 / ACTIVE 30 fps; HUD GESTURES button + live practice.
-- **G4** (`cc27156`, **unpushed**) — cursor arbiter (`gesture_arbiter.py`,
+- **G4** (`cc27156`, pushed — this row said "unpushed" until 2026-08-01; the commit is on
+  `origin/feat/cloud-gateway` and was verified with `git branch -a --contains`) — cursor
+  arbiter (`gesture_arbiter.py`,
   auto-suspends gestures during ghost_type/autopilot), guided 12-sample enroll
   (`enroll_face.py`), calibration JSON persistence (`gesture_calibration.py`),
   `GestureChip.jsx`. **Live camera gate owed** (see §7).
@@ -392,6 +396,22 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
       (`remember_fact`/wake-briefing, and sleep-wake `session_digest`), so it was a redirect, not
       a delete. Everything now lives encrypted in `jarvis_longterm.db`; the old file is kept in
       `JARVIS-BACKUPS\plaintext-originals\`.
+    - **cp1252 hardening of the three CLIs — ✅ DONE 2026-08-01 (`9c8c5eb`).** All three
+      shipped CLIs printed box rules and arrows but never reconfigured stdout, so a piped or
+      service stdout on a cp1252 locale killed them mid-run with `UnicodeEncodeError` — worst
+      in `manage_keys.py`, which prints the recovery code **shown once and never recoverable**.
+      Each now forces UTF-8 after its imports (the `watchdog.py` placement, **not** `main.py`'s:
+      all three open with `from __future__ import annotations`, which must stay the first
+      statement). Verified under a real `PYTHONIOENCODING=cp1252` shell with stdout piped — a
+      plain `print` of an arrow dies in that exact shell, and all three then ran their
+      read-only modes (`status`, `--report`, `--report`) to exit 0. This was the **third**
+      recurrence of the root cause (after `main.py`/`watchdog.py` and the harness runner's
+      children), so it is now guarded: `test_governance.py` drives every governance tier
+      through a `cp1252 / errors="strict"` stdout **and** self-checks that the stream really is
+      strict, so the guard cannot pass vacuously; a second test asserts `run_harnesses.py`
+      still sets `PYTHONIOENCODING=utf-8` *and* still passes `env=_CHILD_ENV` to the child.
+      Suite 874 → **876**. Deliberately NOT a repo-wide non-ASCII lint: 169 such prints across
+      44 files, so a hard gate would be switched off within a week.
     - **STILL OPEN (needs his sign-off before code):**
       (a) **Step 3 — `.env` secrets into the key store.** Deliberately last and separable.
       (b) **Cloud→desk sealed fact backlog.** The gap: turns the cloud brain answered while the
@@ -569,7 +589,8 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
     rewrite — only the runner survives), home/away presence moved out of "known
     limitations", and the dead `ROADMAP_TO_FULL_JARVIS.md` pointer now points here.
     `test_screen_reader.py` is a LIVE VLM script, excluded from the total on purpose.
-    REMAINING for a real pass: A2 (backend up), A3, and the manual §0–§22.
+    REMAINING for a real pass: A2 (backend up) and the manual §0–§22. **A3 no longer
+    exists** — closed 2026-07-30, see the update below.
 
     **Update 2026-07-26 — A3 settled, no pytest.** Measured with a stub `pytest` (nothing
     installed): the 24 pytest-gated tests would give ~12–17 green and 6–7 red, so the install
@@ -932,8 +953,9 @@ Harness: `test_partner_messaging.py` (34 checks, refusal-weighted). Live gate: T
 > every new item ships with (a) a self-running harness and (b) a one-line gate recipe added
 > below — the harness is what keeps the stack honest until that session.
 
-**PUSH STATUS 2026-07-30:** `origin/feat/cloud-gateway` is caught up with HEAD. Suite
-**874 checks / 39 harnesses, 0 failures**; 3 environmental non-greens (`test_ping` and
+**PUSH STATUS 2026-08-01:** `origin/feat/cloud-gateway` is caught up with HEAD at `9c8c5eb`
+(the cp1252 CLI hardening + governance guards, §11a). Suite
+**876 checks / 39 harnesses, 0 failures**; 3 environmental non-greens (`test_ping` and
 `test_ui_bridge_e2e` need the backend up; `test_screen_reader.py` is a live VLM script, not a
 counted harness). **The old "4 need pytest" line is gone — tier A3 was closed 2026-07-30**, the
 last three pytest-only files were converted, and `tests/` was retired.
@@ -1069,8 +1091,11 @@ script, not a counted harness.
 - **Engine/IO split:** `gesture_engine.py` stays pure (landmarks→intents, no I/O),
   unit-testable with synthetic sequences.
 - **Test convention:** self-running plain-python harnesses (`if __name__=="__main__"`),
-  **no pytest in the venv** (some existing tests are pytest-gated → blocked; decision
-  owed on `pip install pytest` — see `TEST_PLAN.md` §A3).
+  **no pytest in the venv — settled, not owed.** Decision taken 2026-07-30 (D#13): do NOT
+  install pytest; the last pytest-only files were converted and `tests/` was retired, so
+  every harness now runs inside the ONE gated command. `TEST_PLAN.md` §A3 is closed and
+  there is no pytest-gated tier left. The cost of installing would be a second command
+  `run_harnesses.py` cannot gate.
 - **LLM routing:** free cascade groq→gemini→openrouter→ollama; **Groq stays PRIMARY**
   for voice latency. Honest failure on total exhaustion (never fake success).
 - **Benglish / Latin script:** Bengali replies in roman letters, never বাংলা/Devanagari;

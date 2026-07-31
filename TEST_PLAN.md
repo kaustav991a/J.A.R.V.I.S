@@ -4,9 +4,10 @@
 > Electron build. Split into **PART A — Automatic** (Claude runs, no human/hardware)
 > and **PART B — Manual** (Kaustav runs: voice / camera / phone / GUI). Run PART A
 > after every change; run PART B once, right before Electron. Roadmap: `JARVIS_MASTER_ROADMAP.md`.
-> Last automatic baseline: **2026-07-30 — 874/874 green, 39/39 harnesses, ~29 s.**
-> (Was 787/32 on 2026-07-26. +5 harnesses from C#11a memory-at-rest encryption, +3 from the
-> D#13 pytest conversions; A3 is closed and `tests/` is retired.)
+> Last automatic baseline: **2026-08-01 — 876/876 green, 39/39 harnesses, ~21 s.**
+> (Was 874/39 on 2026-07-30; +2 checks from the cp1252 guards in `test_governance.py` —
+> no new harness. Was 787/32 on 2026-07-26: +5 harnesses from C#11a memory-at-rest
+> encryption, +3 from the D#13 pytest conversions; A3 is closed and `tests/` is retired.)
 > Legend: ✅ pass · ⚠️ partial · ❌ fail · ☐ not yet run.
 
 ---
