@@ -118,7 +118,19 @@ Step 1 ceremony).
    it is separable. Exposure while deferred is local-disk only: `.env` is gitignored and has
    never been tracked, and the five cleartext backup copies were shredded 2026-08-01.
 
-3. **One open call, his, not blocking:** the cloud cannot seal before it has the public half,
+3. **Partner-inbound, the "did she talk to you" feature — DESIGNED 2026-08-02, NOT BUILT.**
+   Spec is **roadmap §6.7**; read it before writing a line of it. Short version: it is *not*
+   transcript-on-demand. Butler discretion — record the **fact of contact + timing**, assess
+   urgency, answer "yes, around 3pm, nothing urgent", and withhold the **content** unless she
+   flagged it as needing him. **It supersedes the `summarize_partner_chat` scope in §6.6**,
+   and §6.6 now carries the open decision that comes with that: the built action answers the
+   same question the opposite way, so its fate (remove / second flag / deliberate override)
+   is Kaustav's to settle *before* §6.7 is built, not after.
+   Sits after `message_partner` (the outbound half, already done) and **after item 1** —
+   building it sooner means reordering ahead of the live gate, which pushes Electron and the
+   whole mobile arc later.
+
+4. **One open call, his, not blocking:** the cloud cannot seal before it has the public half,
    so after a Render restart with the PC off, facts are **not queued** — counted and logged
    loudly every time (`dropped_no_key`, surfaced in `/health`), never stored in plaintext.
    Closing it means putting the desk **public** key in Render's env, which crosses his

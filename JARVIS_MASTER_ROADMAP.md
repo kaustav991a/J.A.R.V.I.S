@@ -52,6 +52,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.7** robustness backlog | 🟡 backend 5/6 done (barge-in deferred — live audio); **frontend ALL DONE** (`0b5a0a4`) | §5 |
 | **Login/wake revamp (§6.1)** | ✅ COMPLETE (code) — contract, FaceAuthOverlay + **live feed + real matching phase** (`8ae9cc0`), BootSequence + wipe, IdentityPrompt; live-gate owed | §6.1 |
 | **Away→mobile presence (Track B probe)** | ✅ DONE (code) — ARP/TCP/ICMP ladder + asymmetric debounce + owner_notify routing; live-gate owed | §5 #7, §6.2 |
+| **Partner-inbound — butler discretion** | ⬜ **DESIGNED, NOT BUILT** (2026-08-02) — supersedes the `summarize_partner_chat` scope; sits after `message_partner` and after the §7 live-gate | §6.7 |
 | **Smart-home / IoT agent** | ⬜ MISSING | §5 |
 | **Guarded self-improvement loop** | ⬜ MISSING | §5 |
 | ~~Agentic core (Claude-Code-grade tool loop)~~ | ✅ **DONE** — this row said "MISSING" until 2026-07-30 while the same doc recorded all 5 phases live-gated; the duplicate row is kept struck-through so the contradiction is not re-introduced | §5 (Tier C #12) |
@@ -921,6 +922,14 @@ that fixes the channel-isolation blind spot: a partner's chat lives in her own s
 "what did my girlfriend tell you" used to fail honestly. Rows are read for one slot only.
 Nothing is ever pushed. Guests are refused before dispatch (neither action is on
 `VIP_GUEST_ALLOWED_ACTIONS`; the allowlist was not touched).
+> ⚠️ **SCOPE SUPERSEDED 2026-08-02 — see §6.7.** The transcript-on-demand direction this
+> action represents has been replaced by the **butler-discretion model**. The code is still
+> in the tree, still harnessed, still gated by TEST_PLAN §24 — this note supersedes the
+> *design direction*, not the history. **Open decision, Kaustav's:** §6.7 answers "did she
+> talk to you" with fact-of-contact and withholds content by default, which is the opposite
+> of what this action does on demand. Building §6.7 without deciding this action's fate
+> (remove / keep behind a second explicit flag / leave as the deliberate override) would
+> leave two contradictory answers to the same question. Decide before building, not after.
 
 **The logging is opt-in.** `modules/partner_log.py` writes a partner's INBOUND messages to
 `partner_messages` **inside the existing `jarvis_longterm.db`** (no new store) and only when
@@ -938,6 +947,56 @@ and when, but not a word of what she said. The opt-in flag is unchanged — off 
 nothing, not even the table.
 
 Harness: `test_partner_messaging.py` (34 checks, refusal-weighted). Live gate: TEST_PLAN §24.
+
+---
+
+### 6.7 Partner-inbound — the BUTLER DISCRETION model (NEW 2026-08-02, DESIGNED, **NOT BUILT**)
+
+The "did she talk to you?" capability. **Supersedes the `summarize_partner_chat` scope in
+§6.6** — this is not transcript-on-demand, and the difference is the whole point.
+
+A good butler says *"Madam rang, around three — nothing pressing."* He does not recite what
+was discussed. He would, instantly, if she had said it was urgent. That is the model.
+
+**The four beats**
+
+1. **Contact.** A partner messages JARVIS. He reads it — necessarily, both to help her and to
+   judge what follows — and records the **fact of contact + timing**: *"Mousumi contacted
+   ~3pm."* That record is the durable artefact.
+2. **Assess.** Routine, or genuinely needs the owner? Routine ⇒ the content stays **private**;
+   only fact-of-contact is retained. Urgent — she explicitly flags needing him, or it reads as
+   an emergency — ⇒ that **flag** is surfaced to the owner.
+3. **Answer.** Owner asks "did she talk to you?" ⇒ JARVIS answers the **fact**: *"Yes, around
+   3pm, nothing urgent"* / *"Yes, and she said it's important you call."* He does **not**
+   volunteer the **content** unless the urgency threshold was crossed.
+4. **Default to discretion.** Confirm contact, timing, urgency. Keep content private unless
+   it is genuinely necessary. Deliberately gentler than logging transcripts.
+
+**Honest caveats — build this knowingly**
+
+- **He still READS her message.** Discretion here means *read, assess, keep private* — NOT
+  *never read*. The content is **processed, then kept-private or dropped**, not
+  retained-readable. Anyone reasoning about this as "he doesn't see it" is reasoning about a
+  different feature.
+- **Still opt-in, default OFF** — a `JARVIS_LOG_PARTNER_CHATS`-style gate. Turning it on stays
+  a conscious owner choice, exactly as the raw store is today.
+- **The relational question does not go away.** Does she know JARVIS exists, and that the
+  owner can ask whether she made contact? The butler model very likely clears the bar that
+  transcript-logging did not — fact-of-contact is roughly what a housemate would observe
+  anyway — but it is **still the owner's call**, not a technical one, and not one this
+  document can settle for him.
+- **Urgency assessment is a judgement call made by an LLM.** It will sometimes be wrong in
+  both directions: a real emergency read as routine, or something private escalated because it
+  used urgent-sounding words. Whatever gets built needs to fail toward *surfacing the flag*
+  (a false alarm costs a phone call; a missed emergency costs more) while never surfacing
+  content on a mere false alarm.
+
+**Status: DESIGNED, NOT BUILT.** Sits *after* `message_partner` — the clean outbound half,
+already done — and both sit **after the §7 live-gate** in roadmap order.
+⚠️ **Tradeoff if you build it sooner:** that means reordering ahead of the live-gate session,
+and the live gate is what unblocks Electron launch scripts → Electron packaging → mobile. So
+building §6.7 first does not just delay the gate, it **pushes the whole mobile arc later**.
+Worth it only if he decides the capability outranks that chain.
 
 ---
 
