@@ -1,8 +1,14 @@
 # RESUME — pick up here
 
-> Written 2026-07-30, rewritten 2026-08-01 at the head of `feat/cloud-gateway`.
+> Written 2026-07-30, rewritten 2026-08-02 at the head of `feat/cloud-gateway`.
 > Read this first, then `JARVIS_MASTER_ROADMAP.md` (the single source of truth).
 > Delete or rewrite this file once the list below is empty — it is a bookmark, not a plan.
+
+## BOTH SIGN-OFF DECISIONS ARE CLOSED
+
+The encryption arc (C#11a) closed 2026-08-01. The **cloud→desk sealed-fact
+backlog closed 2026-08-02** — all three phases built, committed and pushed. What
+remains on this branch needs Kaustav's hands, not more code.
 
 ## THE ENCRYPTION ARC (C#11a) IS FULLY CLOSED
 
@@ -24,7 +30,7 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 | | |
 |---|---|
 | Branch | `feat/cloud-gateway`, level with origin, **not merged to `main`** |
-| Suite | **935 checks / 41 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
+| Suite | **968 checks / 42 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
 | Working tree | clean apart from the pre-existing untracked `jarvis-frontend/public/favicon.zip` |
 
 ⚠️ **The merge to `main` is not a fast-forward.** `main` carries one commit this branch does
@@ -42,17 +48,18 @@ The commits that got here:
 | `9c8c5eb` | cp1252: the three encryption CLIs hardened + two guards in `test_governance.py` |
 | `5093c37` | docs — six stale roadmap/TEST_PLAN rows reconciled against the tree at 876/39 |
 | `1b37558` | **C#11a Step 4 phases 1+2** — sealed-fact seal/unseal core + queue/bridge transport (NOT wired to live memory) |
+| `fee66a0` | **C#11a Step 4 phase 3** — the governed sink; the cloud→desk arc is CLOSED |
 
-## NEXT SESSION STARTS HERE — C#11a Step 4 **PHASE 3**
+## THE CLOUD→DESK SEALED-FACT BACKLOG IS COMPLETE
 
-Phases 1 and 2 are **DONE and COMMITTED** (`1b37558`, pushed). **Both design rulings are
-settled — do not reopen them:** transport is the **existing BRIDGE_SECRET WebSocket bridge**
-(no GitHub queue, no new service, no new secret on Render), and the desk private unseal key is
-**DPAPI-wrapped** through the C#11a chain (DPAPI → DEK → X25519 private; it was already sealed
-that way from the Step 1 ceremony, so nothing new was invented).
+All three phases built, committed and pushed. Nothing here is outstanding; do not reopen it
+looking for work. 92 checks across `test_fact_seal.py` (29), `test_fact_transport.py` (30) and
+`test_fact_governance.py` (33).
 
-What already works, harnessed, 59 checks across `test_fact_seal.py` (29) and
-`test_fact_transport.py` (30):
+Both design rulings held: transport is the **existing BRIDGE_SECRET WebSocket bridge** (no
+GitHub queue, no new service, no new secret on Render), and the desk private unseal key is
+**DPAPI-wrapped** through the C#11a chain (DPAPI → DEK → X25519 private, straight from the
+Step 1 ceremony).
 
 - PyNaCl `crypto_box_seal`, ephemeral keypair per record, so **Render cannot re-open its own
   queue** — asserted, not claimed.
@@ -60,32 +67,48 @@ What already works, harnessed, 59 checks across `test_fact_seal.py` (29) and
   `fact_key` handshake; records leave the outbox **on the ack, not the send**.
 - Two dedup layers: record-UUID ledger (`jarvis_fact_ledger.db`) stops a replay before it is
   unsealed; the C#11a `content_hash` blind index stops the same fact arriving as a NEW record.
-- Poison records dead-letter to `fact_quarantine/` **and are acked**, so one cannot wedge the
-  queue. A locked key store raises, acks nothing, quarantines nothing.
+- `modules/fact_sink.py` is the **only** way a drained fact reaches memory, and it runs
+  `governance_manager.check("remember_fact")` before the write, then hands off to
+  `memory_manager.extract_and_persist` — the same call `brain.extract_and_store_memory`
+  delegates to, minus that wrapper's catch-all (it would have silently eaten a backlog).
+- Poison AND refused records dead-letter to `fact_quarantine/` **and are acked**, so neither
+  can wedge the queue. A locked key store or a broken governance engine HOLDS instead: acks
+  nothing, quarantines nothing, retries on the next connect.
 
-### The one thing left: wire the drain into memory, THROUGH governance
+### Four things about it worth not re-deriving
 
-`modules/fact_drain.py` has a deliberately **empty sink**. Until one is installed, records are
-**HELD** — not acked, not ledgered, nothing written, nothing lost. Phase 3 installs it:
+- **`tier_allows` is deliberately NOT on the drain path**, and was left untouched. It answers
+  "may this CALLER INVOKE this action"; a memory extraction is not caller-invoked live or
+  drained (`main.py` fires it for every recognised identity, partners included, outside the
+  action pipeline). Applying it would have stored *less* than the live path, silently, for
+  exactly one person. The gate that does apply is fail-closed identity: `who` must be in the
+  roster derived from `partner_registry.SLOTS`, `tier` must be one this desk issues. A harness
+  test pins the VIP allowlist so this cannot drift.
+- **An unattended CONFIRM is refused AND its pending slot cancelled.** `check()` parks a
+  CONFIRM in a single slot before returning; leaving it there would let the next spoken "yes",
+  meant for something else, approve a write he never saw.
+- **Refusal reasons carry no payload values** — they are written verbatim into the unencrypted
+  dead-letter file, so lengths, types and field names only. The sealed record sits beside them
+  for whoever holds the key. Same rule for the ledger: a refused record's claimed `who` is the
+  field that just failed to check out, so it is not persisted.
+- **Drained rows carry NO provenance.** A drained fact is stored as `(Fact, ciphertext, WHO)` —
+  byte-for-byte indistinguishable from a live desk write. The `"cloud_fact_drain"` string
+  exists only in the payload handed to the governance check and is **not** persisted. If that
+  property is ever wanted, it needs an additive `source` column on `memories` threaded through
+  `add_memory` — a separate, reviewable change, not a tweak.
 
-1. Route each drained payload into the **existing `extract_and_store_memory`** (`brain.py:1144`
-   → `memory_manager.extract_and_persist`) so attribution is unchanged by construction.
-2. **The write must PASS the governance gate, not bypass it.** Draining a fact is a write.
-   Never weaken `tier_allows` / `governance_manager.check` to make this fit — the sealed record
-   already carries `who` and `tier` for exactly this reason, and the partner policy
-   (`JARVIS_LOG_PARTNER_CHATS`, nothing into Chroma) must apply on drain as it would live.
-3. ⚠️ **Known trap:** `extract_and_store_memory` swallows every exception on purpose ("never
-   let a background extraction crash surface to the user"). Correct for live turns, **wrong for
-   the drain** — a locked store would silently eat the backlog. Check `keys_ready()` up front,
-   or call a path that propagates.
-4. Harness must prove: a drained fact lands in memory **via the gated write path**; a malformed
-   one quarantines **while the rest of the batch still drains**.
+### Next in the queue, in order
 
-### Then, in order
+1. **THE LIVE-GATE DESK SESSION (roadmap §7) — this is what is next, and it is his.**
+   No code is blocking it. It needs his hands, a phone, and a second person for the
+   stranger-debounce row. It carries every owed gate: G4 + G5 + §6.1, §17.6–17.8 (backdoor
+   governance), §23 (agentic core), §24 (partner messaging). **That session is what blocks
+   Electron launch scripts, which block Electron packaging, which blocks mobile** — and it
+   gates the merge to `main`.
 
-1. **Step 3 — move `.env` secrets into the key store. ⏸ DEFERRED 2026-08-01 (Kaustav).**
-   **Not dropped — it has a trigger.** Resume it *after* the §7 live-gate desk session **and**
-   after the merge to `main`, because it rewrites every boot-time key read (cloud gateway, LLM
+2. **Step 3 — move `.env` secrets into the key store. ⏸ DEFERRED 2026-08-01 (Kaustav),
+   triggered by item 1.** **Not dropped.** Resume it *after* the §7 session **and** after the
+   merge to `main`, because it rewrites every boot-time key read (cloud gateway, LLM
    cascade, Telegram legs) and doing that underneath an un-gated tree adds variables to the one
    session that needs his hands. **Whoever reads this after the merge lands: this is due.**
    Context so it need not be re-derived: `.env` currently holds every API key in plaintext
@@ -95,15 +118,14 @@ What already works, harnessed, 59 checks across `test_fact_seal.py` (29) and
    it is separable. Exposure while deferred is local-disk only: `.env` is gitignored and has
    never been tracked, and the five cleartext backup copies were shredded 2026-08-01.
 
-2. **One open call, his, not blocking:** the cloud cannot seal before it has the public half,
+3. **One open call, his, not blocking:** the cloud cannot seal before it has the public half,
    so after a Render restart with the PC off, facts are **not queued** — counted and logged
    loudly every time (`dropped_no_key`, surfaced in `/health`), never stored in plaintext.
    Closing it means putting the desk **public** key in Render's env, which crosses his
    "no new config on Render" line. Left open deliberately.
 
-After those, unchanged from before: **the single live-gate desk session (roadmap §7)** — needs
-his hands, a phone, and a second person for the stranger-debounce row. Then Electron launch
-scripts, then the merge. That session is what blocks Electron packaging, which blocks mobile.
+⚠️ **The merge is still not a fast-forward** — see the `8d0ea4f` note above. Order is: §7 live
+gate → Electron launch scripts → merge to `main` → Step 3.
 
 ## Off-machine (only Kaustav can do these)
 
