@@ -55,6 +55,7 @@ import traceback
 from typing import Awaitable, Callable, Optional
 
 from modules.session_manager import OutputChannel
+from modules import fact_drain
 
 # ── Permission tiers (mirror action_engine / telegram_bot literals) ──────────
 _ADMIN_TIER = "admin"
@@ -171,6 +172,31 @@ async def _handle_cmd(ws, send_lock: asyncio.Lock, frame: dict) -> None:
                 pass
 
 
+async def _handle_facts(ws, send_lock: asyncio.Lock, frame: dict) -> None:
+    """Drain one sealed-fact batch and ack what was handled.
+
+    Run off the event loop: the drain opens sqlite and walks DPAPI -> DEK -> the
+    X25519 private half, all of it blocking. Anything not named in the ack stays
+    in the cloud outbox and comes back on the next connect.
+    """
+    try:
+        ack = await asyncio.to_thread(fact_drain.handle_cloud_frame, frame)
+    except Exception as e:  # noqa: BLE001
+        # A locked key store lands here. Nothing is acked, so the batch survives.
+        print(f"[BRIDGE] fact drain aborted ({e}) — the batch stays queued in the "
+              f"cloud.", flush=True)
+        return
+    if not ack:
+        return
+    try:
+        async with send_lock:
+            await ws.send(json.dumps(ack))
+    except Exception as e:  # noqa: BLE001
+        # The ack was lost, so the cloud will re-offer these. The ledger makes
+        # that a no-op rather than a double-store.
+        print(f"[BRIDGE] fact ack failed: {e}", flush=True)
+
+
 async def _session(url: str, secret: str) -> None:
     """One connected lifetime: authenticate, then pump command frames."""
     global _active_ws, _active_lock
@@ -186,6 +212,16 @@ async def _session(url: str, secret: str) -> None:
         print(f"[BRIDGE] ✅ Linked to cloud front door → {url}", flush=True)
         send_lock = asyncio.Lock()
         _active_ws, _active_lock = ws, send_lock
+        # C#11a Step 4: hand over the public half on EVERY connect. The cloud
+        # cannot seal a PC-off turn without it, and re-sending is what makes a
+        # rotated keypair need no coordination. Accepting it triggers the flush of
+        # whatever backlog built up while this desk was down.
+        try:
+            async with send_lock:
+                await ws.send(json.dumps(fact_drain.handshake_frame()))
+        except Exception as e:  # noqa: BLE001
+            print(f"[BRIDGE] fact-key handshake failed ({e}) — the cloud cannot queue "
+                  f"PC-off facts until the next connect.", flush=True)
         try:
             async for raw in ws:
                 try:
@@ -197,6 +233,9 @@ async def _session(url: str, secret: str) -> None:
                     # Fire-and-forget so long-running commands don't block the reader
                     # and multiple chats can be served concurrently.
                     asyncio.create_task(_handle_cmd(ws, send_lock, frame))
+                elif ftype == "facts":
+                    # Off the reader so a long drain cannot stall command frames.
+                    asyncio.create_task(_handle_facts(ws, send_lock, frame))
                 elif ftype == "welcome":
                     roster = frame.get("identities", "")
                     print(f"[BRIDGE] Cloud accepted the link. Identities: {roster}", flush=True)

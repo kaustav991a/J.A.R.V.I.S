@@ -23,6 +23,16 @@ jarvis-backend/action_chroma_db/
 jarvis-backend/jarvis_key.*
 jarvis-backend/jarvis_x25519.enc
 
+# --- Sealed-fact queue runtime state (C#11a Step 4) — never commit any of it.
+# fact_quarantine/  records that failed to open, kept for inspection
+# fact_outbox.jsonl the cloud-side spill: sealed envelopes awaiting the desk
+# fact_desk_key.json the cached desk PUBLIC half (not secret, but not ours to
+#                    publish either — it names the key his facts are sealed to)
+# The ledger is a *.db and already covered above. ---
+jarvis-backend/fact_quarantine/
+jarvis-backend/fact_outbox.jsonl
+jarvis-backend/fact_desk_key.json
+
 # --- Test/tooling caches ---
 jarvis-backend/.pytest_cache/
 

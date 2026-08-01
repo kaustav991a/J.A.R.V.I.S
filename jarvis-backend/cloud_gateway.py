@@ -71,6 +71,18 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+# C#11a Step 4 — the sealed fact outbox. The FIRST thing this gateway imports out
+# of modules/, and safe to: modules/__init__.py is a comment, and fact_outbox +
+# fact_seal reach for nothing but stdlib and pynacl. Guarded anyway — a deploy
+# whose requirements-cloud.txt predates pynacl must still answer Telegram, just
+# without queueing.
+try:
+    from modules import fact_outbox
+except Exception as _outbox_exc:  # noqa: BLE001
+    fact_outbox = None
+    print(f"[CLOUD] ⚠ sealed-fact outbox unavailable ({_outbox_exc}) — PC-off turns "
+          f"will NOT be queued for the desk.", flush=True)
+
 load_dotenv(override=True)
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -571,6 +583,7 @@ def _build_dispatcher():
         except Exception as e:  # noqa: BLE001
             print(f"[CLOUD] think() fault: {e}\n{traceback.format_exc()}", flush=True)
             reply = "I hit a fault reaching my reasoning core just now — try again in a moment."
+        _queue_offline_fact(ident, text, reply)
         await _send_chunked(message, reply)
 
     @router.message(F.text)
@@ -669,6 +682,24 @@ def _desk_connected() -> bool:
     return _desk_ws is not None
 
 
+def _queue_offline_fact(ident: dict, text: str, reply: str) -> None:
+    """Seal and queue a turn the desk never saw — BEFORE the reply goes out.
+
+    Ordered before the send on purpose (ruled 2026-08-01), and free to be: sealing
+    is local CPU and the outbox is in memory, so there is no network hop in front
+    of his answer. queue_fact never raises, so a lost fact can never cost him the
+    reply either.
+    """
+    if fact_outbox is None:
+        return
+    fact_outbox.queue_fact(
+        text,
+        who=(ident.get("who") or "KAUSTAV").upper(),
+        tier=ident.get("tier"),
+        reply=reply,
+    )
+
+
 def _ensure_bot():
     global _bot, _dp
     if _bot is None:
@@ -691,7 +722,10 @@ async def health():
             "mode": MODE, "identities": roster,
             "search": "tavily" if _TAVILY_KEY else "duckduckgo",
             "bridge": bool(BRIDGE_SECRET),
-            "desk_linked": _desk_connected()}
+            "desk_linked": _desk_connected(),
+            # Counts only — how deep the sealed backlog is and whether anything
+            # was lost. No fact, sealed or otherwise, is exposed here.
+            "fact_outbox": fact_outbox.stats() if fact_outbox is not None else None}
 
 
 @app.post(WEBHOOK_PATH)
@@ -764,6 +798,11 @@ async def _forward_to_desk(message, ident: dict, text: str) -> bool:
                     except Exception:  # noqa: BLE001
                         reply = ("The desk link stalled on that one — I couldn't get "
                                  "an answer through. Try again in a moment.")
+                    # A connected-but-wedged desk never stored this turn either, so
+                    # it needs queueing exactly like a PC-off turn. It ships on the
+                    # next handshake — this socket has already proved it is not
+                    # listening.
+                    _queue_offline_fact(ident, text, reply)
                     bot, _ = _ensure_bot()
                     for i in range(0, len(reply), 4000):
                         try:
@@ -821,6 +860,12 @@ async def desk_link(websocket: WebSocket):
         while True:
             frame = await websocket.receive_json()
             ftype = frame.get("type")
+            # C#11a Step 4: the desk's `fact_key` handshake and `fact_ack` are
+            # handled first and short-circuit — they carry no chat_id or req_id, and
+            # accepting the key is what triggers the flush of the sealed backlog.
+            if fact_outbox is not None and await fact_outbox.handle_desk_frame(
+                    frame, websocket.send_json):
+                continue
             chat_id = frame.get("chat_id")
             # Phase 4 item 7: reply correlation. A reply/done frame resolves the
             # request's watchdog; a notify (typing) frame is a heartbeat that

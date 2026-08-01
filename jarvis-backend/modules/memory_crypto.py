@@ -399,6 +399,40 @@ def rotate_recovery_code() -> str:
     return format_recovery_code(raw_code)
 
 
+def rotate_x25519_keypair() -> str:
+    """Issue a fresh cloud->desk fact keypair, sealed under the SAME DEK.
+
+    The DEK is not touched, so every encrypted row stays readable — this rotates
+    only the key the cloud seals facts *to*. The cost is bounded and known: any
+    fact already sealed to the previous public half and not yet drained can no
+    longer be opened, which is why the desk re-sends the new public half on its
+    next connect (the handshake). Rotating is therefore safe at any time the
+    queue is drained, and lossy only across an undrained outage.
+
+    Returns the new public half, base64, ready to hand to the cloud.
+    """
+    dek = load_dek()
+    priv = X25519PrivateKey.generate()
+    priv_raw = priv.private_bytes_raw()
+    pub_b64 = base64.b64encode(priv.public_key().public_bytes_raw()).decode("ascii")
+    _write_private(X25519_KEY_FILE, {
+        "version": FORMAT_VERSION,
+        "public": pub_b64,
+        "private_sealed": base64.b64encode(_seal(dek, priv_raw, b"x25519-private")).decode("ascii"),
+        "note": "rotated; facts sealed to the previous public half can no longer be opened",
+    })
+    return pub_b64
+
+
+def x25519_private_raw() -> bytes:
+    """The raw 32-byte private half, unwrapped through DPAPI -> DEK.
+
+    Exists so the sealed-fact queue can hand the key to libsodium without
+    re-implementing the unwrap chain. Never write the return value anywhere.
+    """
+    return load_x25519_private().private_bytes_raw()
+
+
 def load_x25519_private() -> X25519PrivateKey:
     payload = _read_json(X25519_KEY_FILE)
     raw = _open(load_dek(), base64.b64decode(payload["private_sealed"]), b"x25519-private")

@@ -153,6 +153,10 @@ pygame==2.6.1
 PyGetWindow==0.0.9
 Pygments==2.20.0
 PyMsgBox==2.0.1
+# C#11a Step 4 (cloud->desk sealed fact queue): libsodium crypto_box_seal.
+# Resolves to cffi/pycparser only — both already here for cryptography — so
+# the protobuf==6.33.6 / tensorflow / mediapipe balance below is untouched.
+PyNaCl==1.6.2
 pyparsing==3.3.2
 pyperclip==1.11.0
 PyPika==0.51.1

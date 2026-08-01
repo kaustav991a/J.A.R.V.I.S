@@ -7,3 +7,7 @@ fastapi==0.136.3
 uvicorn[standard]==0.47.0
 python-dotenv==1.2.2
 ddgs==9.14.4
+# C#11a Step 4: seals each PC-off turn to the desk's public half before queueing
+# it. Sealing needs the public key only, so the cloud can never re-open its own
+# queue. Vendored libsodium in a prebuilt wheel; pulls only cffi/pycparser.
+pynacl==1.6.2
