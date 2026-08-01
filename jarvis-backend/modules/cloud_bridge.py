@@ -55,7 +55,7 @@ import traceback
 from typing import Awaitable, Callable, Optional
 
 from modules.session_manager import OutputChannel
-from modules import fact_drain
+from modules import fact_drain, fact_sink
 
 # ── Permission tiers (mirror action_engine / telegram_bot literals) ──────────
 _ADMIN_TIER = "admin"
@@ -212,6 +212,13 @@ async def _session(url: str, secret: str) -> None:
         print(f"[BRIDGE] ✅ Linked to cloud front door → {url}", flush=True)
         send_lock = asyncio.Lock()
         _active_ws, _active_lock = ws, send_lock
+        # C#11a Step 4 Phase 3: install the GOVERNED sink before the handshake
+        # below, because accepting the key is what triggers the cloud's flush. A
+        # drain with no sink holds the batch — safe, but holding a backlog we
+        # could have drained is a bug, not a safety net. This is the only place
+        # a sink is ever installed, which is what makes "no ungoverned path into
+        # memory" a property of the wiring rather than a promise.
+        fact_sink.install()
         # C#11a Step 4: hand over the public half on EVERY connect. The cloud
         # cannot seal a PC-off turn without it, and re-sending is what makes a
         # rotated keypair need no coordination. Accepting it triggers the flush of

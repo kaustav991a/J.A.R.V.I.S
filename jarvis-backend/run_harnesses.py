@@ -87,6 +87,7 @@ HARNESSES = [
     "test_cursor_overlay.py",
     "test_enroll_face.py",
     "test_face_gate.py",
+    "test_fact_governance.py",
     "test_fact_seal.py",
     "test_fact_transport.py",
     "test_failure_detection.py",

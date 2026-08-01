@@ -1,10 +1,12 @@
 """C#11a Step 4 — the desk side: drain the sealed backlog on connect.
 
     desk connects  ->  hands over its public half  ->  cloud flushes
-    each record: seen before?  ->  ack, do nothing
-                 opens?        ->  hand to the sink, record it, ack
-                 does not?     ->  quarantine, record it, ack (dead-lettered)
-    key store locked           ->  raise, ack NOTHING, leave the batch alone
+    each record: seen before?   ->  ack, do nothing
+                 opens?         ->  hand to the sink, record it, ack
+                 does not?      ->  quarantine, record it, ack (dead-lettered)
+                 sink REFUSES?  ->  quarantine, record it, ack (dead-lettered)
+                 sink FAULTS?   ->  ack nothing, hold it for the next connect
+    key store locked            ->  raise, ack NOTHING, leave the batch alone
 
 Two layers of idempotency, and they answer different questions:
 
@@ -18,10 +20,18 @@ Two layers of idempotency, and they answer different questions:
 Redelivery is normal here, not exceptional: the cloud re-offers anything it did
 not see an ack for, which is how a bridge that drops mid-batch resumes.
 
-The sink is deliberately not wired yet. Draining a fact into memory is a WRITE
-and has to go through the governed path — that is Phase 3. Until a sink is
-installed, records are HELD: not acked, not ledgered, so nothing is lost and
-nothing is written. An un-acked record is still sitting in the cloud outbox.
+Draining a fact into memory is a WRITE and has to go through the governed path,
+so this module cannot reach memory by itself and does not try: it imports no
+store, and `modules/fact_sink.py` — which runs the governance gate — is the only
+thing ever handed to `set_sink()`. Until a sink is installed, records are HELD:
+not acked, not ledgered, so nothing is lost and nothing is written. An un-acked
+record is still sitting in the cloud outbox.
+
+A sink has two ways to say no, and they are not the same event. A
+`fact_seal.FactSealError` is a VERDICT about the record (malformed past the
+seal, or governance refused it): dead-letter it, ledger it, ack it — keeping it
+for inspection, and never offering it again. Any other exception is a FAULT on
+our side (a locked key store, a busy database): ack nothing, so it comes back.
 """
 
 from __future__ import annotations
@@ -167,6 +177,21 @@ def drain_records(records) -> dict:
 
         try:
             accepted = _sink(payload)
+        except fact_seal.FactSealError as exc:
+            # The sink REFUSED the record itself — governance said no, or the
+            # payload was malformed past the seal. That is a verdict, not a
+            # fault, so it takes the same road as a record that would not open:
+            # dead-lettered, ledgered, acked. Kept, and never written.
+            # No `who` on this row on purpose: a refused record's claimed
+            # identity is exactly the field that failed to check out, and the
+            # ledger is not encrypted. Accepted rows carry theirs; this one does
+            # not get to write an unvetted string to disk.
+            fact_seal.quarantine(envelope, f"sink refused: {exc}")
+            result["quarantined"] += 1
+            if isinstance(record_id, str) and record_id:
+                _record(record_id, QUARANTINED)
+                result["ack"].append(record_id)
+            continue
         except Exception as exc:  # noqa: BLE001
             # A store fault is not a record fault. Leave it unacked and unledgered
             # so the next connect tries again — losing a fact to a transient
