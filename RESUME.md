@@ -24,7 +24,7 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 | | |
 |---|---|
 | Branch | `feat/cloud-gateway`, level with origin, **not merged to `main`** |
-| Suite | **876 checks / 39 harnesses, 0 failed** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
+| Suite | **935 checks / 41 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
 | Working tree | clean apart from the pre-existing untracked `jarvis-frontend/public/favicon.zip` |
 
 ⚠️ **The merge to `main` is not a fast-forward.** `main` carries one commit this branch does
@@ -41,30 +41,65 @@ The commits that got here:
 | `c2d1a8c` + `dc84a88` | docs — C#11a folded into the roadmap, stale rows fixed, resume state |
 | `9c8c5eb` | cp1252: the three encryption CLIs hardened + two guards in `test_governance.py` |
 | `5093c37` | docs — six stale roadmap/TEST_PLAN rows reconciled against the tree at 876/39 |
+| `1b37558` | **C#11a Step 4 phases 1+2** — sealed-fact seal/unseal core + queue/bridge transport (NOT wired to live memory) |
 
-## NEXT SESSION STARTS HERE — two decisions, both Kaustav's
+## NEXT SESSION STARTS HERE — C#11a Step 4 **PHASE 3**
 
-**No code on either until he rules.** These are the real resume point; everything else on the
-board is either done or waiting on a desk session. Priority order:
+Phases 1 and 2 are **DONE and COMMITTED** (`1b37558`, pushed). **Both design rulings are
+settled — do not reopen them:** transport is the **existing BRIDGE_SECRET WebSocket bridge**
+(no GitHub queue, no new service, no new secret on Render), and the desk private unseal key is
+**DPAPI-wrapped** through the C#11a chain (DPAPI → DEK → X25519 private; it was already sealed
+that way from the Step 1 ceremony, so nothing new was invented).
 
-1. **Step 3 — move `.env` secrets into the key store.**
-   Context so it need not be re-derived: `.env` currently holds every API key in plaintext,
+What already works, harnessed, 59 checks across `test_fact_seal.py` (29) and
+`test_fact_transport.py` (30):
+
+- PyNaCl `crypto_box_seal`, ephemeral keypair per record, so **Render cannot re-open its own
+  queue** — asserted, not claimed.
+- Cloud seals + queues each PC-off turn **before** replying; outbox flushes on the desk's
+  `fact_key` handshake; records leave the outbox **on the ack, not the send**.
+- Two dedup layers: record-UUID ledger (`jarvis_fact_ledger.db`) stops a replay before it is
+  unsealed; the C#11a `content_hash` blind index stops the same fact arriving as a NEW record.
+- Poison records dead-letter to `fact_quarantine/` **and are acked**, so one cannot wedge the
+  queue. A locked key store raises, acks nothing, quarantines nothing.
+
+### The one thing left: wire the drain into memory, THROUGH governance
+
+`modules/fact_drain.py` has a deliberately **empty sink**. Until one is installed, records are
+**HELD** — not acked, not ledgered, nothing written, nothing lost. Phase 3 installs it:
+
+1. Route each drained payload into the **existing `extract_and_store_memory`** (`brain.py:1144`
+   → `memory_manager.extract_and_persist`) so attribution is unchanged by construction.
+2. **The write must PASS the governance gate, not bypass it.** Draining a fact is a write.
+   Never weaken `tier_allows` / `governance_manager.check` to make this fit — the sealed record
+   already carries `who` and `tier` for exactly this reason, and the partner policy
+   (`JARVIS_LOG_PARTNER_CHATS`, nothing into Chroma) must apply on drain as it would live.
+3. ⚠️ **Known trap:** `extract_and_store_memory` swallows every exception on purpose ("never
+   let a background extraction crash surface to the user"). Correct for live turns, **wrong for
+   the drain** — a locked store would silently eat the backlog. Check `keys_ready()` up front,
+   or call a path that propagates.
+4. Harness must prove: a drained fact lands in memory **via the gated write path**; a malformed
+   one quarantines **while the rest of the batch still drains**.
+
+### Then, in order
+
+1. **Step 3 — move `.env` secrets into the key store. ⏸ DEFERRED 2026-08-01 (Kaustav).**
+   **Not dropped — it has a trigger.** Resume it *after* the §7 live-gate desk session **and**
+   after the merge to `main`, because it rewrites every boot-time key read (cloud gateway, LLM
+   cascade, Telegram legs) and doing that underneath an un-gated tree adds variables to the one
+   session that needs his hands. **Whoever reads this after the merge lands: this is due.**
+   Context so it need not be re-derived: `.env` currently holds every API key in plaintext
+   (37 keys — `GROQ_API_KEYS`, `TELEGRAM_BOT_TOKEN`, `BRIDGE_SECRET`, `TAVILY_API_KEY`, …),
    and the key store that would protect them already exists and is proven (DEK + DPAPI wrap +
    verified recovery code). It was **deliberately sequenced last** in the C#11a plan because
-   it is separable and touches every subsystem that reads a key at boot — the cloud gateway,
-   the LLM cascade, the Telegram legs. The decision he owes is *whether* to do it, not how.
+   it is separable. Exposure while deferred is local-disk only: `.env` is gitignored and has
+   never been tracked, and the five cleartext backup copies were shredded 2026-08-01.
 
-2. **Cloud→desk sealed fact backlog.**
-   The gap: turns the cloud brain answers while the desk is OFF are **never persisted** —
-   `cloud_gateway.py` stores nothing and Render's filesystem is ephemeral. The level-3 bridge
-   already forwards correctly when the desk is UP (`b125b9a`), so this is only about the
-   PC-off window. **Design is complete in roadmap §11a** and needs no new thinking: desk owns
-   an X25519 keypair (**already generated in the Step 1 ceremony** — only the public half goes
-   to Render), the cloud seals each turn and queues it *before* replying, one file per record
-   in a private GitHub repo (durable, zero new infra, the PAT already exists), and the desk
-   drains on boot/reconnect and feeds each turn through the **existing**
-   `extract_and_store_memory` so attribution is unchanged by construction. Idempotent by UUID;
-   filenames carry no metadata.
+2. **One open call, his, not blocking:** the cloud cannot seal before it has the public half,
+   so after a Render restart with the PC off, facts are **not queued** — counted and logged
+   loudly every time (`dropped_no_key`, surfaced in `/health`), never stored in plaintext.
+   Closing it means putting the desk **public** key in Render's env, which crosses his
+   "no new config on Render" line. Left open deliberately.
 
 After those, unchanged from before: **the single live-gate desk session (roadmap §7)** — needs
 his hands, a phone, and a second person for the stranger-debounce row. Then Electron launch
@@ -106,6 +141,11 @@ scripts, then the merge. That session is what blocks Electron packaging, which b
   `memories.content_hash`. Any future encrypted column needs the same treatment.
 - **A crashed harness reports `0 failed`.** `run_harnesses.py` counts `broken` separately, so
   the line to trust is `N/N harnesses green`, never `0 failed` on its own.
+- **Two sealed-queue invariants that look like bugs if you forget them.** (1) A record leaves
+  the cloud outbox **on the ack, never on the send** — that is what makes a socket dying
+  mid-batch cost a redelivery instead of a fact, and redelivery is normal, not exceptional.
+  (2) An **empty sink means HELD**, not dropped: nothing acked, nothing ledgered. If facts seem
+  to vanish, check whether a sink is installed before suspecting the transport.
 - **A CLI that prompts cannot be answered from the PowerShell tool** — its stdin is the null
   device, so a piped `y` never arrives and the prompt declines. `manage_keys.py export-key`
   failed safe that way ("Cancelled. Nothing was changed.") before succeeding under a shell
