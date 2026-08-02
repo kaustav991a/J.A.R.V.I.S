@@ -1,32 +1,41 @@
 # RESUME — pick up here
 
-> Written 2026-07-30, rewritten 2026-08-02 at the head of `feat/cloud-gateway`.
+> Written 2026-07-30, rewritten 2026-08-02 at the head of `feat/cloud-gateway` (`eff7540`).
 > Read this first, then `JARVIS_MASTER_ROADMAP.md` (the single source of truth).
-> Delete or rewrite this file once the list below is empty — it is a bookmark, not a plan.
+> Structure: **state summary → pending checklist → post-Electron backlog → reference detail.**
+> Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
+> bookmark, not a plan.
 
 ## NEXT SESSION STARTS HERE — pick a number
 
-**Where things stand:** HEAD `b80f4b2`, level with `origin/feat/cloud-gateway`, **not merged
-to `main`**. Suite **1061 checks / 46 harnesses green** in the working tree (1035/45 counting
+**Where things stand:** HEAD `eff7540`, level with `origin/feat/cloud-gateway`, **not merged
+to `main`**. Suite **1077 checks / 46 harnesses green** in the working tree (1051/45 counting
 only committed files — the difference is the uncommitted provenance arc). Done and pushed:
 **both halves of partner-messaging** (`message_partner` outbound + the `partner_contact_status`
-butler inbound), **Chroma at-rest encryption**, and the **cloud→desk sealed-fact arc**.
+butler inbound, now with **two-layer urgency detection** on Kaustav's real Benglish term list),
+**Chroma at-rest encryption**, and the **cloud→desk sealed-fact arc**.
 
-**The keyboard-buildable feature queue is essentially drained.** The next real move is a
-hardware desk session (item 5), not more building. Items 1–4 are cleanup that can be cleared
-from a chair; item 5 is the actual thing standing between here and Electron.
+**The keyboard-buildable feature queue is drained.** The next real move is a hardware desk
+session (item 5), not more building. Items 1, 2 and 4 are cleanup that can be cleared from a
+chair; item 5 is the actual thing standing between here and Electron.
 
 ### CLEANUP — committed but incomplete. Clear these first.
 
-**1. Run the source-tag migration.** `migrate_memory_source.py` has **never been run**. All
-**58 rows** in `jarvis_longterm.db` are still `source=NULL`, so the provenance feature is
+> **Remaining, in order: 1 → 2 → 4.** Item 3 is ✅ done (`eff7540`) and is kept below because
+> its reasoning and its one open thread — the term list is Kaustav's to keep refining — still
+> matter. Original numbering preserved so older notes still point at the right thing.
+
+**1. Run the source-tag migration. ⚠️ NEEDS A FULL-TANK SESSION — start it first, never last.**
+It touches **every row** in the memory store, so it wants a fresh context and an operator with
+time to read the survey output before answering anything. `migrate_memory_source.py` has
+**never been run**, and all **58 rows** in `jarvis_longterm.db` are still `source=NULL`, so the
+provenance feature is
 **inert** — it ships, it reads, and it distinguishes nothing. The script is non-destructive
 and backup-first: survey (read-only, refuses if anything looks wrong) → fresh verified backup
 via `backup_memory.py` → backfill to `desk` → verify. Every existing row predates the
 cloud→desk drain entirely, so `desk` is an airtight inference, not a guess. **Done when:**
 58/58 rows tagged and all 58 still decrypt. Note this also commits the arc that has been
 sitting in the working tree — see the `Working tree` row below for exactly which files.
-*(Do not start this at the end of a long session. It touches every row in the memory store.)*
 
 **2. Flip `JARVIS_LOG_CONTACT_EVENTS` to default OFF.** One line, in
 `modules/contact_events.py`. It currently defaults **ON**, which breaks this project's
@@ -36,11 +45,47 @@ commissioned; but that reasoning is mine, and the discipline is yours. Flipping 
 `partner_contact_status` answers *"I can't tell you either way"* until the flag is set in
 `.env`, which is exactly how `JARVIS_LOG_PARTNER_CHATS` already behaves.
 
-**3. Correct the Benglish urgency terms — YOURS, hand-edit.** `partner_contact.URGENT_TERMS`
-currently guesses at how Mousumi writes: `joruri`, `taratari`, `bipod`, `dorkar`, `ekhuni`,
-`phone koro`, `bari esho`. I have no way to check these. A wrong list fails in the direction
-that matters — a real "please come now" that reads as routine. Correct it against how she
-actually types.
+**3. ✅ IMPLEMENTED 2026-08-02 (`eff7540`) — Benglish urgency terms + two-layer detection.**
+Kaustav's real list replaced the guess, and the detection grew a second layer.
+
+- **The list lives in one editable place:** `partner_contact.URGENT_TERM_GROUPS`, a dict of
+  labelled groups (direct · speed · call or come · distress · need) holding his terms verbatim.
+  **Both layers derive from it** — the keyword regex is compiled from it, the classifier's
+  prompt is built from it with the group labels included. Edit the dict and both follow;
+  a harness moves the dict and proves the prompt moves with it. `URGENT_TERMS` survives as the
+  flattened de-duplicated view because that is the name callers already import.
+- **Two layers, `urgent = keyword OR semantic`.** Layer 1 (exact, whole-word) runs first and
+  short-circuits — a hit is final, so no model call and no tokens. Layer 2 is one small LLM turn
+  judging by MEANING, which exists because romanised Bengali has no settled spelling and
+  inflects freely (the exact list matches `bipod`, misses `bipode porechi`; matches `joldi`,
+  misses `joldii`). The semantic layer can only RAISE the flag, never lower one, and an
+  unreachable or babbling model yields *no verdict* rather than False — so layer 2 failing
+  degrades the butler to exactly its `ba12cc1` behaviour. `JARVIS_URGENCY_SEMANTIC` (default ON)
+  switches it off.
+- **Live-checked, not only harnessed** (the `f84f644` lesson — a fake model proves wiring, not
+  usefulness): against the real provider chain, all six keyword-missing cases were caught by
+  meaning and four routine messages were not flagged.
+- Unchanged and re-pinned: only the boolean crosses into the store, `contact_events.record()`
+  still has no parameter content could arrive through, still admin-only via `tier_allows`,
+  still encrypted at rest. `test_partner_contact.py` 25 → **41 checks**.
+
+> ⚠️ **THE TERM LIST IS KAUSTAV'S, AND STAYS OPEN — this is not a closed item.** Nobody else
+> should rewrite it. It is meant to be refined over time as he notices how Mousumi actually
+> writes, and refining it is *worth doing*, because the two layers are not equals: **the keyword
+> layer is reliable and the semantic layer is best-effort.** Layer 2 needs a model, a network
+> and a provider that has not drained its quota; layer 1 needs none of those and cannot drift
+> between model versions. So every term he adds is a phrase moved out of "probably caught" into
+> "always caught". Add terms as he sees them — that is maintenance, not rework.
+>
+> **Known, and his call:** `dekho` and `asho` are high-frequency in casual Bengali, so they will
+> flag on ordinary chat (`ei chobi ta dekho koto sundor` flags, and by design the model cannot
+> veto a keyword hit). If that noise makes the bit meaningless, the fix is a **hints-only
+> group** — terms sent to the model but not exact-matched — deliberately not built unasked,
+> because it weakens the layer that survives an outage.
+>
+> The **English escalation terms were kept** in two clearly-marked separate groups, though his
+> list contains none: dropping them would make a plain "please call me, I need you" read as
+> routine, the one direction §6.7 forbids. One edit from gone if he wants his list alone.
 
 **4. Confirm the content-override model — YOURS, a decision, no code.**
 `summarize_partner_chat` survives alongside the butler, so the shipped behaviour is *discreet
@@ -55,13 +100,56 @@ small follow-up.
 desk day. **No code is blocking it.** It needs your hands (gestures), a second device (Track B
 presence), and a second person (stranger debounce), plus the C#11a lock check, the phone
 smoke-tests, and TEST_PLAN §0–§22. It carries every owed gate at once: G4 + G5 + §6.1,
-§17.6–17.8 (backdoor governance), §23 (agentic core), §24 (partner messaging). **It blocks
-Electron launch scripts → Electron packaging → mobile, and it gates the merge to `main`.**
+§17.6–17.8 (backdoor governance), §23 (agentic core), §24 (partner messaging).
 Detail in `### Next in the queue, in order` below.
+
+**The road from that session to a shipped `.exe`, in order:**
+
+| # | Step | Notes |
+|---|---|---|
+| 5 | **§7 live-gate desk session** | Hardware day. Your hands, a second device, a second person. Gates everything below. |
+| 6 | **Thorough pre-Electron code-review pass** | A deliberate sweep of the whole tree *before* it gets packaged and handed a version number. Cheapest moment to fix anything found; the most expensive moment is after an `.exe` is in use. |
+| 7 | **Restore Electron config + package** | Electron launch scripts (still TODO — needs you present), then hash-router/config restored, then packaging. |
+| 8 | **Merge to `main`** | ⚠️ Not a fast-forward — see the `8d0ea4f` note below. |
+| 9 | **Ship the `.exe`** | The end of this arc. |
 
 > **Not on the menu yet:** Step 3 (`.env` secrets into the key store) is deliberately
 > sequenced *after* item 5 **and** after the merge to `main`. Deferred, not dropped — see the
 > queue detail below.
+
+## POST-ELECTRON UPGRADE BACKLOG (build one at a time, after shipping the `.exe`)
+
+**Nothing here starts before the `.exe` ships.** Ordered by value, highest first. This list is
+the answer to "what next" once the desktop arc is closed — it is not a queue to start nibbling
+at early.
+
+> **THE DISCIPLINE, WHICH IS THE POINT:** build these **ONE AT A TIME, FULLY, WITH PROVEN
+> PROPERTIES** — the same standard as everything already shipped here. A property is *proven*
+> when a harness drives the real code and asserts on observable behaviour, not on source text
+> (the `f84f644` lesson), and when a live gate has confirmed it works outside the harness. Half
+> of two features is worth less than one finished feature, and an unproven feature is worth
+> less than no feature, because it is trusted and wrong.
+
+| # | Upgrade | Why it is where it is |
+|---|---|---|
+| 1 | **Mobile app (Flutter)** — JARVIS on the phone: push notifications, tap-to-confirm for CONFIRM-tier actions, presence, voice. | The highest-value thing left. It is the **clean answer to phone-reach** — the capability WhatsApp integration was wanted for, with **no ToS risk and no ban risk**. Built with Claude Code, then maintained by JARVIS itself. |
+| 2 | **Tiered brain** — free Groq cascade stays the default, frontier model on demand for genuinely hard reasoning turns. | Raises the ceiling without raising the floor cost. **Unlocks the code-companion** and materially better md→HTML / Figma output. Needs a routing rule for what counts as "hard", not just a second key. |
+| 3 | **GPU vision acceleration** — move YOLO / face-recognition off the CPU onto the RX 7600 via DirectML or Vulkan. | Lifts every perception feature at once on **hardware already owned**. ⚠️ **Measure first** — baseline the current CPU frame budget before touching a backend, or there is no way to tell whether it helped. |
+| 4 | **Smart-home (#8)** — local-control devices + Home Assistant + a `home_agent`. | Cheap to build against a working Home Assistant, and the **emotional payoff per line of code is the highest on this list**. Gated on having the gear. |
+| 5 | **MCP client for the agentic core** — consume external tool servers (Figma, GitHub, …), governance-gated like every other action. | Big capability-per-effort ratio: each server added is a new skill for free. Every tool call must pass `governance_manager` — an external tool server is not a trusted caller. |
+| 6 | **Guarded self-improvement (#10)** — propose → branch → test → PR. **Never auto-merge.** | The most interesting item and the one most able to do damage, hence below the safer wins. The guard rails *are* the feature: a human reviews every PR, and the harness suite is the gate it cannot talk its way past. |
+| 7 | **Security cameras + Frigate** — dedicated always-on vision, separate from the desk camera. | Real value, but it is a hardware purchase and a second always-on service. Waits for the gear. |
+| 8 | **Presence state machine (#9)** — real working / away / asleep states rather than inferred-per-call. | Last because Track B presence already covers the case that mattered; this is refinement, and it is most useful *after* the mobile app is feeding it real signals. |
+
+**AVOID — settled, not open questions:**
+
+- **WhatsApp integration** — unofficial libraries risk the **account being banned**, and the
+  account is the thing being protected. Item 1 above is the sanctioned replacement.
+- **WhatsApp calls** — there is no API for it. Not a hard problem; an impossible one.
+- **Removing or weakening confirm gates** — the CONFIRM tier is why an approved partner send
+  cannot fire twice and why a drained cloud fact cannot write unattended. Convenience is never
+  a reason to remove one; if a gate is annoying, the fix is a faster way to *answer* it (see
+  item 1's tap-to-confirm).
 
 ## BOTH SIGN-OFF DECISIONS ARE CLOSED
 
@@ -116,9 +204,9 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 
 | | |
 |---|---|
-| Branch | `feat/cloud-gateway` at **`b80f4b2`**, level with origin (`rev-list ...HEAD` = `0 0`), **not merged to `main`** |
-| Suite | **1035 checks / 45 harnesses green, 0 failed, 0 broken** at this commit — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
-| Working tree | carries **unrelated uncommitted work that is not part of this commit**: an additive `source` column on `memories` (`memory_manager.py`, `modules/fact_sink.py`, `test_fact_governance.py`, untracked `migrate_memory_source.py` + `test_memory_source.py`, a `.gitignore` hunk) plus the pre-existing untracked `jarvis-frontend/public/favicon.zip`. With that work in the tree the suite reads **1061 checks / 46 harnesses**. It was left staged-out deliberately — whoever owns it should commit it separately. `run_harnesses.py` carries one line from each arc, so each commit stages only its own line. ⚠️ **It is code-complete but migration-incomplete:** the `source` column exists in the live `jarvis_longterm.db` (added by the boot-time metadata-only `ALTER`) but all 58 rows are NULL — `migrate_memory_source.py` has never been run. Reads still behave (`_row_source()` maps NULL to `desk`), and no failed-migration sidecar is on disk. |
+| Branch | `feat/cloud-gateway` at **`eff7540`**, level with origin (`rev-list ...HEAD` = `0 0`), **not merged to `main`** |
+| Suite | **1051 checks / 45 harnesses green, 0 failed, 0 broken** at this commit — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
+| Working tree | carries **unrelated uncommitted work that is not part of this commit**: an additive `source` column on `memories` (`memory_manager.py`, `modules/fact_sink.py`, `test_fact_governance.py`, untracked `migrate_memory_source.py` + `test_memory_source.py`, a `.gitignore` hunk) plus the pre-existing untracked `jarvis-frontend/public/favicon.zip`. With that work in the tree the suite reads **1077 checks / 46 harnesses**. It was left staged-out deliberately — whoever owns it should commit it separately. `run_harnesses.py` carries one line from each arc, so each commit stages only its own line. ⚠️ **It is code-complete but migration-incomplete:** the `source` column exists in the live `jarvis_longterm.db` (added by the boot-time metadata-only `ALTER`) but all 58 rows are NULL — `migrate_memory_source.py` has never been run. Reads still behave (`_row_source()` maps NULL to `desk`), and no failed-migration sidecar is on disk. |
 
 Note for anyone running the suite from a **bare checkout** (fresh clone, or a `git worktree`):
 `test_memory_store_encryption.py`, `test_store_retirement.py` and `test_gmail_agent.py` fail
@@ -146,6 +234,7 @@ The commits that got here:
 | `f84f644` | **`message_partner` actually works** — the approved send was refused by its own confirm prompt on 100% of attempts; + `test_partner_send_gate.py`, the first partner harness that asserts on transport call count instead of source text |
 | `c173c2e` | **the Chroma RAG store is encrypted at rest** — text + sensitive metadata sealed with the existing C#11a field encryption, vector left plaintext for search; blind-index companions so `where` filters and the re-ingest delete still work against randomised ciphertext; + `test_chroma_crypto.py` (15) |
 | `ba12cc1` | **the butler — `partner_contact_status`, the INBOUND half of partner-messaging** — "did she message" answered from a content-free encrypted contact-event store; admin-only via `tier_allows`; urgency is a write-time boolean; + `test_partner_contact.py` (25) |
+| `eff7540` | **the butler reads urgency in the Benglish she actually writes** — Kaustav's real term list in one editable dict (`URGENT_TERM_GROUPS`) that BOTH layers derive from, plus a second semantic layer that judges by meaning so inflections and re-spellings are caught; OR-combined so the model can only raise a flag, never lower one; live-checked against the real provider chain; `test_partner_contact.py` 25 → 41 |
 
 ## THE CLOUD→DESK SEALED-FACT BACKLOG IS COMPLETE
 
@@ -203,9 +292,9 @@ Step 1 ceremony).
 1. **THE LIVE-GATE DESK SESSION (roadmap §7) — this is what is next, and it is his.**
    No code is blocking it. It needs his hands, a phone, and a second person for the
    stranger-debounce row. It carries every owed gate: G4 + G5 + §6.1, §17.6–17.8 (backdoor
-   governance), §23 (agentic core), §24 (partner messaging). **That session is what blocks
-   Electron launch scripts, which block Electron packaging, which blocks mobile** — and it
-   gates the merge to `main`.
+   governance), §23 (agentic core), §24 (partner messaging). **It gates the whole road to the
+   `.exe`** — pre-Electron code review, launch scripts, packaging, the merge to `main` — and,
+   through that, everything in the post-Electron backlog. Full sequence in the table at the top.
 
 2. **Step 3 — move `.env` secrets into the key store. ⏸ DEFERRED 2026-08-01 (Kaustav),
    triggered by item 1.** **Not dropped.** Resume it *after* the §7 session **and** after the
@@ -281,9 +370,9 @@ Step 1 ceremony).
    - **Fails honestly.** Recording off, or a keystore that will not open, says so — never "no,
      she didn't message", which would be a confident answer manufactured by a failure.
    - **No migration** — new table, created on first write.
-   - Harness `test_partner_contact.py` (25 checks). The leak checks push a rare marker word
-     through the real write path and scan the raw db file for it, rather than asserting the
-     code looks careful.
+   - Harness `test_partner_contact.py` (25 checks at `ba12cc1`, **41 after `eff7540`**). The
+     leak checks push a rare marker word through the real write path and scan the raw db file
+     for it, rather than asserting the code looks careful.
 
    **`summarize_partner_chat` survives as the deliberate explicit override** — "what did she
    say" is a different, more explicit request than "did she call". That settles the §6.6 open
@@ -294,9 +383,9 @@ Step 1 ceremony).
    did not — fact-of-contact is roughly what a housemate would observe — but no document
    settles it for him.
 
-   ⚠️ **The Benglish urgency terms are a guess** (`joruri`, `taratari`, `bipod`, `dorkar`,
-   `ekhuni`, `phone koro`, `bari esho`, in `partner_contact.URGENT_TERMS`). Kaustav knows how
-   she actually writes; that list wants his correction, not his tolerance.
+   ✅ **The Benglish urgency terms are no longer a guess** — Kaustav's real list landed in
+   `eff7540`, along with a second semantic layer. See checklist item 3 at the top; the list
+   itself stays his to keep refining.
 
    Unchanged and pinned against regression: `extract_and_store_memory` still runs for every
    recognised caller ahead of the partner gate, and `partner_log` still honours its own opt-in
@@ -309,7 +398,8 @@ Step 1 ceremony).
    "no new config on Render" line. Left open deliberately.
 
 ⚠️ **The merge is still not a fast-forward** — see the `8d0ea4f` note above. Order is: §7 live
-gate → Electron launch scripts → merge to `main` → Step 3.
+gate → pre-Electron code review → restore Electron config + package → merge to `main` → ship
+the `.exe` → Step 3 → then the post-Electron backlog, one item at a time.
 
 ## Off-machine (only Kaustav can do these)
 
