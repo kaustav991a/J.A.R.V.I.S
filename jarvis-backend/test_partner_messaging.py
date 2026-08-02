@@ -214,6 +214,29 @@ def test_stage_mark_clears_on_delivery_and_on_denial():
     assert g.refusal("gf", "hello") == partner_messaging.REFUSED_DENIED  # deny wins
 
 
+def test_an_approved_send_is_not_refused_by_its_own_stage_mark():
+    """The prompt marks the send in flight; approving it must then be allowed.
+
+    Without `approved=True` the owner's 'yes' was refused as a duplicate of the
+    prompt it was answering, and nothing was ever delivered. A denial still
+    outranks the approval — see test_a_denial_beats_an_approval below.
+    """
+    g = partner_messaging.SendGuard(clock=Clock())
+    g.note_staged("gf", "I'll be late")
+    assert g.refusal("gf", "I'll be late") == partner_messaging.REFUSED_DUPLICATE
+    assert g.refusal("gf", "I'll be late", approved=True) is None
+    # the mark is retired, so a failed delivery does not block a fresh proposal
+    assert g.refusal("gf", "I'll be late") is None
+
+
+def test_a_denial_beats_an_approval():
+    """approved=True skips the duplicate arm, never the denial arm."""
+    g = partner_messaging.SendGuard(clock=Clock())
+    g.note_staged("gf", "I'll be late")
+    g.note_denied("gf", "I'll be late")
+    assert g.refusal("gf", "I'll be late", approved=True) == partner_messaging.REFUSED_DENIED
+
+
 def test_stage_mark_expires_with_the_governance_window():
     c = Clock()
     g = partner_messaging.SendGuard(stage_ttl_s=90.0, clock=c)

@@ -115,8 +115,21 @@ class SendGuard:
 
     # -- checking ----------------------------------------------------------- #
 
-    def refusal(self, slot: str, body: str) -> str | None:
-        """Why this send must not proceed, or None if it may."""
+    def refusal(self, slot: str, body: str, *, approved: bool = False) -> str | None:
+        """Why this send must not proceed, or None if it may.
+
+        `approved=True` means the owner has just authorised THIS staging and the
+        engine is running the post-confirmation invocation. The in-flight mark
+        belongs to the prompt he answered, so it must not refuse its own
+        execution — that is one approval being spent, not a second staging.
+
+        The DENIED half is checked in both modes, and deliberately first: a
+        refusal outranks an approval sentinel, which is what makes a denial
+        terminal on every route including the post-approval one.
+
+        Defaults to False so any caller that does not know about approval gets
+        the strict behaviour.
+        """
         k = _key(slot, body)
         now = self._clock()
 
@@ -125,6 +138,12 @@ class SendGuard:
             if (now - t) <= self.deny_ttl_s:
                 return REFUSED_DENIED
             self._denied.pop(k, None)
+
+        if approved:
+            # The prompt has been answered either way; retire its mark so a
+            # failed delivery does not block a fresh proposal for 90 seconds.
+            self._staged.pop(k, None)
+            return None
 
         t = self._staged.get(k)
         if t is not None:

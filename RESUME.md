@@ -30,8 +30,8 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 | | |
 |---|---|
 | Branch | `feat/cloud-gateway`, level with origin, **not merged to `main`** |
-| Suite | **968 checks / 42 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
-| Working tree | clean apart from the pre-existing untracked `jarvis-frontend/public/favicon.zip` |
+| Suite | **994 checks / 43 harnesses green, 0 failed, 0 broken** at this commit — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
+| Working tree | carries **unrelated uncommitted work that is not part of this commit**: an additive `source` column on `memories` (`memory_manager.py`, `modules/fact_sink.py`, `test_fact_governance.py`, untracked `migrate_memory_source.py` + `test_memory_source.py`, a `.gitignore` hunk) plus the pre-existing untracked `jarvis-frontend/public/favicon.zip`. With that work in the tree the suite reads **1020 checks / 44 harnesses**. It was left staged-out deliberately — whoever owns it should commit it separately. |
 
 ⚠️ **The merge to `main` is not a fast-forward.** `main` carries one commit this branch does
 not: **`8d0ea4f`** — *"Add GNU General Public License v3"*, 2026-07-27, one file, `LICENSE`,
@@ -49,6 +49,7 @@ The commits that got here:
 | `5093c37` | docs — six stale roadmap/TEST_PLAN rows reconciled against the tree at 876/39 |
 | `1b37558` | **C#11a Step 4 phases 1+2** — sealed-fact seal/unseal core + queue/bridge transport (NOT wired to live memory) |
 | `fee66a0` | **C#11a Step 4 phase 3** — the governed sink; the cloud→desk arc is CLOSED |
+| *(this one)* | **`message_partner` actually works** — the approved send was refused by its own confirm prompt on 100% of attempts; + `test_partner_send_gate.py`, the first partner harness that asserts on transport call count instead of source text |
 
 ## THE CLOUD→DESK SEALED-FACT BACKLOG IS COMPLETE
 
@@ -118,7 +119,32 @@ Step 1 ceremony).
    it is separable. Exposure while deferred is local-disk only: `.env` is gitignored and has
    never been tracked, and the five cleartext backup copies were shredded 2026-08-01.
 
-3. **Partner-inbound, the "did she talk to you" feature — DESIGNED 2026-08-02, NOT BUILT.**
+3. **Partner-outbound (`message_partner`) — DONE 2026-08-02, and it had never worked.**
+   The action shipped 2026-07-26 in `3185cd8` and was recorded here as "already done". It was
+   not: **every approved send was refused as a duplicate of its own confirmation prompt**, on
+   100% of attempts. Building the CONFIRM read-back calls `guard.note_staged(slot, body)` so one
+   LLM reply cannot raise two prompts; the approval then re-enters the engine with the same
+   `(slot, body)` and the duplicate arm refused it — `already_awaiting_approval`, nothing
+   delivered. `STAGE_TTL_S` and governance's `_CONFIRM_TTL_SECS` are **both 90 s**, so there was
+   never a window in which an approval was still valid and the mark had expired.
+
+   Fixed by threading `governance_bypass` into the guard as `approved=`: the duplicate arm is
+   skipped for the post-approval invocation and the mark retired, while **the denial arm runs in
+   both modes and is checked first** — an approval sentinel can never overturn a refusal.
+
+   **Why 34 passing tests missed it, and the lesson that generalises:** `SendGuard` is correct in
+   isolation, and every wiring test matched *source text* (`assert "guard.refusal(" in body`)
+   rather than running the sequence. A grep-level test cannot tell "refused" from "nothing was
+   sent". `test_partner_send_gate.py` (24 checks) now drives the real governance manager, real
+   registry, real engine and main.py's real read-back — compiled out of main.py's source with
+   `ast` so a drift in main's body fails the harness instead of passing a substring check — and
+   asserts on **transport call count**. Recipient allowlist re-proven by execution at the same
+   time: 16 hostile shapes (raw ids as str/int/negative/unicode-digit/nested, unknown names,
+   vague words) all reach the transport zero times.
+
+   Still owed: the **§24 live gate**, which would have caught this on the first real send.
+
+4. **Partner-inbound, the "did she talk to you" feature — DESIGNED 2026-08-02, NOT BUILT.**
    Spec is **roadmap §6.7**; read it before writing a line of it. Short version: it is *not*
    transcript-on-demand. Butler discretion — record the **fact of contact + timing**, assess
    urgency, answer "yes, around 3pm, nothing urgent", and withhold the **content** unless she
@@ -126,11 +152,24 @@ Step 1 ceremony).
    and §6.6 now carries the open decision that comes with that: the built action answers the
    same question the opposite way, so its fate (remove / second flag / deliberate override)
    is Kaustav's to settle *before* §6.7 is built, not after.
-   Sits after `message_partner` (the outbound half, already done) and **after item 1** —
-   building it sooner means reordering ahead of the live gate, which pushes Electron and the
-   whole mobile arc later.
+   Sits after `message_partner` (item 3 — the outbound half, now genuinely done) and **after
+   item 1** — building it sooner means reordering ahead of the live gate, which pushes Electron
+   and the whole mobile arc later.
 
-4. **One open call, his, not blocking:** the cloud cannot seal before it has the public half,
+   **Two decisions ride with it, both his, neither technical:**
+   - **Extraction gating.** `JARVIS_LOG_PARTNER_CHATS` (currently **ON** in his `.env`) governs
+     the **raw verbatim store ONLY**. Her per-user memory extraction
+     (`brain.extract_and_store_memory`, keyed `user='MOUSUMI'`) has always run for every
+     recognised caller and keeps running either way — that is what makes JARVIS know her warmly
+     in her own chat. So "off" means *no transcript*, **not** *nothing retained*. §6.7's own
+     gate must be a separate, explicit flag, default OFF, and must not be conflated with this
+     one.
+   - **"Does she know?"** Whether Mousumi knows JARVIS exists and that Kaustav can ask whether
+     she made contact. The butler model very likely clears the bar that transcript-logging did
+     not — fact-of-contact is roughly what a housemate would observe — but it stays **his call**,
+     and no document settles it for him.
+
+5. **One open call, his, not blocking:** the cloud cannot seal before it has the public half,
    so after a Render restart with the PC off, facts are **not queued** — counted and logged
    loudly every time (`dropped_no_key`, surfaced in `/health`), never stored in plaintext.
    Closing it means putting the desk **public** key in Render's env, which crosses his

@@ -740,7 +740,9 @@ class ActionEngine:
             return await self._telegram_send_file(target)
         # ── Partner messaging: owner-approved send + owner-only pull ──────────
         elif action == "message_partner":
-            return await self._message_partner(target)
+            # governance_bypass is set only by main.py's post-approval re-invoke,
+            # so it is the one honest signal that THIS staging was authorised.
+            return await self._message_partner(target, approved=governance_bypass)
         elif action == "summarize_partner_chat":
             return await asyncio.to_thread(self._summarize_partner_chat, target)
         # --- Phase 8: HUD Widget Toggles (handled by main.py, not action_engine) ---
@@ -1543,7 +1545,7 @@ class ActionEngine:
             return f"Sent '{os.path.basename(path)}' to your Telegram, sir."
         return f"I was unable to deliver '{os.path.basename(path)}' to Telegram, sir."
 
-    async def _message_partner(self, target) -> str:
+    async def _message_partner(self, target, *, approved: bool = False) -> str:
         """Send an OWNER-APPROVED message to a registered partner.
 
         By the time this runs the owner has already authorised the exact text:
@@ -1573,7 +1575,12 @@ class ActionEngine:
         # A declined send is terminal, and a send already awaiting approval is
         # not staged twice. Checked HERE because every route (voice, HUD, phone,
         # a second action in the same reply) funnels through the engine.
-        refusal = partner_messaging.guard.refusal(res.slot, body)
+        #
+        # `approved` carries main.py's post-confirmation re-invoke. Without it
+        # the in-flight mark left by the CONFIRM prompt refuses the very send
+        # that prompt authorised, and NOTHING is ever delivered. The denial
+        # check runs in both modes — approval cannot overturn a refusal.
+        refusal = partner_messaging.guard.refusal(res.slot, body, approved=approved)
         if refusal:
             print(f"[PARTNER] ⛔ send refused — {refusal} ({res.slot})", flush=True)
             return partner_messaging.refusal_text(refusal, res.display_name)
