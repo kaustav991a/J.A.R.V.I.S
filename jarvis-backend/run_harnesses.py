@@ -107,6 +107,7 @@ HARNESSES = [
     "test_memory_extraction_guard.py",
     "test_memory_store_encryption.py",
     "test_owner_notify.py",
+    "test_partner_contact.py",
     "test_partner_messaging.py",
     "test_partner_send_gate.py",
     "test_presence_probe.py",

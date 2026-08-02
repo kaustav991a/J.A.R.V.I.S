@@ -745,6 +745,8 @@ class ActionEngine:
             return await self._message_partner(target, approved=governance_bypass)
         elif action == "summarize_partner_chat":
             return await asyncio.to_thread(self._summarize_partner_chat, target)
+        elif action == "partner_contact_status":
+            return await asyncio.to_thread(self._partner_contact_status, target)
         # --- Phase 8: HUD Widget Toggles (handled by main.py, not action_engine) ---
         elif action in ("open_sticky_note", "close_sticky_note", "open_browser", "close_browser", "open_calculator", "close_calculator"):
             return f"UI_WIDGET_TOGGLE:{action}"
@@ -1632,6 +1634,27 @@ class ActionEngine:
             return (f"Nothing logged from {display} yet, Sir. Partner-chat "
                     "logging is on, but she hasn't messaged me since.")
         return partner_messaging.format_history(rows, display, partner_log.DISCLOSURE)
+
+    def _partner_contact_status(self, target) -> str:
+        """"Did she talk to you?" — fact of contact, timing, urgency. NO CONTENT.
+
+        The butler answer (roadmap §6.7). ADMIN-ONLY by the same mechanism as
+        `summarize_partner_chat`: absent from `VIP_GUEST_ALLOWED_ACTIONS`, so
+        `tier_allows` refuses a guest with the TIER_BLOCKED sentinel before any
+        dispatch. A partner therefore cannot ask about the other partner.
+
+        This method is deliberately a one-liner. All of the behaviour lives in
+        `partner_contact.status_for` so the harness can drive it for real
+        against a temp database, rather than asserting on the text of this file
+        — the `f84f644` lesson, where grep-level partner tests passed while the
+        feature had never once worked.
+
+        It reads `contact_metadata()`, which does not SELECT her message body.
+        Discretion here is a property of the query, not of the phrasing.
+        """
+        from modules import partner_contact
+
+        return partner_contact.status_for(target)
 
     def _workspace_write(self, target: str) -> str:
         """

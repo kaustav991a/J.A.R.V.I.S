@@ -371,7 +371,15 @@ def test_an_unregistered_slot_is_unreachable_even_by_its_real_name():
 
 
 def test_resolve_has_no_callers_outside_the_partner_path():
-    """The boundary widens the moment a fifth caller appears. Pin it."""
+    """The boundary widens the moment a fifth caller appears. Pin it.
+
+    `partner_contact.py` was added 2026-08-02 (the butler answer, roadmap §6.7).
+    It is a READ-ONLY caller: it resolves a name to decide whose contact record
+    to look at, and has no path to the send transport at all. The next check
+    enforces that distinction, so this list staying short keeps meaning what it
+    was written to mean — resolve() picks a RECIPIENT, and every new caller has
+    to be looked at.
+    """
     root = pathlib.Path(__file__).resolve().parent
     callers = set()
     for p in list(root.glob("*.py")) + list((root / "modules").glob("*.py")):
@@ -379,8 +387,23 @@ def test_resolve_has_no_callers_outside_the_partner_path():
             continue
         if "partner_registry.resolve(" in p.read_text(encoding="utf-8"):
             callers.add(p.name)
-    assert callers == {"action_engine.py", "main.py"}, \
+    assert callers == {"action_engine.py", "main.py", "partner_contact.py"}, \
         f"partner_registry.resolve() gained a caller: {sorted(callers)}"
+
+
+def test_the_butler_read_path_cannot_reach_the_send_transport():
+    """A read-only caller of resolve() must stay read-only.
+
+    Without this, `partner_contact.py` could grow a send over time and the
+    caller-list check above would keep passing — it would already be on the
+    allowlist.
+    """
+    src = (pathlib.Path(__file__).resolve().parent / "modules"
+           / "partner_contact.py").read_text(encoding="utf-8")
+    for forbidden in ("telegram_bot", "send_text_to_partner", "ACTION_SEND",
+                      "message_partner"):
+        assert forbidden not in src, \
+            f"the butler read path reached for {forbidden!r} — it must not send"
 
 
 # ══ GATE 5 — the read-back is the artifact, not a description of it ══════════

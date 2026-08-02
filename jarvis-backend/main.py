@@ -66,6 +66,7 @@ from modules import backdoor_gate  # --- /api/backdoor is a biometric bypass: ga
 from modules import partner_messaging  # --- propose-and-approve partner sends ---
 from modules import partner_registry   # --- name → registered partner id, allowlist only ---
 from modules import partner_log        # --- opt-in partner-chat store (flag default OFF) ---
+from modules import partner_contact    # --- butler: content-free contact events (§6.7) ---
 # Phase 6 – Governance Engine
 from governance_manager import governance_manager
 from socket_manager import register_client, unregister_client, send_ui_update, set_app_loop
@@ -1358,6 +1359,18 @@ async def run_remote_command(command_text: str, channel) -> None:
                 ))
             except Exception as e:  # noqa: BLE001 — logging never breaks her chat
                 print(f"[PARTNER-LOG] skipped: {e}", flush=True)
+
+            # ── Contact event (butler, roadmap §6.7) ──────────────────────
+            # Deliberately NOT inside the partner-log flag: this store holds
+            # who/when/urgent and NO content, so "did she call" stays
+            # answerable on a machine where keeping her words is switched off.
+            # Coupling the two would mean the discreet answer required the
+            # invasive store to be on, which is backwards.
+            try:
+                asyncio.create_task(asyncio.to_thread(
+                    partner_contact.note_contact, _pslot, command_text))
+            except Exception as e:  # noqa: BLE001 — same rule, never break her chat
+                print(f"[CONTACT-EVENTS] skipped: {e}", flush=True)
 
     # ── Phase 4 item 3: session-scoped governance confirmation (remote) ─────
     # If THIS channel was asked to authorise a CONFIRM-tier action, a short
