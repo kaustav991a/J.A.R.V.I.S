@@ -58,8 +58,8 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 | | |
 |---|---|
 | Branch | `feat/cloud-gateway`, level with origin, **not merged to `main`** |
-| Suite | **1009 checks / 44 harnesses green, 0 failed, 0 broken** at this commit — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
-| Working tree | carries **unrelated uncommitted work that is not part of this commit**: an additive `source` column on `memories` (`memory_manager.py`, `modules/fact_sink.py`, `test_fact_governance.py`, untracked `migrate_memory_source.py` + `test_memory_source.py`, a `.gitignore` hunk) plus the pre-existing untracked `jarvis-frontend/public/favicon.zip`. With that work in the tree the suite reads **1035 checks / 45 harnesses**. It was left staged-out deliberately — whoever owns it should commit it separately. `run_harnesses.py` carries one line from each arc, so only the `test_chroma_crypto.py` line was staged. |
+| Suite | **1035 checks / 45 harnesses green, 0 failed, 0 broken** at this commit — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
+| Working tree | carries **unrelated uncommitted work that is not part of this commit**: an additive `source` column on `memories` (`memory_manager.py`, `modules/fact_sink.py`, `test_fact_governance.py`, untracked `migrate_memory_source.py` + `test_memory_source.py`, a `.gitignore` hunk) plus the pre-existing untracked `jarvis-frontend/public/favicon.zip`. With that work in the tree the suite reads **1061 checks / 46 harnesses**. It was left staged-out deliberately — whoever owns it should commit it separately. `run_harnesses.py` carries one line from each arc, so each commit stages only its own line. ⚠️ **It is code-complete but migration-incomplete:** the `source` column exists in the live `jarvis_longterm.db` (added by the boot-time metadata-only `ALTER`) but all 58 rows are NULL — `migrate_memory_source.py` has never been run. Reads still behave (`_row_source()` maps NULL to `desk`), and no failed-migration sidecar is on disk. |
 
 Note for anyone running the suite from a **bare checkout** (fresh clone, or a `git worktree`):
 `test_memory_store_encryption.py`, `test_store_retirement.py` and `test_gmail_agent.py` fail
@@ -86,6 +86,7 @@ The commits that got here:
 | `fee66a0` | **C#11a Step 4 phase 3** — the governed sink; the cloud→desk arc is CLOSED |
 | `f84f644` | **`message_partner` actually works** — the approved send was refused by its own confirm prompt on 100% of attempts; + `test_partner_send_gate.py`, the first partner harness that asserts on transport call count instead of source text |
 | `c173c2e` | **the Chroma RAG store is encrypted at rest** — text + sensitive metadata sealed with the existing C#11a field encryption, vector left plaintext for search; blind-index companions so `where` filters and the re-ingest delete still work against randomised ciphertext; + `test_chroma_crypto.py` (15) |
+| `ba12cc1` | **the butler — `partner_contact_status`, the INBOUND half of partner-messaging** — "did she message" answered from a content-free encrypted contact-event store; admin-only via `tier_allows`; urgency is a write-time boolean; + `test_partner_contact.py` (25) |
 
 ## THE CLOUD→DESK SEALED-FACT BACKLOG IS COMPLETE
 
@@ -156,6 +157,7 @@ Step 1 ceremony).
    never been tracked, and the five cleartext backup copies were shredded 2026-08-01.
 
 3. **Partner-outbound (`message_partner`) — DONE 2026-08-02, and it had never worked.**
+   *(With item 4 below now shipped, **both halves of partner-messaging are complete**.)*
    The action shipped 2026-07-26 in `3185cd8` and was recorded here as "already done". It was
    not: **every approved send was refused as a duplicate of its own confirmation prompt**, on
    100% of attempts. Building the CONFIRM read-back calls `guard.note_staged(slot, body)` so one
@@ -180,30 +182,62 @@ Step 1 ceremony).
 
    Still owed: the **§24 live gate**, which would have caught this on the first real send.
 
-4. **Partner-inbound, the "did she talk to you" feature — DESIGNED 2026-08-02, NOT BUILT.**
-   Spec is **roadmap §6.7**; read it before writing a line of it. Short version: it is *not*
-   transcript-on-demand. Butler discretion — record the **fact of contact + timing**, assess
-   urgency, answer "yes, around 3pm, nothing urgent", and withhold the **content** unless she
-   flagged it as needing him. **It supersedes the `summarize_partner_chat` scope in §6.6**,
-   and §6.6 now carries the open decision that comes with that: the built action answers the
-   same question the opposite way, so its fate (remove / second flag / deliberate override)
-   is Kaustav's to settle *before* §6.7 is built, not after.
-   Sits after `message_partner` (item 3 — the outbound half, now genuinely done) and **after
-   item 1** — building it sooner means reordering ahead of the live gate, which pushes Electron
-   and the whole mobile arc later.
+4. **Partner-inbound, the "did she talk to you" feature — ✅ DONE 2026-08-02 (`ba12cc1`).**
+   **Both halves of partner-messaging are now complete: outbound `message_partner` (item 3)
+   and inbound `partner_contact_status`.** Spec was roadmap §6.7; it is built to it.
 
-   **Two decisions ride with it, both his, neither technical:**
-   - **Extraction gating.** `JARVIS_LOG_PARTNER_CHATS` (currently **ON** in his `.env`) governs
-     the **raw verbatim store ONLY**. Her per-user memory extraction
-     (`brain.extract_and_store_memory`, keyed `user='MOUSUMI'`) has always run for every
-     recognised caller and keeps running either way — that is what makes JARVIS know her warmly
-     in her own chat. So "off" means *no transcript*, **not** *nothing retained*. §6.7's own
-     gate must be a separate, explicit flag, default OFF, and must not be conflated with this
-     one.
-   - **"Does she know?"** Whether Mousumi knows JARVIS exists and that Kaustav can ask whether
-     she made contact. The butler model very likely clears the bar that transcript-logging did
-     not — fact-of-contact is roughly what a housemate would observe — but it stays **his call**,
-     and no document settles it for him.
+   `partner_contact_status` (ADMIN-ONLY, AUTO in governance) answers *"Yes, Sir — Mousumi
+   messaged around 3pm. Nothing urgent."* / *"…and twice more since; she flagged it as
+   important. You may want to call her."* / *"No, Sir — nothing from Mousumi today. Last I
+   heard from her was yesterday, around 12:30pm."* Times are deliberately coarse — "at
+   15:12:44" is surveillance phrasing.
+
+   **The design evolved during the build, and the change is the interesting part.** The first
+   version scanned her logged messages and withheld the content when answering. It worked and
+   was green, but discretion was a property of the *formatting code* — one careless refactor
+   from leaking, and it coupled the gentle capability to the invasive one, since it needed
+   verbatim transcript logging switched on to work at all. The shipped version instead reads
+   `modules/contact_events.py`, a store whose schema is `(id, partner_key, partner_slot,
+   timestamp, urgency)` — **no content column, and `record()` has no parameter through which
+   content could arrive.** The urgency scan runs upstream in memory and only its boolean
+   crosses the boundary. Content-free by construction beat scan-then-withhold.
+
+   - **Encrypted at rest**, C#11a keystore, no new dependency: `partner_slot`, `timestamp` AND
+     `urgency` are all sealed. More than `partner_log` seals, deliberately — there the secret
+     is the message body and the timestamp is incidental; here the timestamp *is* the payload,
+     since the table's whole content is a contact pattern. Ordering comes from the
+     autoincrement `id` (insertion order is already chronological), which is what makes
+     encrypting the timestamp affordable. `partner_key` is a keyed blind index, because
+     randomised ciphertext can never satisfy `WHERE partner_slot = ?`.
+   - **`JARVIS_LOG_CONTACT_EVENTS` (default ON)** is independent of `JARVIS_LOG_PARTNER_CHATS`
+     on purpose — that is the entire reason for the separate store, so the discreet answer
+     works on a machine where keeping her words is off. A harness pins that the write did not
+     drift behind the transcript flag. ⚠️ Note the default differs from `JARVIS_LOG_PARTNER_CHATS`:
+     that flag guards a third party's *words* and is default-OFF; this one records only that a
+     message arrived. **If Kaustav wants it default-OFF instead, it is a one-line change.**
+   - **Fails honestly.** Recording off, or a keystore that will not open, says so — never "no,
+     she didn't message", which would be a confident answer manufactured by a failure.
+   - **No migration** — new table, created on first write.
+   - Harness `test_partner_contact.py` (25 checks). The leak checks push a rare marker word
+     through the real write path and scan the raw db file for it, rather than asserting the
+     code looks careful.
+
+   **`summarize_partner_chat` survives as the deliberate explicit override** — "what did she
+   say" is a different, more explicit request than "did she call". That settles the §6.6 open
+   decision; the routing prompt in `brain.py` now states the two are not interchangeable.
+
+   **Still his call, not technical:** whether Mousumi knows JARVIS exists and that Kaustav can
+   ask whether she made contact. The butler model very likely clears the bar transcript-logging
+   did not — fact-of-contact is roughly what a housemate would observe — but no document
+   settles it for him.
+
+   ⚠️ **The Benglish urgency terms are a guess** (`joruri`, `taratari`, `bipod`, `dorkar`,
+   `ekhuni`, `phone koro`, `bari esho`, in `partner_contact.URGENT_TERMS`). Kaustav knows how
+   she actually writes; that list wants his correction, not his tolerance.
+
+   Unchanged and pinned against regression: `extract_and_store_memory` still runs for every
+   recognised caller ahead of the partner gate, and `partner_log` still honours its own opt-in
+   flag. "Off" still means *no transcript*, **not** *nothing retained*.
 
 5. **One open call, his, not blocking:** the cloud cannot seal before it has the public half,
    so after a Render restart with the PC off, facts are **not queued** — counted and logged
