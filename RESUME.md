@@ -10,12 +10,40 @@ The encryption arc (C#11a) closed 2026-08-01. The **cloud→desk sealed-fact
 backlog closed 2026-08-02** — all three phases built, committed and pushed. What
 remains on this branch needs Kaustav's hands, not more code.
 
-## THE ENCRYPTION ARC (C#11a) IS FULLY CLOSED
+## THE ENCRYPTION ARC (C#11a) IS FULLY CLOSED — BOTH STORES
 
 Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking for work.
+**Both halves now encrypt content at rest: the memory store AND the vector store.**
 
 - `jarvis_longterm.db` is encrypted; `jarvis_memory.db` is retired into it. **58/58 rows
   decrypt** through DPAPI → DEK → AES-256-GCM (re-verified 2026-08-01, counts only).
+- **`personal_chroma_db` is encrypted (2026-08-02, `c173c2e`).** Document text and the
+  sensitive metadata (`path`, `name`) are sealed with the *same* C#11a field encryption before
+  they reach Chroma — same DEK, same DPAPI wrap, same recovery code, no new dependency, pins
+  untouched. Chroma had been keeping the text in plaintext twice (`embedding_metadata` plus
+  the FTS5 shadow tables) with the metadata beside it. Gated on `keys_ready()`, and a locked
+  keystore **raises** rather than returning `[]`, because an empty result set is
+  indistinguishable from "no relevant documents". 15 checks in `test_chroma_crypto.py`, which
+  asserts on the bytes in `chroma.sqlite3` rather than on the API.
+  - **Residual, accepted:** the **vectors stay plaintext**. They are computed from the
+    plaintext (that is what makes semantic search work) and the encoder `all-MiniLM-L6-v2` is
+    public, so they leak approximate content by inversion. Encrypting them would destroy the
+    search the store exists for. Pinned by `test_the_vectors_are_deliberately_not_encrypted`.
+  - **Applies to documents ingested from now on.** There was no migration because the store
+    held no real documents — only **3 rows of stale test-fixture residue** (dated 2026-07-26,
+    pointing at a since-deleted `%TEMP%\tmpjbkgwzac\decisions.md`). Those rows are still
+    plaintext and are *still returned by search*, injecting a fake "PostgreSQL over MongoDB /
+    Hetzner not AWS" decision into results. Deleting `jarvis-backend/personal_chroma_db/`
+    clears them; it is gitignored and rebuilt on next ingest. **Kaustav has not yet ruled on
+    this — do not delete it unasked.**
+  - **Still plaintext, out of scope, real data:** `jarvis_chroma_db` (119 rows —
+    `jarvis_memory` + `jarvis_episodes`, written by `memory.py:366` and
+    `episodic_memory.py:110`) and `memory/vector_db` (1 row). These are the *vector mirror* of
+    facts C#11a already sealed in SQLite — the same sentence is ciphertext in
+    `jarvis_longterm.db` and readable in `jarvis_chroma_db/chroma.sqlite3`. `chroma_crypto` is
+    collection-parametrised so the pattern extends directly, but unlike the RAG store these
+    have real rows and would need a migration. `action_chroma_db` (42 rows) is a static
+    command catalogue, not secret.
 - **Recovery code: re-issued, saved off-disk, and PROVEN.** A fresh code was issued
   2026-08-01 (`manage_keys.py export-key`), which **voided every earlier code** — including
   the misplaced one and any that had touched a terminal transcript. Kaustav holds the new one
@@ -30,8 +58,15 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 | | |
 |---|---|
 | Branch | `feat/cloud-gateway`, level with origin, **not merged to `main`** |
-| Suite | **994 checks / 43 harnesses green, 0 failed, 0 broken** at this commit — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
-| Working tree | carries **unrelated uncommitted work that is not part of this commit**: an additive `source` column on `memories` (`memory_manager.py`, `modules/fact_sink.py`, `test_fact_governance.py`, untracked `migrate_memory_source.py` + `test_memory_source.py`, a `.gitignore` hunk) plus the pre-existing untracked `jarvis-frontend/public/favicon.zip`. With that work in the tree the suite reads **1020 checks / 44 harnesses**. It was left staged-out deliberately — whoever owns it should commit it separately. |
+| Suite | **1009 checks / 44 harnesses green, 0 failed, 0 broken** at this commit — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
+| Working tree | carries **unrelated uncommitted work that is not part of this commit**: an additive `source` column on `memories` (`memory_manager.py`, `modules/fact_sink.py`, `test_fact_governance.py`, untracked `migrate_memory_source.py` + `test_memory_source.py`, a `.gitignore` hunk) plus the pre-existing untracked `jarvis-frontend/public/favicon.zip`. With that work in the tree the suite reads **1035 checks / 45 harnesses**. It was left staged-out deliberately — whoever owns it should commit it separately. `run_harnesses.py` carries one line from each arc, so only the `test_chroma_crypto.py` line was staged. |
+
+Note for anyone running the suite from a **bare checkout** (fresh clone, or a `git worktree`):
+`test_memory_store_encryption.py`, `test_store_retirement.py` and `test_gmail_agent.py` fail
+there — 12 checks — because the keystore and the local `.db` files are gitignored and so are
+absent, which silently means *encryption is off* (`a locked key returned [...] instead of
+raising`). Pre-existing and expected, not a regression. `test_chroma_crypto.py` self-skips
+its encryption cases in that situation instead of failing.
 
 ⚠️ **The merge to `main` is not a fast-forward.** `main` carries one commit this branch does
 not: **`8d0ea4f`** — *"Add GNU General Public License v3"*, 2026-07-27, one file, `LICENSE`,
@@ -49,7 +84,8 @@ The commits that got here:
 | `5093c37` | docs — six stale roadmap/TEST_PLAN rows reconciled against the tree at 876/39 |
 | `1b37558` | **C#11a Step 4 phases 1+2** — sealed-fact seal/unseal core + queue/bridge transport (NOT wired to live memory) |
 | `fee66a0` | **C#11a Step 4 phase 3** — the governed sink; the cloud→desk arc is CLOSED |
-| *(this one)* | **`message_partner` actually works** — the approved send was refused by its own confirm prompt on 100% of attempts; + `test_partner_send_gate.py`, the first partner harness that asserts on transport call count instead of source text |
+| `f84f644` | **`message_partner` actually works** — the approved send was refused by its own confirm prompt on 100% of attempts; + `test_partner_send_gate.py`, the first partner harness that asserts on transport call count instead of source text |
+| `c173c2e` | **the Chroma RAG store is encrypted at rest** — text + sensitive metadata sealed with the existing C#11a field encryption, vector left plaintext for search; blind-index companions so `where` filters and the re-ingest delete still work against randomised ciphertext; + `test_chroma_crypto.py` (15) |
 
 ## THE CLOUD→DESK SEALED-FACT BACKLOG IS COMPLETE
 
