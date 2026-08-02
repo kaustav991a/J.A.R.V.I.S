@@ -84,6 +84,7 @@ HARNESSES = [
     "test_boot_preflight.py",
     "test_calibrate_gesture.py",
     "test_camera_stream.py",
+    "test_chroma_crypto.py",
     "test_cursor_overlay.py",
     "test_enroll_face.py",
     "test_face_gate.py",

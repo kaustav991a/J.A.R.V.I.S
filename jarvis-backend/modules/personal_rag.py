@@ -22,6 +22,8 @@ import os
 import re
 import asyncio
 
+from modules import chroma_crypto as _chroma_crypto
+
 _PERSIST_DIR = os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "personal_chroma_db")
 )
@@ -30,7 +32,13 @@ _EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "all-MiniLM-L6-v2")
 _TEXT_EXTS = {".md", ".markdown", ".txt", ".rst", ".text", ".log"}
 _MAX_FILE_BYTES = 2_000_000  # skip anything larger than ~2 MB
 
+#: Metadata keys sealed at rest. `chunk` is an ordinal, not a secret, and Chroma
+#: needs a plain scalar to order on. `path` and `name` together are an inventory
+#: of what he keeps and where, so both are sealed.
+_SENSITIVE_META = ("path", "name")
+
 _collection = None
+_embed_fn = None
 
 
 def _doc_roots() -> list[str]:
@@ -44,16 +52,21 @@ def _doc_roots() -> list[str]:
 
 
 def _ensure():
-    """Lazily build the persistent collection with a local HF embedding function."""
-    global _collection
+    """Lazily build the persistent collection with a local HF embedding function.
+
+    The embedding function stays attached to the collection because the QUERY
+    side still hands Chroma plaintext (`query_texts=`) and wants it embedded
+    normally. Only the WRITE side bypasses it — see `ingest_documents`.
+    """
+    global _collection, _embed_fn
     if _collection is not None:
         return _collection
     import chromadb
     from chromadb.utils import embedding_functions
 
-    embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=_EMBED_MODEL)
+    _embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=_EMBED_MODEL)
     client = chromadb.PersistentClient(path=_PERSIST_DIR)
-    _collection = client.get_or_create_collection(name=_COLLECTION_NAME, embedding_function=embed_fn)
+    _collection = client.get_or_create_collection(name=_COLLECTION_NAME, embedding_function=_embed_fn)
     return _collection
 
 
@@ -109,15 +122,44 @@ def ingest_documents(roots: list[str] | None = None) -> int:
                 files_seen += 1
                 rel = os.path.relpath(fpath, root)
                 base_id = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{os.path.basename(root)}__{rel}")
-                try:
-                    col.delete(where={"path": fpath})  # drop prior version of this file
-                except Exception:
-                    pass
-                col.upsert(
-                    documents=chunks,
-                    ids=[f"{base_id}__{i}" for i in range(len(chunks))],
-                    metadatas=[{"path": fpath, "name": fn, "chunk": i} for i in range(len(chunks))],
-                )
+                metas = [{"path": fpath, "name": fn, "chunk": i} for i in range(len(chunks))]
+                ids = [f"{base_id}__{i}" for i in range(len(chunks))]
+                documents = chunks
+                embeddings = None
+
+                if _chroma_crypto.encryption_on():
+                    # The vector MUST come from the plaintext: a collection with
+                    # an embedding_function would otherwise embed the ciphertext
+                    # and destroy retrieval silently. Passing embeddings=
+                    # explicitly overrides that function.
+                    embeddings = _embed_fn(chunks)
+                    documents = [_chroma_crypto.encrypt_document(c, _COLLECTION_NAME)
+                                 for c in chunks]
+                    metas = [_chroma_crypto.encrypt_metadata(m, _COLLECTION_NAME,
+                                                             _SENSITIVE_META)
+                             for m in metas]
+                    # Ids derived from a blind index, so re-ingest still upserts
+                    # onto the same rows without the filename sitting in the id.
+                    ids = [_chroma_crypto.doc_id(fpath, i, _COLLECTION_NAME)
+                           for i in range(len(chunks))]
+
+                # Drop the prior version of this file. Both predicates are tried:
+                # a randomised ciphertext can never satisfy where={"path": ...},
+                # so sealed rows are found by their blind index, and rows written
+                # before the ceremony are still found by the plain path.
+                for pred in ({"path" + _chroma_crypto.BLIND_SUFFIX:
+                              _chroma_crypto.blind(fpath, _COLLECTION_NAME, "path")}
+                             if _chroma_crypto.encryption_on() else {},
+                             {"path": fpath}):
+                    if not pred:
+                        continue
+                    try:
+                        col.delete(where=pred)
+                    except Exception:
+                        pass
+
+                col.upsert(documents=documents, ids=ids, metadatas=metas,
+                           **({"embeddings": embeddings} if embeddings is not None else {}))
                 total_chunks += len(chunks)
 
     print(f"[PERSONAL_RAG] Indexed {files_seen} file(s), {total_chunks} chunk(s) from "
@@ -126,7 +168,18 @@ def ingest_documents(roots: list[str] | None = None) -> int:
 
 
 def query_documents(query: str, n_results: int = 4) -> list[str]:
-    """Return the most relevant document chunks (with a source tag) for a query."""
+    """Return the most relevant document chunks (with a source tag) for a query.
+
+    The search itself is unchanged: the query is plaintext, Chroma embeds it with
+    the collection's function, and the match happens on vectors. Only the
+    RESULTS are sealed, so they are decrypted on the way out and the caller sees
+    exactly what it saw before encryption.
+
+    A locked key store RAISES. Returning [] would be indistinguishable from "no
+    relevant documents", which is the silent-empty-read failure C#11a exists to
+    prevent — the caller must be able to tell "I can't read this" from "there is
+    nothing here".
+    """
     try:
         col = _ensure()
     except Exception as e:
@@ -138,15 +191,23 @@ def query_documents(query: str, n_results: int = 4) -> list[str]:
         if col.count() == 0:
             return []
         res = col.query(query_texts=[query], n_results=n_results)
+    except _chroma_crypto.MemoryLockedError:
+        raise
     except Exception as e:
         print(f"[PERSONAL_RAG] query failed: {e}", flush=True)
         return []
+
     docs = (res.get("documents") or [[]])[0]
     metas = (res.get("metadatas") or [[]])[0]
     out = []
     for i, d in enumerate(docs):
-        name = metas[i].get("name") if i < len(metas) and isinstance(metas[i], dict) else "document"
-        out.append(f"[{name}] {d}")
+        meta = metas[i] if i < len(metas) and isinstance(metas[i], dict) else {}
+        # Deliberately OUTSIDE the try above: a decrypt failure is a locked or
+        # tampered store, and it must reach the caller rather than be logged and
+        # swallowed into an empty-looking answer.
+        meta = _chroma_crypto.decrypt_metadata(meta, _COLLECTION_NAME, _SENSITIVE_META)
+        text = _chroma_crypto.decrypt_document(d, _COLLECTION_NAME)
+        out.append(f"[{meta.get('name') or 'document'}] {text}")
     return out
 
 
