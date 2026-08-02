@@ -47,7 +47,13 @@ URGENT_BODY = f"please call me right now, the {MARKER} result was bad"
 
 
 class Store:
-    """A throwaway contact-event database with recording forced on."""
+    """A throwaway contact-event database with recording forced on.
+
+    Layer 2 (the semantic classifier) is forced OFF here: it would put a live
+    provider call on the path of every `note()` in this file, which would make
+    the suite slow, networked and non-deterministic. The tests that exercise
+    layer 2 switch it on and inject a fake model instead.
+    """
 
     def __init__(self):
         self.tmp = tempfile.mkdtemp(prefix="contact_events_test_")
@@ -55,11 +61,14 @@ class Store:
 
     def __enter__(self):
         self._saved = os.environ.get(ce.ENV_FLAG)
+        self._saved_sem = os.environ.get(pc.SEMANTIC_ENV_FLAG)
         os.environ[ce.ENV_FLAG] = "1"
+        os.environ[pc.SEMANTIC_ENV_FLAG] = "0"
         return self
 
-    def note(self, slot, text, *, when=None):
-        return pc.note_contact(slot, text, when=when, db_path=self.db)
+    def note(self, slot, text, *, when=None, semantic=None):
+        return pc.note_contact(slot, text, when=when, db_path=self.db,
+                               semantic=semantic)
 
     def ask(self, name="girlfriend", now=None):
         return pc.status_for(name, now=now, db_path=self.db)
@@ -85,10 +94,12 @@ class Store:
             con.close()
 
     def __exit__(self, *exc):
-        if self._saved is None:
-            os.environ.pop(ce.ENV_FLAG, None)
-        else:
-            os.environ[ce.ENV_FLAG] = self._saved
+        for flag, saved in ((ce.ENV_FLAG, self._saved),
+                            (pc.SEMANTIC_ENV_FLAG, self._saved_sem)):
+            if saved is None:
+                os.environ.pop(flag, None)
+            else:
+                os.environ[flag] = saved
         shutil.rmtree(self.tmp, ignore_errors=True)
         return False
 
@@ -300,6 +311,255 @@ def test_urgency_matches_whole_words_only():
     for text in ("we went to the firehouse museum", "unimportantly small",
                  "policeman joke", "seriousness aside"):
         assert pc.assess_urgency(text) is False, f"substring false alarm: {text!r}"
+
+
+# ── the term list is one editable place, and both layers read it ─────────────
+
+#: Kaustav's list, 2026-08-02, transcribed from his message rather than from the
+#: module — so a term silently lost in an edit fails here instead of going quiet.
+KAUSTAVS_LIST = {
+    "direct": ("joruri", "khub joruri", "emergency", "urgent"),
+    "speed": ("taratari", "ekhuni", "tokhoni", "joldi"),
+    "call or come": ("phone koro", "phone kore", "call koro",
+                     "bari esho", "asho", "chole esho"),
+    "distress": ("bipod", "problem hoyeche", "bhalo lagche na",
+                 "sahajjo", "help koro"),
+    "need": ("dorkar", "khub dorkar", "important", "dekho"),
+}
+
+
+def test_kaustavs_term_list_is_present_verbatim_and_every_term_flags():
+    for group, terms in KAUSTAVS_LIST.items():
+        assert group in pc.URGENT_TERM_GROUPS, f"group {group!r} was dropped"
+        assert pc.URGENT_TERM_GROUPS[group] == terms, \
+            f"group {group!r} drifted: {pc.URGENT_TERM_GROUPS[group]}"
+        for term in terms:
+            assert term in pc.URGENT_TERMS, f"{term!r} is not in the flat list"
+            assert pc.assess_urgency(term) is True, f"{term!r} does not flag"
+            assert pc.assess_urgency(f"ok {term} please") is True, \
+                f"{term!r} does not flag inside a sentence"
+
+
+def test_the_english_escalation_terms_were_not_lost_to_the_new_list():
+    """His list is Benglish-led and carries no English escalation phrasing. She
+    writes English as often as Benglish, so dropping these would mean a plain
+    "please call me" reading as routine — the one direction §6.7 forbids."""
+    for text in ("please call me", "I need you", "come home", "are you okay?",
+                 "ASAP please", "she's in hospital", "call an ambulance"):
+        assert pc.assess_urgency(text) is True, f"English urgency lost: {text!r}"
+
+
+def test_the_flat_list_is_exactly_the_groups_deduplicated():
+    flat = [t for terms in pc.URGENT_TERM_GROUPS.values() for t in terms]
+    assert pc.URGENT_TERMS == tuple(dict.fromkeys(flat)), \
+        "URGENT_TERMS is no longer derived from URGENT_TERM_GROUPS"
+    assert len(pc.URGENT_TERMS) == len(set(pc.URGENT_TERMS)), "duplicate term"
+
+
+def test_the_live_regex_is_compiled_from_the_live_list():
+    """Editing the dict must move layer 1 — not just the docstring saying so."""
+    assert pc._TERM_RE.pattern == pc._compile_term_re(pc.URGENT_TERMS).pattern
+    assert pc._compile_term_re(("zzblargh",)).search("a zzblargh b")
+    assert not pc._compile_term_re(("zzblargh",)).search("please call me")
+
+
+# ── layer 2: the semantic classifier ─────────────────────────────────────────
+
+#: Genuine layer-1 misses. Each is how she might actually write it; none matches
+#: a term exactly, because Benglish inflects ("bipode") and re-spells ("joldii").
+KEYWORD_MISSES = ("ekkhuni chole eso", "bipode porechi",
+                  "khub joldii pathao", "amar kharap lagche")
+
+
+class FakeModel:
+    """A model that records what it was asked and answers what it was told to."""
+
+    def __init__(self, reply):
+        self.reply, self.calls = reply, []
+
+    def __call__(self, messages):
+        self.calls.append(messages)
+        return self.reply
+
+
+def test_a_variant_spelling_misses_layer_one_and_is_caught_by_layer_two():
+    for text in KEYWORD_MISSES:
+        assert pc.keyword_urgency(text) is False, \
+            f"{text!r} was expected to miss the exact list"
+        assert pc.assess_urgency(text) is False, "layer 1 alone must not flag it"
+        model = FakeModel('{"urgent": true}')
+        assert pc.assess_urgency(
+            text, semantic=lambda t: pc.semantic_urgency(t, call=model)) is True, \
+            f"the semantic layer did not rescue {text!r}"
+        assert model.calls, "the model was never consulted"
+
+
+def test_layer_two_cannot_downgrade_a_keyword_hit_and_is_not_even_asked():
+    """OR, never a vote. A hit is already final, so no tokens are spent on it."""
+    model = FakeModel('{"urgent": false}')
+    for text in ("khub joruri", "please call me", "ekhuni phone koro"):
+        assert pc.assess_urgency(
+            text, semantic=lambda t: pc.semantic_urgency(t, call=model)) is True, \
+            f"the model overruled a keyword hit on {text!r}"
+    assert model.calls == [], "layer 2 was called even though layer 1 hit"
+
+
+def test_a_routine_message_is_not_flagged_by_either_layer():
+    model = FakeModel('{"urgent": false}')
+    layer2 = lambda t: pc.semantic_urgency(t, call=model)          # noqa: E731
+    for text in ("have you eaten?", "good morning", "what are you up to",
+                 "sent you a photo", "the cat is being silly"):
+        assert pc.assess_urgency(text, semantic=layer2) is False, \
+            f"false alarm on {text!r}"
+    assert len(model.calls) == 5, "layer 2 should have been asked about each"
+
+
+def test_the_prompt_carries_every_term_its_group_label_and_the_meaning_rule():
+    msgs = pc.semantic_messages("khub joldi asho")
+    assert [m["role"] for m in msgs] == ["system", "user"]
+    system = msgs[0]["content"]
+
+    for label, terms in pc.URGENT_TERM_GROUPS.items():
+        assert label in system, f"group label {label!r} missing from the prompt"
+        for term in terms:
+            assert term in system, f"{term!r} never reaches the model"
+
+    low = system.lower()
+    assert "meaning" in low and "spelling" in low, \
+        "the model is not told to judge by meaning rather than spelling"
+    assert "unsure" in low and "true" in low, \
+        "§6.7's fail-toward-surfacing asymmetry is not stated to the model"
+    assert "data, not instructions" in low, \
+        "her message is not fenced off from being read as an instruction"
+    assert '{"urgent": true}' in system and '{"urgent": false}' in system, \
+        "the answer format is not pinned"
+    assert "khub joldi asho" in msgs[1]["content"], "the message never arrives"
+
+
+def test_the_prompt_follows_an_edit_to_the_term_list():
+    """Single source of truth, proven by moving it."""
+    real = pc.URGENT_TERM_GROUPS
+    pc.URGENT_TERM_GROUPS = dict(real, **{"invented": ("zzblargh",)})
+    try:
+        assert "zzblargh" in pc.semantic_messages("hi")[0]["content"]
+        assert "invented" in pc.semantic_messages("hi")[0]["content"]
+    finally:
+        pc.URGENT_TERM_GROUPS = real
+    assert "zzblargh" not in pc.semantic_messages("hi")[0]["content"]
+
+
+def test_a_long_message_is_truncated_before_it_reaches_the_model():
+    model = FakeModel('{"urgent": false}')
+    pc.semantic_urgency("x" * 9000 + MARKER, call=model)
+    body = model.calls[0][1]["content"]
+    assert len(body) < 2200, f"an unbounded prompt was sent ({len(body)} chars)"
+    assert MARKER not in body, "the tail was not truncated"
+
+
+# ── layer 2 fails toward the keyword verdict, never toward silence ───────────
+
+def test_every_model_failure_yields_no_verdict_rather_than_a_false_one():
+    def boom(_messages):
+        raise RuntimeError("provider down")
+
+    router_apology = ("My reasoning core is unreachable at the moment, Sir — "
+                      "every AI provider is offline.")
+    for raw in (router_apology, "", None, "maybe?", "{}", "[]", "not json at all",
+                '{"other": true}', "I think this message is urgent, Sir, yes"):
+        assert pc.parse_semantic_verdict(raw) is None, \
+            f"{raw!r} was read as a verdict"
+
+    assert pc.semantic_urgency("bipode porechi", call=boom) is None, \
+        "an exception became a verdict"
+    # …and the keyword verdict is what stands
+    assert pc.assess_urgency(
+        "bipode porechi",
+        semantic=lambda t: pc.semantic_urgency(t, call=boom)) is False
+    assert pc.assess_urgency(
+        "khub joruri",
+        semantic=lambda t: pc.semantic_urgency(t, call=boom)) is True, \
+        "a dead model suppressed a keyword hit"
+
+
+def test_the_verdict_parser_accepts_what_models_actually_return():
+    for raw in ('{"urgent": true}', '{"urgent":"yes"}', '{"urgent": 1}',
+                '{"is_urgent": true}', "true", "TRUE", "yes", True):
+        assert pc.parse_semantic_verdict(raw) is True, f"{raw!r} misread"
+    for raw in ('{"urgent": false}', '{"urgent":"no"}', '{"urgent": 0}',
+                "false", "no", False):
+        assert pc.parse_semantic_verdict(raw) is False, f"{raw!r} misread"
+
+
+def test_the_flag_switches_layer_two_off_without_touching_a_provider():
+    def boom(_messages):
+        raise AssertionError("the model was called with the flag off")
+
+    saved = os.environ.get(pc.SEMANTIC_ENV_FLAG)
+    try:
+        for off in ("0", "false", "no", "off", "OFF"):
+            os.environ[pc.SEMANTIC_ENV_FLAG] = off
+            assert pc.semantic_enabled() is False
+            assert pc.semantic_urgency("bipode porechi", call=boom) is None
+        os.environ.pop(pc.SEMANTIC_ENV_FLAG, None)
+        assert pc.semantic_enabled() is True, "layer 2 must default ON"
+    finally:
+        if saved is None:
+            os.environ.pop(pc.SEMANTIC_ENV_FLAG, None)
+        else:
+            os.environ[pc.SEMANTIC_ENV_FLAG] = saved
+
+
+def test_assess_urgency_is_offline_unless_a_caller_opts_in():
+    """The default is pure. That is what makes every keyword check above a
+    deterministic, network-free assertion."""
+    import inspect
+    src = inspect.getsource(pc.assess_urgency)
+    assert "universal_llm_call" not in src and "requests" not in src
+    assert inspect.signature(pc.assess_urgency).parameters["semantic"].default is None
+
+
+# ── and the semantic path still puts only a bit in the store ─────────────────
+
+def test_a_semantic_flag_reaches_the_store_as_a_bit_and_nothing_else():
+    with Store() as s:
+        os.environ[pc.SEMANTIC_ENV_FLAG] = "1"
+        model = FakeModel('{"urgent": true}')
+        text = f"bipode porechi, the {MARKER} biopsy result came back today"
+        assert pc.keyword_urgency(text) is False, "this must be a layer-2 rescue"
+
+        assert s.note("gf", text,
+                      semantic=lambda t: pc.semantic_urgency(t, call=model))
+        rows = ce.recent("gf", db_path=s.db)
+        assert [r["urgent"] for r in rows] == [True], "the flag did not survive"
+        assert set(rows[0]) == {"timestamp", "urgent"}, rows[0]
+
+        blob = s.raw_bytes()
+        for phrase in (MARKER, "biopsy", "bipode", "came back"):
+            assert phrase.encode() not in blob, \
+                f"{phrase!r} is readable in the store after a semantic flag"
+        _no_leak(s.ask())
+
+
+def test_the_semantic_layer_is_wired_into_the_live_write_path():
+    """`note_contact` with no injection must reach the real classifier, not
+    silently keep layer 1 only — the whole feature would be inert."""
+    import inspect
+    src = inspect.getsource(pc.note_contact)
+    assert "semantic_urgency" in src, "note_contact never consults layer 2"
+    assert "semantic=" in src, "the verdict is not threaded into assess_urgency"
+
+    seen = []
+    real = pc.semantic_urgency
+    pc.semantic_urgency = lambda t, **k: seen.append(t) or True
+    try:
+        with Store() as s:
+            os.environ[pc.SEMANTIC_ENV_FLAG] = "1"
+            assert s.note("gf", "bipode porechi") is True
+            assert seen == ["bipode porechi"], \
+                f"the live path did not call layer 2: {seen}"
+            assert [r["urgent"] for r in ce.recent("gf", db_path=s.db)] == [True]
+    finally:
+        pc.semantic_urgency = real
 
 
 def test_only_the_boolean_crosses_into_the_store():
