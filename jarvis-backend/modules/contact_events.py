@@ -77,14 +77,20 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "jarvis_longterm.db")
 
 TABLE = "contact_events"
 
-#: Off switch. Unlike `JARVIS_LOG_PARTNER_CHATS` this defaults **ON**, and that
-#: asymmetry is deliberate: that flag governs keeping a third party's WORDS,
-#: which is a decision the owner has to make consciously. This store keeps only
-#: the fact that a message arrived — roughly what a housemate in the hallway
-#: would observe — and the owner commissioned it explicitly (roadmap §6.7).
-#: Set to 0/false/no/off to stop recording; nothing is written when it is off.
+#: Opt-in switch, default **OFF** — same shape as `JARVIS_LOG_PARTNER_CHATS`.
+#: It shipped default-ON (2026-08-02) on the reasoning that this store keeps only
+#: the fact that a message arrived, roughly what a housemate in the hallway would
+#: observe. That reasoning still holds, and it is still not enough: **anything
+#: that records a third party's behaviour is opt-in here**, and the discipline is
+#: worth more than the convenience of one fewer line in `.env`. Flipped by
+#: Kaustav's ruling 2026-08-08 (RESUME item 2), so a fresh clone of this repo
+#: records nothing about anyone until its owner says otherwise.
+#:
+#: Set to 1/true/yes/on to record. While it is off `partner_contact_status` says
+#: it cannot tell either way and names this flag — never "no, she didn't
+#: message", which would be a confident answer manufactured by a switch.
 ENV_FLAG = "JARVIS_LOG_CONTACT_EVENTS"
-_FALSE = frozenset({"0", "false", "no", "off"})
+_TRUE = frozenset({"1", "true", "yes", "on"})
 
 #: AAD column names. Distinct per column, so a sealed timestamp cannot be read
 #: back as a slot, and neither can be pasted in from `partner_messages`.
@@ -94,10 +100,14 @@ _COL_URGENCY = "urgency"
 
 
 def enabled(env=None) -> bool:
-    """Is contact-event recording on? Default ON; read per call so a change
-    takes effect without a restart."""
+    """Is contact-event recording on? Default OFF — it must be switched on
+    deliberately. Read per call so a change takes effect without a restart.
+
+    Unset, empty and unrecognised all read as OFF: a typo in `.env` must fail
+    towards not recording, never towards recording.
+    """
     src = os.environ if env is None else env
-    return str(src.get(ENV_FLAG, "1")).strip().lower() not in _FALSE
+    return str(src.get(ENV_FLAG, "")).strip().lower() in _TRUE
 
 
 def _encryption_on() -> bool:

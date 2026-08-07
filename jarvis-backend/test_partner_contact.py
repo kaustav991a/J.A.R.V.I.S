@@ -573,6 +573,38 @@ def test_only_the_boolean_crosses_into_the_store():
         assert set(rows[0]) == {"timestamp", "urgent"}, rows[0]
 
 
+# ── the opt-in ───────────────────────────────────────────────────────────────
+
+def test_contact_recording_defaults_off_and_fails_towards_off():
+    """Unset means OFF, and so does anything unrecognised.
+
+    This store records a third party's behaviour, so the flag is opt-in like
+    `JARVIS_LOG_PARTNER_CHATS` — a fresh clone must record nothing about anyone
+    until its owner switches it on. The unrecognised-value half matters just as
+    much: a typo in `.env` has to fail towards not recording. `enabled()` is
+    checked here AND `record()` is driven, because a default that only the
+    predicate honours is not a default.
+    """
+    saved = os.environ.get(ce.ENV_FLAG)
+    try:
+        os.environ.pop(ce.ENV_FLAG, None)
+        assert ce.enabled() is False, "unset must mean OFF"
+        assert ce.record("gf") is False, "an event was written with the flag unset"
+
+        for junk in ("", "  ", "yess", "2", "enabled", "0", "false", "no", "off"):
+            os.environ[ce.ENV_FLAG] = junk
+            assert ce.enabled() is False, f"{junk!r} was read as ON"
+
+        for on in ("1", "true", "yes", "on", "ON", " True "):
+            os.environ[ce.ENV_FLAG] = on
+            assert ce.enabled() is True, f"{on!r} was not read as ON"
+    finally:
+        if saved is None:
+            os.environ.pop(ce.ENV_FLAG, None)
+        else:
+            os.environ[ce.ENV_FLAG] = saved
+
+
 # ── failure modes ────────────────────────────────────────────────────────────
 
 def test_recording_off_says_it_cannot_tell_rather_than_no():
