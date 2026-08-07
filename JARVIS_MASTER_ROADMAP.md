@@ -1103,11 +1103,34 @@ lets through. **Nothing here needs hardware.**
   set. Raising the cap would quietly undo a decision made because small models degrade past ~8,
   at exactly the moment the model is already struggling enough to go looking.
 
-  **What remains: writing ~61 more tool entries.** That is the actual work, and it is judgement,
-  not mechanism — rule 1 says the description IS the prompt, so generating them from action names
-  would produce exactly the `"Searches files."` labels the reference calls weak. Do it in waves,
-  by domain (messaging, media/TV, email/calendar, apps/windows, system), and put each wave through
-  the harness.
+  **Filling the catalogue — the actual work, in waves.** Judgement, not mechanism: rule 1 says the
+  description IS the prompt, so generating entries from action names would produce exactly the
+  `"Searches files."` labels the reference calls weak.
+
+  | Wave | Domain | Tools | State |
+  |---|---|---|---|
+  | 1 | **email + calendar** | 10 | ✅ **DONE 2026-08-08** — `test_agent_wave1.py` (19). Registry 11 → 21 |
+  | 2 | media / TV | ~8 (`tv_*`, `play_music`) | ⬜ |
+  | 3 | apps + windows | ~8 (`launch_app`, `close_app`, `native_app_launcher`, `hud_*`, `os_macro`) | ⬜ |
+  | 4 | git / GitHub | 5 (`github_status/diff/log`, +`commit`/`push` CONFIRM) | ⬜ |
+  | 5 | web control | ~7 (`web_click/type/scroll/back/close`, `web_search*`) | ⬜ |
+  | 6 | messaging + misc | remainder (`message_partner`, `telegram_send_file`, `remember_fact`, protocols) | ⬜ |
+
+  **Wave 1 decisions worth not re-deriving:**
+  - **Two reachable actions were deliberately NOT registered.** `check_email` (its own handler says
+    `gmail_read_unread` is "the primary action for check my email") and `send_email` (superseded by
+    `gmail_send`). Two tools for one job make the model guess, and a guess costs a step.
+  - **Everything that leaves the machine or wipes a day is CONFIRM** — `gmail_send`, `gmail_reply`,
+    `create_event`, `clear_schedule` — so in an unattended run they are not merely refused, they
+    are **not findable**.
+  - **The target strings are the risk, not the descriptions.** Each entry composes a pipe-separated
+    `target` that a handler then splits, so a wrong separator does not fail loudly — it mails the
+    subject as the body. `test_agent_wave1.py` asserts composition against each handler's
+    documented format.
+  - **`agent_tier_fixture.py` was added so a wave updates ONE file.** Every agent harness builds
+    the real registry against a fake tier map, and `register` refuses an action governance does not
+    know — so before this, each new tool broke five harnesses identically. A drift check compares
+    the fixture against the shipped `governance.json`.
 - **Skills — progressive disclosure for instructions (rule 18).** `.md` playbooks with one-line
   descriptions plus a `load_skill(name)` tool, instead of pasting procedures into the system
   prompt. Groq has **no prompt caching**, so a fat system prompt is paid for on *every* request —

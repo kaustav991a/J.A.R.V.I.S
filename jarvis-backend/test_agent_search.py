@@ -29,10 +29,7 @@ from modules.agent_core import AgentLimits
 from modules.agent_search import ToolShelf
 from modules.tool_calls import ToolCall, ToolTurn
 
-TIERS = {"tavily_search": "AUTO", "web_browse": "AUTO", "search_documents": "AUTO",
-         "memory_recall": "AUTO", "workspace_read": "AUTO", "list_directory": "AUTO",
-         "find_file": "AUTO", "system_status": "AUTO", "read_screen": "AUTO",
-         "workspace_write": "CONFIRM", "workspace_patch": "CONFIRM"}
+from agent_tier_fixture import TIERS
 
 
 def registry():

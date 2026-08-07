@@ -25,6 +25,10 @@ TIERS = {"tavily_search": "AUTO", "web_browse": "AUTO", "search_documents": "AUT
          "memory_recall": "AUTO", "workspace_read": "AUTO", "list_directory": "AUTO",
          "find_file": "AUTO", "system_status": "AUTO", "read_screen": "AUTO",
          "workspace_write": "CONFIRM", "workspace_patch": "CONFIRM"}
+# Wave 1 onward the shared fixture is the source; the literal above is kept for
+# the handful of assertions written against exactly these names.
+from agent_tier_fixture import TIERS as _SHARED
+TIERS = {**_SHARED, **TIERS}
 
 #: Reads take an ABSOLUTE path since §6.8.1 gap G — a relative one is refused
 #: before the engine is reached, so these fixtures must supply a real shape.

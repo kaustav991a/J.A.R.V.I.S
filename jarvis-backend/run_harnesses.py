@@ -106,6 +106,7 @@ HARNESSES = [
     "test_agent_files.py",
     "test_agent_schema.py",
     "test_agent_search.py",
+    "test_agent_wave1.py",
     "test_llm_failover.py",
     "test_memory_crypto.py",
     "test_memory_extraction_guard.py",

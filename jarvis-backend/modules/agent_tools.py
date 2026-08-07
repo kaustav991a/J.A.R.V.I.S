@@ -424,6 +424,15 @@ def _obj(properties: dict, required: list[str] | None = None) -> dict:
 
 _QUERY = {"query": {"type": "string", "description": "What to look for."}}
 
+
+def _gmail_query_target(args: dict) -> str:
+    """`_gmail_read` takes "query" or "query|N" — the count is optional and the
+    handler defaults it to 5. Emitting a bare "query|" when no count was given
+    would make the handler parse an empty string as the limit."""
+    query = str(args.get("query", "")).strip()
+    count = args.get("max_results")
+    return f"{query}|{int(count)}" if count else query
+
 #: Entries shown to the model per directory. Newest-first, so a truncated tail is
 #: the OLD end of the list — the part a "most recent" question never needs.
 MAX_LISTED_ENTRIES = 40
@@ -588,6 +597,122 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                action_type="workspace_patch",
                build_target=af.build_patch_target,
                precondition=af.edit_precondition)
+
+    # ── Wave 1 (§6.8.2): email + calendar ────────────────────────────────────
+    # Reachable through `search_tools` rather than wired into every intent —
+    # that is the point of the shelf. Descriptions carry when-to-use AND
+    # when-NOT (rule 1), because these are the tools a model is most likely to
+    # reach for on a vague "check my stuff".
+    #
+    # Two reachable actions are deliberately NOT registered:
+    #   * `check_email` — its own handler says `gmail_read_unread` is "the
+    #     primary action for check my email", and two tools for one job make the
+    #     model guess which it wants.
+    #   * `send_email` — superseded by `gmail_send`, which takes the same
+    #     "to | Subject | Body" target and also accepts a dict.
+
+    r.register("gmail_read_unread",
+               "Check for new mail: returns a summary of the most recent UNREAD "
+               "emails. This is the right tool for \"any new email?\", \"check my "
+               "inbox\", \"did anything come in\". For mail that has already been "
+               "read, or mail from a particular person or about a topic, use "
+               "`gmail_read` with a search query instead.",
+               _obj({"count": {"type": "integer", "minimum": 1, "maximum": 20,
+                               "description": "How many to fetch (default 5)."}},
+                    []),
+               build_target=lambda a: str(a.get("count") or ""))
+
+    r.register("gmail_read",
+               "Search the mailbox with a Gmail search query and read what comes "
+               "back. Use this for anything specific: mail from a person "
+               "(from:name@x.com), about a subject (subject:invoice), by state "
+               "(is:unread, is:starred), or by age (newer_than:2d). Returns the "
+               "thread id of each result, which `gmail_reply` needs. For a plain "
+               "\"anything new?\" use `gmail_read_unread`.",
+               _obj({"query": {"type": "string",
+                               "description": "Gmail search syntax, e.g. "
+                                              "\"from:mum newer_than:7d\"."},
+                     "max_results": {"type": "integer", "minimum": 1, "maximum": 20,
+                                     "description": "How many to return (default 5)."}},
+                    ["query"]),
+               build_target=_gmail_query_target)
+
+    r.register("search_email",
+               "Find emails matching plain-words text. Simpler than `gmail_read` "
+               "and takes no query syntax — use it when you have a phrase to look "
+               "for rather than a structured filter.",
+               _obj(_QUERY))
+
+    r.register("read_email",
+               "Open ONE email in full, by its position in the last listing. Use "
+               "after `gmail_read_unread` or `gmail_read` when a summary is not "
+               "enough and the body matters.",
+               _obj({"which": {"type": "string",
+                               "description": "Position from the last listing "
+                                              "(\"1\", \"2\", …) or \"latest\"."}},
+                    []),
+               build_target=lambda a: str(a.get("which") or "latest"))
+
+    r.register("check_calendar",
+               "What is on Kaustav's calendar. Use for \"what's on today\", "
+               "\"am I free at 4\", \"when is the meeting\". Read-only — it "
+               "cannot add or move anything.",
+               _obj({}, []))
+
+    r.register("morning_briefing",
+               "The assembled daily briefing — calendar, mail and system state "
+               "together, in one call. Use when he asks for the overview rather "
+               "than one specific thing; it is cheaper than calling the "
+               "individual tools and reads better than stitching them together.",
+               _obj({}, []))
+
+    # -- the writing half. All CONFIRM: each one leaves the machine or changes
+    # -- something he would have to undo by hand.
+
+    r.register("gmail_send",
+               "Send a NEW email. Requires the owner's confirmation. Use only "
+               "when he has asked for mail to be sent and you have all three of "
+               "recipient, subject and body — never invent a recipient, and never "
+               "send to an address you inferred rather than were given. To answer "
+               "an existing thread use `gmail_reply`, which keeps the "
+               "conversation together.",
+               _obj({"to": {"type": "string",
+                            "description": "Recipient address. Must be one he "
+                                           "gave you."},
+                     "subject": {"type": "string", "description": "Subject line."},
+                     "body": {"type": "string", "description": "Message body."}},
+                    ["to", "subject", "body"]),
+               build_target=lambda a: (f"{str(a.get('to', '')).strip()} | "
+                                       f"{str(a.get('subject', '')).strip()} | "
+                                       f"{a.get('body', '')}"))
+
+    r.register("gmail_reply",
+               "Reply to an existing email thread. Requires the owner's "
+               "confirmation. The thread id comes from `gmail_read` output — "
+               "read the thread first; a reply written without seeing what it "
+               "answers is a guess.",
+               _obj({"thread_id": {"type": "string",
+                                   "description": "Thread id from gmail_read."},
+                     "body": {"type": "string", "description": "Reply text."}},
+                    ["thread_id", "body"]),
+               build_target=lambda a: (f"{str(a.get('thread_id', '')).strip()} | "
+                                       f"{a.get('body', '')}"))
+
+    r.register("create_event",
+               "Put an event on the calendar. Requires the owner's confirmation. "
+               "Describe it in one natural phrase including the time — \"dentist "
+               "Thursday 4pm\" — rather than as separate fields. Check the "
+               "calendar first if the slot might already be taken.",
+               _obj({"description": {"type": "string",
+                                     "description": "The event and its time, in "
+                                                    "one phrase."}}))
+
+    r.register("clear_schedule",
+               "Clear TODAY'S calendar entirely. Requires the owner's "
+               "confirmation. This removes every event for today at once and he "
+               "would have to re-enter them by hand — only for an explicit "
+               "\"clear my day\". To remove one event, do not use this.",
+               _obj({}, []))
 
     # Answer a question that needs looking things up. Read-only by construction:
     # nothing in this set can change the machine, so it is the safe first intent

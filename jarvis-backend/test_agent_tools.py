@@ -21,14 +21,10 @@ from modules import agent_tools as at
 from modules.agent_core import AgentLimits
 from modules.tool_calls import ToolCall, validate_tool_defs
 
-# A stand-in ruleset. Mirrors the real governance.json tiers for these actions.
-TIERS = {
-    "tavily_search": "AUTO", "web_browse": "AUTO", "search_documents": "AUTO",
-    "memory_recall": "AUTO", "workspace_read": "AUTO", "list_directory": "AUTO",
-    "find_file": "AUTO", "system_status": "AUTO", "read_screen": "AUTO",
-    "workspace_write": "CONFIRM", "workspace_patch": "CONFIRM",
-    "delete_file": "BLOCK", "run_terminal_command": "BLOCK",
-}
+# A stand-in ruleset, shared by every agent harness — see agent_tier_fixture.py
+# for why it is not copied per file (each §6.8.2 wave would otherwise break five
+# harnesses in five identical ways).
+from agent_tier_fixture import TIERS
 
 
 #: An ABSOLUTE path that does not exist. Since §6.8.1 gap E/G the write
@@ -430,11 +426,29 @@ def test_the_real_registry_builds_against_governance_json():
     from governance_manager import governance_manager
 
     r = at.build_default_registry(governance_manager.get_tier)
-    assert len(r.names()) == 11, r.names()
+    assert len(r.names()) == 21, r.names()
     assert r.tier_of("workspace_write") == "CONFIRM"
     assert r.tier_of("edit_file") == "CONFIRM", \
         "the surgical edit tool must be CONFIRM like every other writer"
     assert r.tier_of("tavily_search") == "AUTO"
+    # Wave 1: everything that leaves the machine or wipes a day is CONFIRM.
+    for name in ("gmail_send", "gmail_reply", "create_event", "clear_schedule"):
+        assert r.tier_of(name) == "CONFIRM", f"{name} is {r.tier_of(name)}"
+    for name in ("gmail_read", "gmail_read_unread", "check_calendar",
+                 "morning_briefing", "search_email", "read_email"):
+        assert r.tier_of(name) == "AUTO", f"{name} is {r.tier_of(name)}"
+
+
+def test_the_shared_tier_fixture_has_not_drifted_from_governance_json():
+    """The fixture is a hand-written mirror of the shipped ruleset. This is the
+    one place the two are compared, so a wave that adds a tool to the fixture
+    with the wrong tier fails here rather than passing everywhere quietly."""
+    from agent_tier_fixture import TIERS
+    from governance_manager import governance_manager
+
+    for action, tier in TIERS.items():
+        real = (governance_manager.get_tier(action) or "BLOCK").upper()
+        assert real == tier, f"{action}: fixture says {tier}, governance says {real}"
 
 
 def test_every_registered_action_type_is_dispatched_by_action_engine():

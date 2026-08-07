@@ -29,12 +29,7 @@ STRING_SCHEMA = {
     "required": ["path"],
 }
 
-TIERS = {
-    "tavily_search": "AUTO", "web_browse": "AUTO", "search_documents": "AUTO",
-    "memory_recall": "AUTO", "workspace_read": "AUTO", "list_directory": "AUTO",
-    "find_file": "AUTO", "system_status": "AUTO", "read_screen": "AUTO",
-    "workspace_write": "CONFIRM", "workspace_patch": "CONFIRM",
-}
+from agent_tier_fixture import TIERS
 
 
 def tiers(mapping=None):
@@ -161,6 +156,17 @@ def test_every_real_registry_schema_accepts_its_own_documented_shape():
         "read_screen": {},
         "workspace_write": {"path": "F:/x.txt", "content": "hello"},
         "edit_file": {"path": "F:/x.py", "old_string": "a", "new_string": "b"},
+        # wave 1 — email + calendar
+        "gmail_read_unread": {"count": 5},
+        "gmail_read": {"query": "from:mum newer_than:7d", "max_results": 5},
+        "search_email": {"query": "invoice"},
+        "read_email": {"which": "latest"},
+        "check_calendar": {},
+        "morning_briefing": {},
+        "gmail_send": {"to": "a@b.com", "subject": "Hi", "body": "Text."},
+        "gmail_reply": {"thread_id": "abc123", "body": "Thanks."},
+        "create_event": {"description": "dentist Thursday 4pm"},
+        "clear_schedule": {},
     }
     for name in reg.names():
         entry = reg.get(name)

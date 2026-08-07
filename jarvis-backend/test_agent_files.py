@@ -28,10 +28,7 @@ from modules import agent_files as af
 from modules import agent_tools as at
 from modules.tool_calls import ToolCall
 
-TIERS = {"tavily_search": "AUTO", "web_browse": "AUTO", "search_documents": "AUTO",
-         "memory_recall": "AUTO", "workspace_read": "AUTO", "list_directory": "AUTO",
-         "find_file": "AUTO", "system_status": "AUTO", "read_screen": "AUTO",
-         "workspace_write": "CONFIRM", "workspace_patch": "CONFIRM"}
+from agent_tier_fixture import TIERS
 
 HEADER_RULE = "─" * 60
 
