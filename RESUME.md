@@ -1,6 +1,6 @@
 # RESUME — pick up here
 
-> Written 2026-07-30, rewritten 2026-08-02 at the head of `feat/cloud-gateway` (`eff7540`).
+> Written 2026-07-30, rewritten 2026-08-02, cleanup checklist cleared 2026-08-08.
 > Read this first, then `JARVIS_MASTER_ROADMAP.md` (the single source of truth).
 > Structure: **state summary → pending checklist → post-Electron backlog → reference detail.**
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
@@ -8,42 +8,50 @@
 
 ## NEXT SESSION STARTS HERE — pick a number
 
-**Where things stand:** HEAD `eff7540`, level with `origin/feat/cloud-gateway`, **not merged
-to `main`**. Suite **1077 checks / 46 harnesses green** in the working tree (1051/45 counting
-only committed files — the difference is the uncommitted provenance arc). Done and pushed:
+**Where things stand:** HEAD on `feat/cloud-gateway`, **ahead of origin by 2 commits**,
+**not merged to `main`**. Suite **1078 checks / 46 harnesses green**, and the working tree is
+now clean of feature work — the provenance arc that used to sit in it is committed. Done:
 **both halves of partner-messaging** (`message_partner` outbound + the `partner_contact_status`
-butler inbound, now with **two-layer urgency detection** on Kaustav's real Benglish term list),
-**Chroma at-rest encryption**, and the **cloud→desk sealed-fact arc**.
+butler inbound, with **two-layer urgency detection** on Kaustav's real Benglish term list),
+**Chroma at-rest encryption**, the **cloud→desk sealed-fact arc**, and **memory provenance**.
 
-**The keyboard-buildable feature queue is drained.** The next real move is a hardware desk
-session (item 5), not more building. Items 1, 2 and 4 are cleanup that can be cleared from a
-chair; item 5 is the actual thing standing between here and Electron.
+**The keyboard-buildable feature queue is drained AND the cleanup checklist is empty.** The
+only thing left before Electron is a hardware desk session — item 5. Nothing else can be
+cleared from a chair.
 
-### CLEANUP — committed but incomplete. Clear these first.
+### CLEANUP — ✅ ALL FOUR CLEARED (2026-08-08). Kept for the reasoning, not as work.
 
-> **Remaining, in order: 1 → 2 → 4.** Item 3 is ✅ done (`eff7540`) and is kept below because
-> its reasoning and its one open thread — the term list is Kaustav's to keep refining — still
-> matter. Original numbering preserved so older notes still point at the right thing.
+> Items 1, 2 and 4 were closed on 2026-08-08; item 3 closed 2026-08-02 (`eff7540`). Original
+> numbering preserved so older notes still point at the right thing. **The one thread that
+> stays open is not a task: the urgency term list under item 3 is Kaustav's to keep refining.**
 
-**1. Run the source-tag migration. ⚠️ NEEDS A FULL-TANK SESSION — start it first, never last.**
-It touches **every row** in the memory store, so it wants a fresh context and an operator with
-time to read the survey output before answering anything. `migrate_memory_source.py` has
-**never been run**, and all **58 rows** in `jarvis_longterm.db` are still `source=NULL`, so the
-provenance feature is
-**inert** — it ships, it reads, and it distinguishes nothing. The script is non-destructive
-and backup-first: survey (read-only, refuses if anything looks wrong) → fresh verified backup
-via `backup_memory.py` → backfill to `desk` → verify. Every existing row predates the
-cloud→desk drain entirely, so `desk` is an airtight inference, not a guess. **Done when:**
-58/58 rows tagged and all 58 still decrypt. Note this also commits the arc that has been
-sitting in the working tree — see the `Working tree` row below for exactly which files.
+**1. ✅ SOURCE-TAG MIGRATION RUN 2026-08-08 — provenance is live, and the arc is committed
+(`326cbd2`).** `migrate_memory_source.py --apply` backfilled **58/58 rows to `desk`**;
+`source_counts()` now reads `{'cloud': 0, 'desk': 58, 'untagged': 0}`. Verified before the
+swap: ids, `content`, `content_hash`, `category`, `user` and `timestamp` byte-identical, and
+all 58 still decrypt to the same plaintext; `PRAGMA integrity_check: ok`. The original was
+**moved aside, not deleted** — `JARVIS-BACKUPS\pre-source-originals\jarvis_longterm.db.pre-source-20260808-004216`
+— and a full pre-migration snapshot sits in `JARVIS-BACKUPS\pre-encryption-20260808-004215`.
+The feature is no longer inert: a fact the Render gateway captured with the PC off is now
+distinguishable from one he said in person, which it was not before. Re-running `--apply` is a
+no-op.
 
-**2. Flip `JARVIS_LOG_CONTACT_EVENTS` to default OFF.** One line, in
-`modules/contact_events.py`. It currently defaults **ON**, which breaks this project's
-default-OFF discipline for anything logging third-party data. I chose ON because the store
-records only *that* a message arrived — no content — and because the butler was explicitly
-commissioned; but that reasoning is mine, and the discipline is yours. Flipping it means
-`partner_contact_status` answers *"I can't tell you either way"* until the flag is set in
-`.env`, which is exactly how `JARVIS_LOG_PARTNER_CHATS` already behaves.
+> ⚠️ **The mandatory backup wrote a NEW cleartext `.env` copy** —
+> `JARVIS-BACKUPS\pre-encryption-20260808-004215\.env`, 9,731 bytes, the same shape as the five
+> shredded 2026-08-01. `backup_memory.py` treats `.env` as a backup target, so **every** backup
+> re-creates one and shredding is a recurring chore until Step 3 lands. Kaustav's to shred; it
+> was deliberately not touched.
+
+**2. ✅ `JARVIS_LOG_CONTACT_EVENTS` NOW DEFAULTS OFF (2026-08-08, Kaustav's ruling).**
+`modules/contact_events.py` was default-ON, which broke this project's default-OFF discipline
+for anything recording third-party behaviour. It is opt-in now, exactly like
+`JARVIS_LOG_PARTNER_CHATS`: **unset, empty and unrecognised all read as OFF**, so a typo in
+`.env` fails towards not recording rather than towards recording. His machine is unaffected —
+`JARVIS_LOG_CONTACT_EVENTS=1` was added to `jarvis-backend\.env` alongside the chat flag, so
+the butler keeps working while a **fresh clone now records nothing about anyone** until its
+owner says otherwise. Pinned by `test_contact_recording_defaults_off_and_fails_towards_off`,
+which drives `record()` as well as `enabled()` — a default only the predicate honours is not a
+default. `test_partner_contact.py` 41 → **42**.
 
 **3. ✅ IMPLEMENTED 2026-08-02 (`eff7540`) — Benglish urgency terms + two-layer detection.**
 Kaustav's real list replaced the guess, and the detection grew a second layer.
@@ -87,14 +95,19 @@ Kaustav's real list replaced the guess, and the detection grew a second layer.
 > list contains none: dropping them would make a plain "please call me, I need you" read as
 > routine, the one direction §6.7 forbids. One edit from gone if he wants his list alone.
 
-**4. Confirm the content-override model — YOURS, a decision, no code.**
-`summarize_partner_chat` survives alongside the butler, so the shipped behaviour is *discreet
-by default, full content if you explicitly ask for it*. The alternative is **no content path
-at all** — remove the action, and "what did she say" simply cannot be answered. This was
-settled by implementation rather than by your ruling; confirm it, or say remove and it is a
-small follow-up.
+**4. ✅ CONTENT-OVERRIDE MODEL CONFIRMED 2026-08-08 — `summarize_partner_chat` STAYS.**
+Kaustav ruled: keep it. So the shipped behaviour is now a decision rather than an accident —
+*discreet by default via `partner_contact_status`, full content only when you explicitly ask
+for it*, and the two are not interchangeable (the routing prompt in `brain.py` says so). It
+remains gated by `JARVIS_LOG_PARTNER_CHATS`, so it can only ever answer from transcripts he
+already opted into keeping. The rejected alternative was removing the action outright, which
+would have made "what did she say" unanswerable by construction. **No code changed** — the
+ruling closes an open question, it does not move anything.
 
-### THEN THE REAL NEXT MILESTONE
+### THE ONLY THING LEFT ON THIS BRANCH
+
+> Also owed and trivial: **`git push`**. Three commits are local only — `326cbd2`, `ff83598`
+> and this file's update.
 
 **5. §7 LIVE-GATE DESK SESSION — the hardware gate to Electron.** Not a prompt-and-build; a
 desk day. **No code is blocking it.** It needs your hands (gestures), a second device (Track B
@@ -204,9 +217,10 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 
 | | |
 |---|---|
-| Branch | `feat/cloud-gateway` at **`eff7540`**, level with origin (`rev-list ...HEAD` = `0 0`), **not merged to `main`** |
-| Suite | **1051 checks / 45 harnesses green, 0 failed, 0 broken** at this commit — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
-| Working tree | carries **unrelated uncommitted work that is not part of this commit**: an additive `source` column on `memories` (`memory_manager.py`, `modules/fact_sink.py`, `test_fact_governance.py`, untracked `migrate_memory_source.py` + `test_memory_source.py`, a `.gitignore` hunk) plus the pre-existing untracked `jarvis-frontend/public/favicon.zip`. With that work in the tree the suite reads **1077 checks / 46 harnesses**. It was left staged-out deliberately — whoever owns it should commit it separately. `run_harnesses.py` carries one line from each arc, so each commit stages only its own line. ⚠️ **It is code-complete but migration-incomplete:** the `source` column exists in the live `jarvis_longterm.db` (added by the boot-time metadata-only `ALTER`) but all 58 rows are NULL — `migrate_memory_source.py` has never been run. Reads still behave (`_row_source()` maps NULL to `desk`), and no failed-migration sidecar is on disk. |
+| Branch | `feat/cloud-gateway`, **3 commits AHEAD of origin — the provenance arc, the contact-events flip and this file are LOCAL, not pushed**, and **not merged to `main`** |
+| Suite | **1078 checks / 46 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
+| Working tree | **clean of feature work.** The `source`-column arc that used to live here is committed (`326cbd2`); the only untracked file left is the pre-existing `jarvis-frontend/public/favicon.zip`, which is nobody's from this arc. |
+| Live store | `jarvis_longterm.db` — 58 rows, **all tagged `source=desk`**, all decrypting. The provenance column is populated, not merely present. |
 
 Note for anyone running the suite from a **bare checkout** (fresh clone, or a `git worktree`):
 `test_memory_store_encryption.py`, `test_store_retirement.py` and `test_gmail_agent.py` fail
@@ -235,6 +249,8 @@ The commits that got here:
 | `c173c2e` | **the Chroma RAG store is encrypted at rest** — text + sensitive metadata sealed with the existing C#11a field encryption, vector left plaintext for search; blind-index companions so `where` filters and the re-ingest delete still work against randomised ciphertext; + `test_chroma_crypto.py` (15) |
 | `ba12cc1` | **the butler — `partner_contact_status`, the INBOUND half of partner-messaging** — "did she message" answered from a content-free encrypted contact-event store; admin-only via `tier_allows`; urgency is a write-time boolean; + `test_partner_contact.py` (25) |
 | `eff7540` | **the butler reads urgency in the Benglish she actually writes** — Kaustav's real term list in one editable dict (`URGENT_TERM_GROUPS`) that BOTH layers derive from, plus a second semantic layer that judges by meaning so inflections and re-spellings are caught; OR-combined so the model can only raise a flag, never lower one; live-checked against the real provider chain; `test_partner_contact.py` 25 → 41 |
+| `326cbd2` | **every memory now says how it arrived** — additive `source` column (`desk` \| `cloud`) so a drained cloud fact stops being byte-identical to one he said in person; plaintext by design because a sealed column cannot satisfy `WHERE source = ?`; NOT part of the dedup key, so the first writer's provenance stands; `migrate_memory_source.py` **RUN** — 58/58 backfilled and verified; + `test_memory_source.py` (26) |
+| `ff83598` | **contact-event recording is opt-in, not opt-out** — `JARVIS_LOG_CONTACT_EVENTS` flipped to default OFF, and unset/empty/unrecognised all read as OFF so a typo in `.env` fails towards not recording; a fresh clone records nothing about anyone until its owner says so; `test_partner_contact.py` 41 → 42 |
 
 ## THE CLOUD→DESK SEALED-FACT BACKLOG IS COMPLETE
 
@@ -361,12 +377,12 @@ Step 1 ceremony).
      autoincrement `id` (insertion order is already chronological), which is what makes
      encrypting the timestamp affordable. `partner_key` is a keyed blind index, because
      randomised ciphertext can never satisfy `WHERE partner_slot = ?`.
-   - **`JARVIS_LOG_CONTACT_EVENTS` (default ON)** is independent of `JARVIS_LOG_PARTNER_CHATS`
-     on purpose — that is the entire reason for the separate store, so the discreet answer
-     works on a machine where keeping her words is off. A harness pins that the write did not
-     drift behind the transcript flag. ⚠️ Note the default differs from `JARVIS_LOG_PARTNER_CHATS`:
-     that flag guards a third party's *words* and is default-OFF; this one records only that a
-     message arrived. **If Kaustav wants it default-OFF instead, it is a one-line change.**
+   - **`JARVIS_LOG_CONTACT_EVENTS` (default OFF since 2026-08-08)** is independent of
+     `JARVIS_LOG_PARTNER_CHATS` on purpose — that is the entire reason for the separate store,
+     so the discreet answer works on a machine where keeping her words is off. A harness pins
+     that the write did not drift behind the transcript flag. It shipped default-ON and was
+     flipped by Kaustav's ruling; see checklist item 2 above for the reasoning and the `.env`
+     line that keeps his own machine recording.
    - **Fails honestly.** Recording off, or a keystore that will not open, says so — never "no,
      she didn't message", which would be a confident answer manufactured by a failure.
    - **No migration** — new table, created on first write.
@@ -377,6 +393,8 @@ Step 1 ceremony).
    **`summarize_partner_chat` survives as the deliberate explicit override** — "what did she
    say" is a different, more explicit request than "did she call". That settles the §6.6 open
    decision; the routing prompt in `brain.py` now states the two are not interchangeable.
+   ✅ **Confirmed by Kaustav 2026-08-08** (checklist item 4) — it is his ruling now, not an
+   artefact of how it happened to get built.
 
    **Still his call, not technical:** whether Mousumi knows JARVIS exists and that Kaustav can
    ask whether she made contact. The butler model very likely clears the bar transcript-logging
