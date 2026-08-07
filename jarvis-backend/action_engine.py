@@ -1684,11 +1684,25 @@ class ActionEngine:
             print(f"[ACTION ENGINE] Workspace write failed: {e}")
             return f"Workspace write offline: {e}"
 
+    #: Opt-in prefix on the PATH field meaning "change every occurrence"
+    #: (roadmap §6.8.1 gap F). It rides on the path rather than as a fourth
+    #: pipe-separated field because the split below is `maxsplit=2` — the
+    #: replacement text is everything after the second pipe and may itself
+    #: contain pipes, so a trailing flag field is impossible to parse. `*` is
+    #: not a legal character in a Windows filename, so this cannot collide with
+    #: a real path.
+    PATCH_ALL_PREFIX = "*all*"
+
     def _workspace_patch(self, target: str) -> str:
         """
         Surgical find-and-replace in a workspace file.
         Target format: "filepath|search_string|replace_string"
         All three parts are required.
+
+        Prefix the path with `*all*` to change EVERY occurrence. Without it, a
+        search string matching more than once is refused rather than applied
+        everywhere — until 2026-08-08 the default was replace-all and nothing
+        passed a count, so an ambiguous edit rewrote every match silently.
         """
         if not target:
             return "No patch target specified."
@@ -1696,12 +1710,16 @@ class ActionEngine:
         if len(parts) < 3:
             return "Format: 'filepath|search_string|replace_string'"
         filepath, search, replace = parts[0].strip(), parts[1], parts[2]
+        replace_all = filepath.startswith(self.PATCH_ALL_PREFIX)
+        if replace_all:
+            filepath = filepath[len(self.PATCH_ALL_PREFIX):].strip()
         if not filepath:
             return "No file path specified for workspace patch."
         if not search:
             return "Search string cannot be empty."
         try:
-            result = self.workspace_agent.patch_file(filepath, search, replace)
+            result = self.workspace_agent.patch_file(
+                filepath, search, replace, replace_all=replace_all)
             return result
         except Exception as e:
             print(f"[ACTION ENGINE] Workspace patch failed: {e}")

@@ -324,6 +324,138 @@ def test_the_real_edit_tool_refuses_an_ambiguous_edit():
         assert "must be unique" in decision.reason, decision.reason
 
 
+# ── F, at the ROOT: workspace_agent itself, and every caller ─────────────────
+#
+# The agent-loop precondition above only protects the agent loop. `patch_file`
+# is also reached by the ordinary voice/HUD command path (brain.py routes any
+# filename with an extension to workspace_patch) and by self_improve.py, and
+# neither passes a count. Those callers are why the fix had to land HERE.
+
+def _workspace(temp_dir):
+    """A real WorkspaceAgent with its sandbox pointed at the temp directory."""
+    from pathlib import Path
+
+    from modules import workspace_agent as wa
+    saved = list(wa.WORKSPACE_ROOTS)
+    wa.WORKSPACE_ROOTS[:] = [Path(temp_dir).resolve()]
+    return wa.WorkspaceAgent(), (wa, saved)
+
+
+def _restore(handle):
+    module, saved = handle
+    module.WORKSPACE_ROOTS[:] = saved
+
+
+def test_patch_file_refuses_an_ambiguous_patch():
+    """The defect, at its root. Before 2026-08-08 this rewrote all three."""
+    with Temp() as t:
+        agent, handle = _workspace(t.dir)
+        try:
+            path = t.write("cfg.py", "timeout = 30\nretry = 30\nwait = 30\n")
+            result = agent.patch_file(path, "= 30", "= 60")
+            assert "refused" in result.lower(), result
+            assert "matches 3 places" in result, result
+            assert t.read("cfg.py") == "timeout = 30\nretry = 30\nwait = 30\n", \
+                "the file was modified by a patch that should have been refused"
+        finally:
+            _restore(handle)
+
+
+def test_patch_file_still_applies_a_unique_patch():
+    with Temp() as t:
+        agent, handle = _workspace(t.dir)
+        try:
+            path = t.write("cfg.py", "timeout = 30\nretry = 5\n")
+            result = agent.patch_file(path, "timeout = 30", "timeout = 60")
+            assert "Patched" in result, result
+            assert t.read("cfg.py") == "timeout = 60\nretry = 5\n"
+        finally:
+            _restore(handle)
+
+
+def test_patch_file_replaces_everything_when_told_to_explicitly():
+    """The old behaviour is still reachable — it just has to be asked for."""
+    with Temp() as t:
+        agent, handle = _workspace(t.dir)
+        try:
+            path = t.write("cfg.py", "a = 30\nb = 30\n")
+            result = agent.patch_file(path, "= 30", "= 60", replace_all=True)
+            assert "Patched" in result, result
+            assert t.read("cfg.py") == "a = 60\nb = 60\n"
+        finally:
+            _restore(handle)
+
+
+def test_an_explicit_count_is_still_honoured():
+    """`count > 0` was always a deliberate statement of intent, so only the
+    SILENT default changed."""
+    with Temp() as t:
+        agent, handle = _workspace(t.dir)
+        try:
+            path = t.write("cfg.py", "a = 30\nb = 30\n")
+            agent.patch_file(path, "= 30", "= 60", count=1)
+            assert t.read("cfg.py") == "a = 60\nb = 30\n"
+        finally:
+            _restore(handle)
+
+
+class _StubEngine:
+    """Just enough of ActionEngine to drive its real `_workspace_patch` body."""
+
+    def __init__(self, workspace_agent, prefix):
+        self.workspace_agent = workspace_agent
+        self.PATCH_ALL_PREFIX = prefix
+
+
+def test_the_voice_command_path_refuses_an_ambiguous_patch():
+    """The path that mattered most and was NOT covered by the agent-loop fix:
+    say "change timeout = 30 to 60" out loud and brain.py routes it here.
+
+    Drives `ActionEngine._workspace_patch`'s real body against a stub self, so
+    this is the actual shipped parsing rather than a source-text check.
+    """
+    import action_engine as ae
+
+    with Temp() as t:
+        agent, handle = _workspace(t.dir)
+        try:
+            path = t.write("cfg.py", "a = 30\nb = 30\n")
+            engine = _StubEngine(agent, ae.ActionEngine.PATCH_ALL_PREFIX)
+            out = ae.ActionEngine._workspace_patch(engine, f"{path}|= 30|= 60")
+            assert "refused" in out.lower(), out
+            assert t.read("cfg.py") == "a = 30\nb = 30\n", "the file was changed"
+        finally:
+            _restore(handle)
+
+
+def test_the_all_prefix_survives_the_trip_through_the_engine():
+    """`replace_all` has to reach `patch_file`, or a deliberate rename made
+    through the agent would be refused at the far end."""
+    import action_engine as ae
+
+    with Temp() as t:
+        agent, handle = _workspace(t.dir)
+        try:
+            path = t.write("cfg.py", "a = 30\nb = 30\n")
+            target = af.build_patch_target({"path": path, "old_string": "= 30",
+                                            "new_string": "= 60",
+                                            "replace_all": True})
+            engine = _StubEngine(agent, ae.ActionEngine.PATCH_ALL_PREFIX)
+            out = ae.ActionEngine._workspace_patch(engine, target)
+            assert "Patched" in out, out
+            assert t.read("cfg.py") == "a = 60\nb = 60\n"
+        finally:
+            _restore(handle)
+
+
+def test_the_all_prefix_constant_has_not_drifted_from_the_engine():
+    """`agent_files` duplicates the literal so it stays importable without the
+    action stack. Duplicated constants drift; this is the pin."""
+    import action_engine as ae
+
+    assert af.PATCH_ALL_PREFIX == ae.ActionEngine.PATCH_ALL_PREFIX
+
+
 def test_the_edit_target_is_composed_for_the_engine():
     target = af.build_patch_target({"path": r"F:\a.py", "old_string": "x",
                                     "new_string": "y"})

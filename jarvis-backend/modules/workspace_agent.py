@@ -174,6 +174,7 @@ class WorkspaceAgent:
         replace_string: str,
         *,
         count: int = 0,
+        replace_all: bool = False,
     ) -> str:
         """
         Surgical find-and-replace within a workspace file.
@@ -182,7 +183,12 @@ class WorkspaceAgent:
             filepath:       Target file path (must be within workspace roots).
             search_string:  Exact string to find (supports \\n for newlines).
             replace_string: Replacement string (supports \\n for newlines).
-            count:          Maximum replacements (0 = replace all occurrences).
+            count:          Replace exactly this many occurrences. 0 means
+                            "unspecified", which is REFUSED when the string
+                            matches more than once — see the check below.
+            replace_all:    Say so explicitly to change every occurrence. This
+                            is the only way to get the pre-2026-08-08 behaviour,
+                            and it now has to be asked for.
 
         Returns a diff summary or an error string.
         """
@@ -224,7 +230,25 @@ class WorkspaceAgent:
                 f"(max {_MAX_PATCH_MATCHES}). Be more specific."
             )
 
-        effective_count = count if count > 0 else occurrences
+        # An AMBIGUOUS patch is refused (roadmap §6.8.1 gap F, rule 4). Until
+        # 2026-08-08 `count=0` meant "replace every occurrence" and NO caller
+        # passed a count — so "change timeout = 30 to timeout = 60" rewrote all
+        # three matches silently, and the diff preview below (40 lines) could
+        # not even show it on a large file.
+        #
+        # Refusing is the honest failure: the caller has to say which one, or
+        # say it means all of them. `count > 0` still means "replace exactly
+        # this many" — an explicit number was always deliberate, so it is left
+        # alone and only the SILENT default changed.
+        if occurrences > 1 and count <= 0 and not replace_all:
+            return (
+                f"Patch refused: the search string matches {occurrences} places "
+                f"in {safe.name}, so it is ambiguous which one to change. Include "
+                f"more surrounding text so it identifies exactly one location — "
+                f"or say explicitly that all {occurrences} should change."
+            )
+
+        effective_count = occurrences if (replace_all or count <= 0) else count
         patched = original.replace(search_string, replace_string, effective_count)
 
         try:

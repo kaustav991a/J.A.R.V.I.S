@@ -327,6 +327,13 @@ def edit_precondition(args: dict) -> str | None:
     return None
 
 
+#: Mirrors `ActionEngine.PATCH_ALL_PREFIX`. Duplicated as a literal rather than
+#: imported, so this module stays importable without the whole action stack —
+#: the same rule the SENTINELS list in `agent_tools` follows. Pinned against
+#: drift by a harness that reads the constant off the real engine class.
+PATCH_ALL_PREFIX = "*all*"
+
+
 def build_patch_target(args: dict) -> str:
     r"""Compose `action_engine`'s "path|search|replace" target for an edit.
 
@@ -335,8 +342,14 @@ def build_patch_target(args: dict) -> str:
     SEARCH string would silently shift the fields and edit the wrong text. That
     is checked in `edit_precondition`'s caller schema rather than repaired here:
     building a target is not the place to discover the arguments are unusable.
+
+    `replace_all` becomes a PREFIX on the path for the same reason — with
+    `maxsplit=2` there is no fourth field to put a flag in. Without the prefix
+    the engine now refuses an ambiguous patch, so the flag has to survive the
+    trip or a deliberate rename would be refused at the far end.
     """
-    return (f"{str(args.get('path', '')).strip()}|"
+    prefix = PATCH_ALL_PREFIX if args.get("replace_all") else ""
+    return (f"{prefix}{str(args.get('path', '')).strip()}|"
             f"{args.get('old_string', '')}|{args.get('new_string', '')}")
 
 

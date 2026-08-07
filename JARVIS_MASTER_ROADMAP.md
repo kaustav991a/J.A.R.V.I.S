@@ -1045,8 +1045,31 @@ lets through. **Nothing here needs hardware.**
 | **C** | 5 — return anchors | `workspace_read` returns raw content, no line numbers. | The model cannot cite `file:line` and will invent them. |
 | **D** | 8 — pagination | `workspace_read` reads the WHOLE file, then the loop truncates at 4 000 chars. Announced, but **there is no way to continue** — no `offset`/`limit`. | A 5 000-line file is permanently unreadable past its first ~4 KB. |
 | **E** | 3 — preconditions in code | `workspace_write` overwrites blind. No read-before-write ledger, no staleness check. | The agent can destroy a file it never read, or clobber a change made since it read it. |
-| **F** | 4 — correctness structurally required | There is no exact-match `edit` tool; `workspace_write` is whole-file overwrite. | Every small change is a full-file rewrite, which is how a model silently drops the parts it did not think to re-emit. |
+| **F** | 4 — correctness structurally required | There is no exact-match `edit` tool; `workspace_write` is whole-file overwrite. **And a live defect underneath it:** `workspace_agent.patch_file` defaults to `count=0` = replace EVERY occurrence, and **no caller passed a count** — not `action_engine._workspace_patch`, not `self_improve.py`. | Every small change is a full-file rewrite, which is how a model silently drops what it did not re-emit. Worse, the "surgical" patch rewrote every match: *"change `timeout = 30` to 60"* spoken out loud changed all three, and the 40-line diff preview could not even show it on a large file. |
 | **G** | 7 — absolute paths, no ambient state | `workspace_read` accepts "absolute **or** workspace-relative". | Already bit us live on 2026-07-26: the model passed `.claude.json`, it resolved against a different root, and the tool reported "File not found" for a file that exists. The comment in `agent_tools.format_directory_listing` is a monument to this bug. |
+
+> ⚠️ **Gap F was fixed at the ROOT, and it is the one behaviour change here you
+> will feel at the microphone.** The first pass only added the agent-loop
+> precondition, which protected the agent loop and left the defect untouched
+> beneath it — the ordinary voice/HUD path and `self_improve.py` both still
+> replaced every match. So `workspace_agent.patch_file` itself now **refuses an
+> ambiguous patch** (Kaustav's ruling 2026-08-08, chosen over "replace the first
+> one", which is a quieter failure rather than a smaller one).
+>
+> - **What changes for you:** *"change `timeout = 30` to 60"* on a file where
+>   that string appears three times now does **nothing**, and says it matches
+>   three places. Restate it with surrounding context, or say all three.
+> - **The old behaviour is still reachable**, it just has to be asked for:
+>   `replace_all=True`, or `count=N` for exactly N. An explicit count was always
+>   a deliberate statement of intent, so **only the silent default changed**.
+> - **How the flag crosses `action_engine`:** a `*all*` prefix on the PATH field,
+>   not a fourth pipe field — `_workspace_patch` splits with `maxsplit=2`, so the
+>   replacement text may itself contain pipes and a trailing flag cannot be
+>   parsed. `*` is illegal in a Windows filename, so it cannot collide with a
+>   real path. The constant is duplicated in `agent_files` (to keep it importable
+>   without the action stack) and pinned against drift by a harness.
+> - **`self_improve.py` inherits the refusal**, deliberately: a self-editing
+>   agent is the last caller that should be allowed an ambiguous replace-all.
 
 #### 6.8.2 Phase 2 — Scale
 
