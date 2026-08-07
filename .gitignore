@@ -15,6 +15,13 @@ jarvis-backend/*.tar.gz
 
 # --- Personal memory / RAG stores (auto-created; never commit) ---
 jarvis-backend/*.db
+# In-flight migration copies and sqlite sidecars. `*.db` above does NOT cover
+# these: `jarvis_longterm.db.sourcing-<stamp>` does not END in `.db`. A verify
+# that fails leaves one on disk on purpose, and it holds the same rows the live
+# store does — it must not be one `git add -A` away from being published.
+jarvis-backend/*.db.*
+jarvis-backend/*.db-wal
+jarvis-backend/*.db-shm
 jarvis-backend/memory/vector_db/
 jarvis-backend/personal_chroma_db/
 jarvis-backend/action_chroma_db/

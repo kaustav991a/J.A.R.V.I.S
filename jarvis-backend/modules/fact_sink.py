@@ -216,10 +216,15 @@ def governed_write(payload: dict) -> bool:
 
     # The same call brain.extract_and_store_memory delegates to, minus that
     # wrapper's catch-all — see the module docstring.
-    from memory_manager import extract_and_persist
+    #
+    # SOURCE_CLOUD is the ONLY place in the tree that is passed: everything else
+    # defaults to `desk`. It is what makes a fact the Render gateway captured
+    # while the PC was off distinguishable from one he said in person — the two
+    # were byte-identical in the store until 2026-08-02.
+    from memory_manager import SOURCE_CLOUD, extract_and_persist
 
-    saved = extract_and_persist(text, who)
-    print(f"[FACT_SINK] governed write for {who} ({tier}): "
+    saved = extract_and_persist(text, who, source=SOURCE_CLOUD)
+    print(f"[FACT_SINK] governed write for {who} ({tier}), source={SOURCE_CLOUD}: "
           f"{saved} new memory row(s).", flush=True)
     return saved > 0
 

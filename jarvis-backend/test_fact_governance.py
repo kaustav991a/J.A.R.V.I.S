@@ -560,7 +560,10 @@ def test_a_store_fault_holds_the_record_rather_than_losing_it():
     _reset()
     real = mm.extract_and_persist
 
-    def _boom(text, user="KAUSTAV"):
+    # Takes `source` too: the sink now passes it, and a stub that raised
+    # TypeError instead would still satisfy the assertions below — for entirely
+    # the wrong reason, and silently.
+    def _boom(text, user="KAUSTAV", source=mm.SOURCE_DESK):
         raise sqlite3.OperationalError("database is locked")
 
     mm.extract_and_persist = _boom

@@ -105,6 +105,7 @@ HARNESSES = [
     "test_llm_failover.py",
     "test_memory_crypto.py",
     "test_memory_extraction_guard.py",
+    "test_memory_source.py",
     "test_memory_store_encryption.py",
     "test_owner_notify.py",
     "test_partner_contact.py",

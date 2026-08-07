@@ -77,6 +77,64 @@ def _decrypt_row_content(value):
     return _crypto.decrypt_field(value, _TABLE, _ENC_COLUMN)
 
 
+# ── Provenance (`source`) ─────────────────────────────────────────────────────
+# Which route a memory arrived by. `desk` is something he said to JARVIS with the
+# machine in front of him; `cloud` is a fact the Render gateway captured while the
+# PC was off, sealed, and the desk later drained through the governed sink
+# (modules/fact_sink.py). The second is a weaker guarantee — the cloud saw that
+# turn in plaintext, and a sealed record's `who` is a claim, not a credential — so
+# the two must be tellable apart in the store.
+#
+# DELIBERATELY PLAINTEXT, unlike `content` beside it. Ruled 2026-08-02. Encryption
+# here is randomised per write, so a sealed `source` could never satisfy
+# `WHERE source = ?`, which is the entire point of the column; the blind-index
+# workaround that rescues `content_hash` would leak the same distribution anyway
+# for a two-value vocabulary. Same reasoning that keeps `partner_messages.slot`
+# in the clear: metadata you filter on stays queryable, payloads get sealed.
+# Do NOT add this column to migrate_memory_encryption.TARGETS.
+SOURCE_DESK = "desk"
+SOURCE_CLOUD = "cloud"
+
+#: Closed vocabulary. add_memory REFUSES anything else rather than coercing it —
+#: a mislabelled write is worse than a rejected one, because the whole feature is
+#: being able to trust the label.
+KNOWN_SOURCES = frozenset({SOURCE_DESK, SOURCE_CLOUD})
+
+#: Rows written before this column existed. The backfill sets them to `desk` and
+#: the inference is airtight: cloud drain did not exist before the column did, so
+#: every pre-existing row IS desk-origin. Reads apply the same default so a store
+#: that has not been migrated yet still answers correctly.
+_LEGACY_SOURCE = SOURCE_DESK
+
+
+def _normalise_source(source: Optional[str]) -> Optional[str]:
+    """The stored value for a caller-supplied source, or None if unacceptable."""
+    value = (source or SOURCE_DESK).strip().lower()
+    return value if value in KNOWN_SOURCES else None
+
+
+def _row_source(value: Optional[str]) -> str:
+    return value if value else _LEGACY_SOURCE
+
+
+def _ensure_source_column(conn: sqlite3.Connection) -> bool:
+    """Add `source` if it is missing. Idempotent; returns True if it was added.
+
+    Shared by _init_db() and migrate_memory_source.py ON PURPOSE, so the live
+    schema and the migrated copy cannot drift apart.
+
+    `ALTER TABLE ... ADD COLUMN` with no DEFAULT is metadata-only in SQLite: it
+    rewrites the schema header and does not touch a single row, which is why it
+    is safe here while the row-by-row BACKFILL is not, and gets the full
+    copy-verify-swap ceremony in the migration script instead.
+    """
+    columns = {r[1] for r in conn.execute(f"PRAGMA table_info({_TABLE})")}
+    if "source" in columns:
+        return False
+    conn.execute(f"ALTER TABLE {_TABLE} ADD COLUMN source TEXT")
+    return True
+
+
 # =============================================================================
 # DATABASE BOOTSTRAP
 # =============================================================================
@@ -118,6 +176,16 @@ def _init_db() -> None:
         if "content_hash" not in columns:
             conn.execute("ALTER TABLE memories ADD COLUMN content_hash TEXT")
 
+        # Provenance. Same additive, metadata-only shape as content_hash above.
+        # Existing rows are left NULL here and read as `desk`; the backfill that
+        # actually writes to every row is migrate_memory_source.py, which does it
+        # on a verified copy rather than in place.
+        _ensure_source_column(conn)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memories_user_source
+            ON memories (user, source)
+        """)
+
         # UNIQUE here would fail outright if two existing rows collide under
         # normalisation. That failure must not take the whole boot down, and it
         # must not be silent either: fall back to a plain index and say so, so
@@ -155,6 +223,7 @@ def add_memory(
     content: str,
     category: MemoryCategory = "Fact",
     user: str = "KAUSTAV",
+    source: str = SOURCE_DESK,
 ) -> bool:
     """
     Persist a single memory to the database.
@@ -164,16 +233,28 @@ def add_memory(
                    e.g. "Sir prefers dark-mode interfaces."
         category : 'Preference', 'Correction', or 'Fact'.
         user     : Active user identifier (matches brain.py naming).
+        source   : How it arrived — SOURCE_DESK (default, and what every live
+                   write is) or SOURCE_CLOUD (drained from the PC-off backlog).
+                   Defaulted so every existing caller keeps its exact behaviour.
 
     Returns:
         True  — memory was inserted successfully.
-        False — memory was a duplicate (silently ignored) or an error occurred.
+        False — memory was a duplicate (silently ignored), the source was not one
+                this store issues, or an error occurred.
 
     Thread-safety:
         Opens a fresh connection per call — safe to call from any thread or
         asyncio.to_thread() without a shared lock.
     """
     if not content or not content.strip():
+        return False
+
+    stored_source = _normalise_source(source)
+    if stored_source is None:
+        # Refused rather than coerced to `desk`. Silently relabelling a write
+        # this store cannot place would defeat the only thing the column is for.
+        print(f"[MEMORY_MANAGER] REFUSED a write with source={source!r} — known "
+              f"sources are {sorted(KNOWN_SOURCES)}.", flush=True)
         return False
 
     content = content.strip()
@@ -192,6 +273,12 @@ def add_memory(
     try:
         # Explicit duplicate check as well as the index: the fingerprint index
         # is only UNIQUE when no pre-existing rows collided (see _init_db).
+        #
+        # `source` is NOT part of this key, on purpose. The same fact arriving by
+        # both routes is still one fact, and the existing row is left untouched —
+        # so the FIRST writer's provenance is what stands. A later echo down the
+        # weaker path cannot relabel a memory he gave in person, and a live
+        # restatement does not launder a cloud-drained one into `desk`.
         if content_hash is not None:
             hit = conn.execute(
                 "SELECT 1 FROM memories WHERE user = ? AND content_hash = ? LIMIT 1",
@@ -202,13 +289,13 @@ def add_memory(
                 return False
 
         conn.execute(
-            "INSERT INTO memories (category, content, user, timestamp, content_hash) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (category, stored, user.upper(), timestamp, content_hash),
+            "INSERT INTO memories (category, content, user, timestamp, content_hash, source) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (category, stored, user.upper(), timestamp, content_hash, stored_source),
         )
         conn.commit()
         print(
-            f"[MEMORY_MANAGER] +{category} [{user}]: {content[:80]}",
+            f"[MEMORY_MANAGER] +{category} [{user}/{stored_source}]: {content[:80]}",
             flush=True,
         )
         return True
@@ -238,7 +325,7 @@ def get_relevant_memories(
         limit    : Maximum number of rows to return (default 5).
 
     Returns:
-        A list of dicts, each with keys: id, category, content, timestamp.
+        A list of dicts, each with keys: id, category, content, timestamp, source.
         Ordered newest-first.
 
     Usage in brain.py:
@@ -250,7 +337,7 @@ def get_relevant_memories(
         if category:
             rows = conn.execute(
                 """
-                SELECT id, category, content, timestamp
+                SELECT id, category, content, timestamp, source
                 FROM memories
                 WHERE user = ? AND category = ?
                 ORDER BY id DESC
@@ -261,7 +348,7 @@ def get_relevant_memories(
         else:
             rows = conn.execute(
                 """
-                SELECT id, category, content, timestamp
+                SELECT id, category, content, timestamp, source
                 FROM memories
                 WHERE user = ?
                 ORDER BY id DESC
@@ -271,7 +358,7 @@ def get_relevant_memories(
             ).fetchall()
         return [
             {"id": r[0], "category": r[1], "content": _decrypt_row_content(r[2]),
-             "timestamp": r[3]}
+             "timestamp": r[3], "source": _row_source(r[4])}
             for r in rows
         ]
     except MemoryLockedError:
@@ -295,7 +382,7 @@ def get_full_profile(user: str = "KAUSTAV") -> list[dict]:
     try:
         rows = conn.execute(
             """
-            SELECT id, category, content, timestamp
+            SELECT id, category, content, timestamp, source
             FROM memories
             WHERE user = ?
             ORDER BY
@@ -310,7 +397,7 @@ def get_full_profile(user: str = "KAUSTAV") -> list[dict]:
         ).fetchall()
         return [
             {"id": r[0], "category": r[1], "content": _decrypt_row_content(r[2]),
-             "timestamp": r[3]}
+             "timestamp": r[3], "source": _row_source(r[4])}
             for r in rows
         ]
     except MemoryLockedError:
@@ -318,6 +405,89 @@ def get_full_profile(user: str = "KAUSTAV") -> list[dict]:
     except Exception as exc:
         print(f"[MEMORY_MANAGER] get_full_profile error: {exc}", flush=True)
         return []
+    finally:
+        conn.close()
+
+
+# =============================================================================
+# PROVENANCE: FILTER + AUDIT
+# =============================================================================
+
+def get_memories_by_source(
+    source: str,
+    user: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> list[dict]:
+    """Every memory that arrived by one route. The audit path.
+
+    This is what `source` being plaintext buys: an exact SQL filter, no key
+    needed to select the rows (the content still needs one to read). Untagged
+    legacy rows answer to SOURCE_DESK, matching how the read paths report them.
+    """
+    wanted = _normalise_source(source)
+    if wanted is None:
+        print(f"[MEMORY_MANAGER] unknown source {source!r} — known sources are "
+              f"{sorted(KNOWN_SOURCES)}.", flush=True)
+        return []
+
+    clauses, params = [], []
+    if wanted == _LEGACY_SOURCE:
+        clauses.append("(source = ? OR source IS NULL)")
+    else:
+        clauses.append("source = ?")
+    params.append(wanted)
+    if user:
+        clauses.append("user = ?")
+        params.append(user.upper())
+
+    sql = ("SELECT id, category, content, timestamp, source, user FROM memories "
+           f"WHERE {' AND '.join(clauses)} ORDER BY id DESC")
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+
+    conn = sqlite3.connect(_DB_PATH)
+    try:
+        rows = conn.execute(sql, params).fetchall()
+        return [
+            {"id": r[0], "category": r[1], "content": _decrypt_row_content(r[2]),
+             "timestamp": r[3], "source": _row_source(r[4]), "user": r[5]}
+            for r in rows
+        ]
+    except MemoryLockedError:
+        raise
+    except Exception as exc:
+        print(f"[MEMORY_MANAGER] get_memories_by_source error: {exc}", flush=True)
+        return []
+    finally:
+        conn.close()
+
+
+def source_counts(user: Optional[str] = None) -> dict:
+    """How many rows arrived by each route. Needs no key at all.
+
+    `untagged` is reported SEPARATELY from `desk` even though the read paths
+    treat them identically — it is how you tell whether migrate_memory_source.py
+    has run, and a number that quietly folded into `desk` would hide that.
+    """
+    sql = "SELECT source, COUNT(*) FROM memories"
+    params: list = []
+    if user:
+        sql += " WHERE user = ?"
+        params.append(user.upper())
+    sql += " GROUP BY source"
+
+    counts = {s: 0 for s in sorted(KNOWN_SOURCES)}
+    counts["untagged"] = 0
+    conn = sqlite3.connect(_DB_PATH)
+    try:
+        for value, n in conn.execute(sql, params).fetchall():
+            key = value if value else "untagged"
+            counts[key] = counts.get(key, 0) + n
+        return counts
+    except Exception as exc:
+        print(f"[MEMORY_MANAGER] source_counts error: {exc}", flush=True)
+        return counts
     finally:
         conn.close()
 
@@ -653,7 +823,8 @@ def extract_memories_from_input(
 # CONVENIENCE: EXTRACT + PERSIST IN ONE CALL
 # =============================================================================
 
-def extract_and_persist(user_text: str, user: str = "KAUSTAV") -> int:
+def extract_and_persist(user_text: str, user: str = "KAUSTAV",
+                        source: str = SOURCE_DESK) -> int:
     """
     Convenience wrapper: extract memories from user_text then persist each one.
 
@@ -661,6 +832,10 @@ def extract_and_persist(user_text: str, user: str = "KAUSTAV") -> int:
 
     This is the function called by brain.py's extract_and_store_memory()
     and is safe to run via asyncio.to_thread().
+
+    `source` defaults to SOURCE_DESK, so every live path — brain.py, main.py,
+    streaming_daemon.py — is untouched. modules/fact_sink.py is the one caller
+    that passes SOURCE_CLOUD.
     """
     extracted = extract_memories_from_input(user_text, user)
     saved = 0
@@ -669,6 +844,7 @@ def extract_and_persist(user_text: str, user: str = "KAUSTAV") -> int:
             content=mem["content"],
             category=mem["category"],   # type: ignore[arg-type]
             user=user,
+            source=source,
         )
         if ok:
             saved += 1
