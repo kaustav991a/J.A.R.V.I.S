@@ -484,6 +484,9 @@ async def run_agent_loop(
                 # An honest ToolFailure carries the engine's own wording; keep it
                 # verbatim so the model reads exactly what the user would hear.
                 err = str(e) if isinstance(e, ToolFailure) else f"{type(e).__name__}: {e}"
+                # The AUDIT trail keeps the raw error — `summary()` and the owner
+                # read it, and a diagnosis should not have to step around advice
+                # written for the model.
                 runs.append(ToolRun(call.name, call.arguments, ok=False, error=err))
                 await emit("tool_error", tool=call.name, error=err)
                 if consecutive_errors >= limits.max_consecutive_errors:
@@ -491,6 +494,11 @@ async def run_agent_loop(
                         False, None, TOOL_ERRORS, steps, runs,
                         error=f"{consecutive_errors} tool failures in a row: {err}",
                         messages=messages)
-                # Hand the error back: a good model adapts, and this is how it
-                # learns the file doesn't exist / the app isn't installed.
-                messages.append(tool_result_message(call, f"ERROR: {err}"))
+                # Hand the error back as an INSTRUCTION (§6.8.1 gap B, rule 6).
+                # The raw text is still the first line; what is appended is the
+                # next move. A free-tier model given only "FileNotFoundError"
+                # retries the identical call until the cap above kills the run —
+                # which made a better message a reliability fix, not a nicety.
+                from modules.agent_errors import explain
+                messages.append(tool_result_message(
+                    call, f"ERROR: {explain(e, call, available=tools)}"))

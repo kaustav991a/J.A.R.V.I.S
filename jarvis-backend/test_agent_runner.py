@@ -29,7 +29,7 @@ from test_agent_yield import FakeNotifier, FakeQueue
 TIERS = {"tavily_search": "AUTO", "web_browse": "AUTO", "search_documents": "AUTO",
          "memory_recall": "AUTO", "workspace_read": "AUTO", "list_directory": "AUTO",
          "find_file": "AUTO", "system_status": "AUTO", "read_screen": "AUTO",
-         "workspace_write": "CONFIRM"}
+         "workspace_write": "CONFIRM", "workspace_patch": "CONFIRM"}
 
 
 def registry():
@@ -215,7 +215,7 @@ def test_at_desk_confirm_approves_and_continues_in_place():
         task = asyncio.create_task(ar.run_agent_command(
             "write it", engine, registry=reg, tool_set="authoring",
             send=hud, presence="at_desk", confirms=confirms,
-            call_model=script(tool_turn("workspace_write", path="a.py", content="x"),
+            call_model=script(tool_turn("workspace_write", path=r"F:\work\a.py", content="x"),
                               final("Written, Sir."))))
         # Wait for the prompt, then approve it the way the POST endpoint does.
         for _ in range(200):
@@ -243,7 +243,7 @@ def test_at_desk_denial_is_fed_back_so_the_model_can_reroute():
         task = asyncio.create_task(ar.run_agent_command(
             "write it", engine, registry=reg, tool_set="authoring",
             send=hud, presence="at_desk", confirms=confirms,
-            call_model=script(tool_turn("workspace_write", path="a.py", content="x"),
+            call_model=script(tool_turn("workspace_write", path=r"F:\work\a.py", content="x"),
                               final("Understood — I won't write it."))))
         for _ in range(200):
             await asyncio.sleep(0.005)
@@ -261,7 +261,7 @@ def test_at_desk_denial_is_fed_back_so_the_model_can_reroute():
 def test_an_ignored_prompt_ends_the_run_honestly():
     hud, engine, reg = FakeHud(), FakeEngine(), registry()
     confirms = acf.ConfirmRegistry()
-    deny = tool_turn("workspace_write", path="a.py", content="x")
+    deny = tool_turn("workspace_write", path=r"F:\work\a.py", content="x")
 
     res = run(ar.run_agent_command(
         "write it", engine, registry=reg, tool_set="authoring", send=hud,
@@ -278,7 +278,7 @@ def test_auto_tools_are_never_prompted_for():
     res = run(ar.run_agent_command(
         "read it", engine, registry=reg, tool_set="files", send=hud,
         presence="at_desk", confirms=confirms,
-        call_model=script(tool_turn("workspace_read", path="a.py"), final("It says x."))))
+        call_model=script(tool_turn("workspace_read", path=r"F:\work\a.py"), final("It says x."))))
     assert res.ok and hud.of_type(ar.CONFIRM_FRAME) == []
     assert engine.seen == [("workspace_read", False)], \
         "an AUTO tool must keep its normal governance check (no bypass)"
@@ -291,7 +291,7 @@ def test_away_parks_the_confirm_and_tells_him_the_phrase():
     he can authorise later — and the loop is told it did NOT happen."""
     hud, engine, reg = FakeHud(), FakeEngine(), registry()
     queue, notify = FakeQueue(), FakeNotifier()
-    deny = tool_turn("workspace_write", path="a.py", content="x")
+    deny = tool_turn("workspace_write", path=r"F:\work\a.py", content="x")
     res = run(ar.run_agent_command(
         "write it", engine, registry=reg, tool_set="authoring", send=hud,
         presence="away", queue=queue, notify=notify,
@@ -303,7 +303,7 @@ def test_away_parks_the_confirm_and_tells_him_the_phrase():
     task = list(queue.tasks.values())[0]
     assert task["status"] == "needs_confirmation"
     assert task["actions"] == [{"action_type": "workspace_write",
-                                "target": "a.py|x"}], \
+                                "target": r"F:\work\a.py|x"}], \
         "the queued payload must be the model's actual call"
     assert notify.sent and f"approve task {task['id'][:8]}" in notify.sent[0][0]
     # The caller needs the sentence even though the run failed.
@@ -321,9 +321,9 @@ def test_away_parks_at_most_one_action_per_run():
         "write them", engine, registry=reg, tool_set="authoring", send=hud,
         presence="away", queue=queue, notify=notify,
         limits=ac.AgentLimits(max_repairs=3),
-        call_model=script(tool_turn("workspace_write", path="a.py", content="x"),
+        call_model=script(tool_turn("workspace_write", path=r"F:\work\a.py", content="x"),
                           tool_turn("workspace_write", "t2", path="b.py", content="y"),
-                          tool_turn("workspace_write", "t3", path="c.py", content="z"),
+                          tool_turn("workspace_write", "t3", path=r"F:\work\c.py", content="z"),
                           final("I've parked the first one, Sir."))))
     assert len(queue.tasks) == 1 and len(notify.sent) == 1
     assert res.ok, "the model may still finish the turn with an honest sentence"
@@ -336,7 +336,7 @@ def test_away_does_not_park_a_call_that_is_missing_arguments():
     res = run(ar.run_agent_command(
         "write it", engine, registry=reg, tool_set="authoring", send=hud,
         presence="away", queue=queue, notify=notify,
-        call_model=script(tool_turn("workspace_write", path="a.py"),
+        call_model=script(tool_turn("workspace_write", path=r"F:\work\a.py"),
                           final("I need the contents, Sir."))))
     assert queue.tasks == {} and notify.sent == []
     assert res.tool_runs[0].denied and "content" in res.tool_runs[0].error
@@ -348,7 +348,7 @@ def test_a_parked_run_never_claims_the_write_happened():
     res = run(ar.run_agent_command(
         "write it", engine, registry=reg, tool_set="authoring", send=hud,
         presence="away", queue=queue, notify=notify,
-        call_model=script(tool_turn("workspace_write", path="a.py", content="x"),
+        call_model=script(tool_turn("workspace_write", path=r"F:\work\a.py", content="x"),
                           final("Saved it, Sir."))))
     # The model's own words are its business, but the run must carry the parked
     # note, the engine must be untouched, and the transcript must have told the
@@ -375,7 +375,7 @@ def test_every_step_reaches_the_hud_as_it_happens():
         "read it", engine, registry=reg, tool_set="files", send=hud,
         presence="at_desk",
         call_model=script(tool_turn("find_file", name="notes"),
-                          tool_turn("workspace_read", "t2", path="notes.py"),
+                          tool_turn("workspace_read", "t2", path=r"F:\work\notes.py"),
                           final("notes.py contains your reading list."))))
     events = [f["event"] for f in hud.of_type(ar.FRAME)]
     assert events == ["model_turn", "tool_start", "tool_ok",
@@ -391,7 +391,7 @@ def test_narration_frames_also_drive_todays_hud_fields():
     run(ar.run_agent_command(
         "read it", engine, registry=reg, tool_set="files", send=hud,
         presence="at_desk",
-        call_model=script(tool_turn("workspace_read", path="a"), final("Done."))))
+        call_model=script(tool_turn("workspace_read", path=r"F:\work\a.py"), final("Done."))))
     frames = hud.of_type(ar.FRAME)
     assert all(f.get("status") and f.get("message") for f in frames)
     assert frames[-1]["status"] == "complete" and frames[-1]["message"] == "Done."
@@ -412,7 +412,7 @@ def test_a_tool_failure_is_narrated_and_the_run_continues():
         "read it", engine, registry=reg, tool_set="files", send=hud,
         presence="at_desk",
         call_model=script(tool_turn("find_file", name="ghost"),
-                          tool_turn("workspace_read", "t2", path="real.py"),
+                          tool_turn("workspace_read", "t2", path=r"F:\work\real.py"),
                           final("Found it in real.py."))))
     assert res.ok
     errors = [f for f in hud.of_type(ar.FRAME) if f["event"] == "tool_error"]
@@ -439,7 +439,7 @@ def test_the_demo_intent_runs_end_to_end():
     res = run(ar.run_agent_command(
         goal, engine, registry=reg, tool_set="files", send=hud, presence="at_desk",
         call_model=script(tool_turn("list_directory", path="~/workspace"),
-                          tool_turn("workspace_read", "t2", path="notes.py"),
+                          tool_turn("workspace_read", "t2", path=r"F:\work\notes.py"),
                           final("notes.py is the most recent; it says: "
                                 "TODO: finish the agent loop."))))
     assert res.ok and "notes.py" in res.answer
@@ -474,7 +474,7 @@ def test_delegation_adds_one_tool_and_returns_one_sentence():
     offered = []
     # The parent delegates once, the helper does the looking, the parent answers.
     turns = [tool_turn(sa.DELEGATE_TOOL, question="which file is newest?"),
-             tool_turn("workspace_read", "s1", path="c.py"),   # the HELPER's call
+             tool_turn("workspace_read", "s1", path=r"F:\work\c.py"),   # the HELPER's call
              final("c.py is the newest."),                     # the helper's answer
              final("The newest is c.py, Sir.")]                # the parent's answer
 
@@ -500,7 +500,7 @@ def test_a_delegate_run_does_not_deadlock_on_the_engine_lock():
     the delegate in it too would hang the run forever."""
     hud, engine, reg = FakeHud(), FakeEngine("listing"), registry()
     turns = [tool_turn(sa.DELEGATE_TOOL, question="which file is newest?"),
-             tool_turn("workspace_read", "s1", path="c.py"),
+             tool_turn("workspace_read", "s1", path=r"F:\work\c.py"),
              final("c.py."),
              final("c.py, Sir.")]
 
@@ -528,7 +528,7 @@ def test_a_delegation_with_no_question_is_refused_not_run():
 def test_helper_steps_are_narrated_under_their_own_label():
     hud, engine, reg = FakeHud(), FakeEngine("listing"), registry()
     turns = [tool_turn(sa.DELEGATE_TOOL, question="which file is newest?"),
-             tool_turn("workspace_read", "s1", path="c.py"),
+             tool_turn("workspace_read", "s1", path=r"F:\work\c.py"),
              final("c.py."),
              final("c.py, Sir.")]
     run(ar.run_agent_command(

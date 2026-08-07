@@ -24,7 +24,11 @@ from modules.tool_calls import ToolCall, ToolTurn
 TIERS = {"tavily_search": "AUTO", "web_browse": "AUTO", "search_documents": "AUTO",
          "memory_recall": "AUTO", "workspace_read": "AUTO", "list_directory": "AUTO",
          "find_file": "AUTO", "system_status": "AUTO", "read_screen": "AUTO",
-         "workspace_write": "CONFIRM"}
+         "workspace_write": "CONFIRM", "workspace_patch": "CONFIRM"}
+
+#: Reads take an ABSOLUTE path since §6.8.1 gap G — a relative one is refused
+#: before the engine is reached, so these fixtures must supply a real shape.
+ABS_FILE = r"F:\work\a.py"
 
 
 def registry():
@@ -128,7 +132,7 @@ def test_the_parent_gets_the_answer_not_the_tool_output():
     reg, engine = registry(), FakeEngine("notes.py  main.py  old.py")
     _, runner = sa.make_delegate(
         reg, engine, tool_set="research",
-        call_model=script(tool_turn("workspace_read", path="a"),
+        call_model=script(tool_turn("workspace_read", path=ABS_FILE),
                           final("notes.py is the newest.")))
     out = run(runner(call()))
     assert out == "notes.py is the newest."
@@ -138,7 +142,7 @@ def test_the_parent_gets_the_answer_not_the_tool_output():
 
 def test_a_helper_that_hits_a_cap_fails_the_parents_tool_call():
     reg, engine = registry(), FakeEngine("more context")
-    loop_forever = tool_turn("workspace_read", path="a")
+    loop_forever = tool_turn("workspace_read", path=ABS_FILE)
     _, runner = sa.make_delegate(
         reg, engine, tool_set="research",
         limits=ac.AgentLimits(max_steps=2, max_tools=8),
@@ -200,7 +204,7 @@ def test_helper_events_are_tagged_so_the_hud_can_nest_them():
 
     _, runner = sa.make_delegate(
         reg, engine, tool_set="research", on_event=on_event,
-        call_model=script(tool_turn("workspace_read", path="a"), final("done")))
+        call_model=script(tool_turn("workspace_read", path=ABS_FILE), final("done")))
     run(runner(call()))
     assert events and all(k.startswith("sub:") for k in events), events
     assert "sub:tool_start" in events and "sub:answer" in events

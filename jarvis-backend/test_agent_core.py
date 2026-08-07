@@ -377,7 +377,12 @@ def test_tool_error_is_reported_back_and_the_run_continues():
                     answer("Found it in real.txt."))
     res = run(ac.run_agent_loop("read", TOOLS, execute, call_model=script))
     assert res.ok and res.answer == "Found it in real.txt."
-    assert "FileNotFoundError" in script.seen_messages[1][-1]["content"]
+    # Since §6.8.1 gap B the observation is an INSTRUCTION, not a Python
+    # exception name — what the model needs is "it isn't there, go find it",
+    # and `str(FileNotFoundError("missing.txt"))` is only "missing.txt".
+    observation = script.seen_messages[1][-1]["content"]
+    assert "File not found" in observation and "missing.txt" in observation, observation
+    assert "do not read it again" in observation.lower(), observation
     assert [r.ok for r in res.tool_runs] == [False, True]
 
 
@@ -390,8 +395,11 @@ def test_honest_tool_failure_keeps_the_engines_own_wording():
     script = Script(turn_with(call()), answer("Understood."))
     res = run(ac.run_agent_loop("type", TOOLS, execute, call_model=script))
     observation = script.seen_messages[1][-1]["content"]
-    assert observation == ("ERROR: I couldn't open Notepad, Sir — "
-                           "the window never appeared.")
+    # The engine's wording is kept VERBATIM and leads the message. Since §6.8.1
+    # gap B a next-step line follows it, but nothing may rewrite the sentence
+    # itself — and the Python class name still must not leak.
+    assert observation.startswith("ERROR: I couldn't open Notepad, Sir — "
+                                  "the window never appeared."), observation
     assert "ToolFailure" not in observation
     assert res.tool_runs[0].ok is False
 

@@ -43,6 +43,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
 | **Automatic test baseline** | ✅ **876 checks / 39 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted; the pytest-only tier A3 was closed 2026-07-30) | `TEST_PLAN.md` |
 | **Agentic core** (Tier C #12) | ✅ **ALL 5 PHASES DONE + LIVE-GATED 2026-07-26** (14/14 §23 rows) — pushed | §5 Tier C |
+| **Agent tool-layer hardening** (§6.8) | 🟡 **Phase 1 DONE 2026-08-08** — argument validation, errors-as-instructions, line anchors, paging, read-before-write, edit uniqueness, absolute paths. Phases 2–4 (deferred schemas + skills, MCP, measurement) open. **Sequenced BEFORE the §7 gates** at Kaustav's instruction | §6.8 |
 | **Memory-at-rest encryption** (Tier C #11a) | ✅ **DONE + LIVE 2026-07-30** — DPAPI + scrypt recovery, AES-256-GCM fields; `jarvis_longterm.db` encrypted, `jarvis_memory.db` retired into it | §5 #11a |
 | **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); **click-to-talk DONE 2026-07-26** (`POST /api/listen`), live-gate owed | §5 |
@@ -997,6 +998,95 @@ already done — and both sit **after the §7 live-gate** in roadmap order.
 and the live gate is what unblocks Electron launch scripts → Electron packaging → mobile. So
 building §6.7 first does not just delay the gate, it **pushes the whole mobile arc later**.
 Worth it only if he decides the capability outranks that chain.
+
+---
+
+### 6.8 Agent tool-layer hardening — Anthropic-grade (NEW 2026-08-08, **SEQUENCED BEFORE THE §7 GATES** at Kaustav's instruction)
+
+> **Source:** `AGENT-TOOLING-REFERENCE.md` at the repo root — the complete tool surface a
+> Claude Code session runs with, its 18 design rules, reference schemas, a Groq agent loop, and
+> an MCP bridge. Kaustav's instruction 2026-08-08: *"I need the exact same thing — build it, and
+> add it to the roadmap before gates."* Read that document before touching any of this; the
+> reasoning behind each rule is there and is not repeated here.
+>
+> **The thesis, which is why this outranks a gate:** model capability is ~40% of agent quality;
+> the tool layer is the other ~60%. JARVIS runs a FREE Groq cascade — mid-tier models — so this
+> is precisely the half that is fully ours to control, and the half that pays most. Every item
+> below moves a guarantee **out of the prompt and into code**.
+
+#### 6.8.0 What JARVIS ALREADY HAS — audited 2026-08-08, do NOT rebuild
+
+The agentic core (§5 Tier C #12, all 5 phases, live-gated) already satisfies a large part of the
+reference. Re-implementing any of it would be a regression dressed as progress:
+
+| Reference rule | Where it already lives | Note |
+|---|---|---|
+| Tool registry, JSON Schema per tool | `modules/agent_tools.py` `ToolRegistry` | Anthropic dialect; translated once at the wire in `tool_calls.to_openai_tools` |
+| **Permission layer separate from tool logic** (rule 17) | `governance_manager` + `registry.authorizer()` | **Stronger than the reference.** BLOCK is refused at *registration*, so a blocked action never appears in a schema a model can see. The doc only gates at call time. |
+| Denial is feedback, not an exception (rule 17) | `agent_core` DENIED path | Fed back as a `tool` message; repeated denial ends the run |
+| Loop with iteration cap, wall clock, circuit breaker (rules 3, §4) | `agent_core.AgentLimits` | `max_steps`, `max_seconds`, `max_consecutive_errors` |
+| One repair on a malformed call, then honest failure (rule 2/16-partial) | `agent_core` repair path | Malformed JSON is caught in `tool_calls.parse_arguments` |
+| **Announced truncation** (rule 8, half) | `agent_core._truncate` | Says how many characters were dropped |
+| Context management (§4.2) | `agent_core.compact_messages` | Whole assistant+tool groups; the note says the detail is GONE rather than paraphrasing it |
+| Subagents with isolated context (rule 14) | `modules/agent_subagents.py` | |
+| Background execution + notify, not polling (rule 15) | `modules/agent_yield.py` | |
+| Small curated tool sets (rule 13, half) | `registry.define_set`, `MAX_SET_SIZE = 8` | Refuses an oversized set at definition time |
+| Errors-as-instructions (rule 6, partial) | denial + missing-argument wording | Good on the governance path, **raw on the exception path** — see 6.8.1 |
+
+#### 6.8.1 Phase 1 — Foundation gaps (build first, all keyboard-buildable)
+
+Each row is a rule the reference states, a concrete hole in JARVIS today, and the failure it
+lets through. **Nothing here needs hardware.**
+
+| # | Rule | The hole today | What it lets through |
+|---|---|---|---|
+| **A** | 16 — validate arguments against the schema | `registry.missing_required` checks *presence only*. No type, enum, or `additionalProperties` check anywhere. | `{"path": 42}` or `{"path": {"a": 1}}` sails past the authorizer into `action_engine`, which stringifies it and fails somewhere far from the cause. The model gets a mystery, not a schema. |
+| **B** | 6 — errors are instructions | The loop reports `f"{type(e).__name__}: {e}"` verbatim. | `FileNotFoundError: 'notes.md'` tells the model nothing about what to do next. A mid-tier model retries the same call. |
+| **C** | 5 — return anchors | `workspace_read` returns raw content, no line numbers. | The model cannot cite `file:line` and will invent them. |
+| **D** | 8 — pagination | `workspace_read` reads the WHOLE file, then the loop truncates at 4 000 chars. Announced, but **there is no way to continue** — no `offset`/`limit`. | A 5 000-line file is permanently unreadable past its first ~4 KB. |
+| **E** | 3 — preconditions in code | `workspace_write` overwrites blind. No read-before-write ledger, no staleness check. | The agent can destroy a file it never read, or clobber a change made since it read it. |
+| **F** | 4 — correctness structurally required | There is no exact-match `edit` tool; `workspace_write` is whole-file overwrite. | Every small change is a full-file rewrite, which is how a model silently drops the parts it did not think to re-emit. |
+| **G** | 7 — absolute paths, no ambient state | `workspace_read` accepts "absolute **or** workspace-relative". | Already bit us live on 2026-07-26: the model passed `.claude.json`, it resolved against a different root, and the tool reported "File not found" for a file that exists. The comment in `agent_tools.format_directory_listing` is a monument to this bug. |
+
+#### 6.8.2 Phase 2 — Scale
+
+- **Deferred tool schemas + `search_tools` (rule 13).** Today the registry caps a set at 8 tools,
+  so **93 of JARVIS's 103 actions are unreachable to the agent loop.** Curation is not the same
+  as addressability. Deferred loading keeps ~8 resident while making all of them findable — this
+  is the single biggest capability unlock in this section.
+- **Skills — progressive disclosure for instructions (rule 18).** `.md` playbooks with one-line
+  descriptions plus a `load_skill(name)` tool, instead of pasting procedures into the system
+  prompt. Groq has **no prompt caching**, so a fat system prompt is paid for on *every* request —
+  this is a direct token saving, not just tidiness.
+
+#### 6.8.3 Phase 3 — MCP client
+
+Already on the books as post-Electron backlog item 5 in `RESUME.md`. The reference's §6.2 bridge
+(~80 lines) is the implementation. **Constraint that does not move:** every MCP tool call passes
+`governance_manager` like any other action — an external tool server is not a trusted caller —
+and per the reference's §6.5, **tool descriptions from an MCP server are untrusted input**, never
+instructions.
+
+#### 6.8.4 Phase 4 — Measurement (the part that turns opinion into decision)
+
+Per-tool call counts, error rates, first-call-valid rate, tool-selection accuracy, token cost;
+plus an eval set of ~30 real tasks that re-runs on every change. Without this, every later tuning
+decision on the Groq cascade is a guess. Feeds directly into post-Electron backlog item 2
+(tiered brain) — you cannot route "hard" turns to a better model without a measure of hard.
+
+#### 6.8.5 Sequencing and the tradeoff, stated plainly
+
+**This section now sits BEFORE §7.** That is Kaustav's explicit instruction and it is recorded as
+his call, not an inference. The honest cost, the same one §6.7 carries:
+
+> The §7 live gate is what unblocks Electron launch scripts → Electron packaging → the merge to
+> `main` → the `.exe` → and through that, the entire post-Electron backlog including the mobile
+> app. **Work placed before the gate pushes that whole chain later.**
+
+What makes it defensible here, unlike a feature: Phase 1 is **all keyboard-buildable and
+harnessable**, it adds no new live-gate rows of its own beyond a single agentic re-run of
+TEST_PLAN §23, and it improves the reliability of the very subsystem the gate is meant to
+certify — gating an agent loop that cannot validate its own arguments certifies less.
 
 ---
 

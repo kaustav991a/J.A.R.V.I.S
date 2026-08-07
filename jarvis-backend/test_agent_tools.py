@@ -12,7 +12,9 @@ no ruleset file is read. The invariants under test are the dangerous ones:
 
 import asyncio
 import json
+import os
 import sys
+import tempfile
 
 from modules import agent_core as ac
 from modules import agent_tools as at
@@ -24,9 +26,16 @@ TIERS = {
     "tavily_search": "AUTO", "web_browse": "AUTO", "search_documents": "AUTO",
     "memory_recall": "AUTO", "workspace_read": "AUTO", "list_directory": "AUTO",
     "find_file": "AUTO", "system_status": "AUTO", "read_screen": "AUTO",
-    "workspace_write": "CONFIRM",
+    "workspace_write": "CONFIRM", "workspace_patch": "CONFIRM",
     "delete_file": "BLOCK", "run_terminal_command": "BLOCK",
 }
+
+
+#: An ABSOLUTE path that does not exist. Since §6.8.1 gap E/G the write
+#: precondition refuses a relative path outright, and refuses overwriting an
+#: existing file that was never read — so a tier test has to use a path where
+#: neither of those fires, or it stops testing tiers.
+NEW_FILE = os.path.join(tempfile.gettempdir(), "jarvis_agent_tools_absent.py")
 
 
 def tiers(mapping=None):
@@ -260,14 +269,19 @@ def test_auto_tier_is_allowed():
 def test_confirm_tier_is_refused_in_an_unattended_run():
     """Nobody is at the keyboard mid-loop; a CONFIRM action that self-approves
     would defeat the entire tier system."""
-    d = registry().authorizer()(call("workspace_write", path="a", content="b"))
+    # Absolute path, and a file that does not exist: since §6.8.1 gap E/G the
+    # write precondition runs BEFORE the tier branch, so a relative path or a
+    # blind overwrite would be refused for that reason instead and this test
+    # would no longer be about tiers at all.
+    d = registry().authorizer()(call("workspace_write",
+                                     path=NEW_FILE, content="b"))
     assert d.allowed is False
     assert "CONFIRM-tier" in d.reason and "unattended" in d.reason
 
 
 def test_confirm_can_be_allowed_for_an_attended_run():
     d = registry().authorizer(allow_confirm=True)(
-        call("workspace_write", path="a", content="b"))
+        call("workspace_write", path=NEW_FILE, content="b"))
     assert d.allowed is True and "attended" in d.reason
 
 
@@ -389,7 +403,7 @@ def test_loop_refuses_a_confirm_tool_and_says_so():
     r = registry()
     write = ToolTurn(ok=True, provider="fake", tool_calls=[
         ToolCall(id="t1", name="workspace_write",
-                 arguments={"path": "a.py", "content": "x"})])
+                 arguments={"path": NEW_FILE, "content": "x"})])
     engine = FakeEngine()
     res = run(ac.run_agent_loop(
         "write a.py", r.defs("authoring"), r.executor(engine),
@@ -416,8 +430,10 @@ def test_the_real_registry_builds_against_governance_json():
     from governance_manager import governance_manager
 
     r = at.build_default_registry(governance_manager.get_tier)
-    assert len(r.names()) == 10
+    assert len(r.names()) == 11, r.names()
     assert r.tier_of("workspace_write") == "CONFIRM"
+    assert r.tier_of("edit_file") == "CONFIRM", \
+        "the surgical edit tool must be CONFIRM like every other writer"
     assert r.tier_of("tavily_search") == "AUTO"
 
 

@@ -43,6 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
+from modules import agent_files as af
 from modules.agent_core import Decision, ToolFailure
 from modules.tool_calls import ToolCall
 
@@ -84,6 +85,21 @@ class ToolEntry:
     #: concludes the information it needs isn't there. Reshaping belongs here, in
     #: the agent layer, so the HUD's own contract is untouched.
     format_output: Callable[[Any], Any] | None = None
+    #: Like `format_output`, but it also sees the CALL ARGUMENTS. That is what
+    #: makes paging possible (§6.8.1 gap D): `offset`/`limit` are arguments, and
+    #: the engine handler knows nothing about them. Applied after
+    #: `format_output`, so a tool may use either or both.
+    shape_output: Callable[[Any, dict], Any] | None = None
+    #: §6.8.1 gap E/F, rule 3 — a precondition enforced IN CODE, checked by the
+    #: authorizer before anything runs. Returns an instruction string to refuse,
+    #: or None to allow. This is where "you have not read this file yet" and
+    #: "that string matches 3 times and must be unique" live. A prompt rule
+    #: degrades over a long session; a check here cannot.
+    precondition: Callable[[dict], str | None] | None = None
+    #: Called after a SUCCESSFUL execution with (arguments, output). The ledger
+    #: recording "this path has been read" is written here, so it records only
+    #: reads that actually happened.
+    on_success: Callable[[dict, Any], None] | None = None
 
     @property
     def definition(self) -> dict:
@@ -117,7 +133,10 @@ class ToolRegistry:
                  action_type: str | None = None,
                  target_from: str | None = None,
                  build_target: Callable[[dict], Any] | None = None,
-                 format_output: Callable[[Any], Any] | None = None) -> ToolEntry:
+                 format_output: Callable[[Any], Any] | None = None,
+                 shape_output: Callable[[Any, dict], Any] | None = None,
+                 precondition: Callable[[dict], str | None] | None = None,
+                 on_success: Callable[[dict, Any], None] | None = None) -> ToolEntry:
         """Add one tool. Raises `BlockedToolError` if governance says BLOCK.
 
         `target_from` names the argument that becomes `payload["target"]` (the
@@ -150,6 +169,8 @@ class ToolRegistry:
             action_type=atype, tier=tier,
             target_from=target_from or (next(iter(props), None) if not build_target else None),
             build_target=build_target, format_output=format_output,
+            shape_output=shape_output, precondition=precondition,
+            on_success=on_success,
         )
         self._tools[name] = entry
         return entry
@@ -250,6 +271,24 @@ class ToolRegistry:
         args = call.arguments or {}
         return [r for r in entry.required if r not in args or args[r] in (None, "")]
 
+    def schema_problem(self, call: ToolCall) -> str | None:
+        """Type/enum/bounds check of the arguments — §6.8.1 gap A, rule 16.
+
+        Runs AFTER `missing_required` in the authorizer, because "you left out
+        `path`" is a better complaint than "`path` must be a string" when the
+        argument is simply absent.
+
+        This is the check that was missing entirely until 2026-08-08: presence
+        was verified, shape was not, so `{"path": 42}` reached `action_engine`
+        and failed far from its cause. Returns a ready-to-send instruction or
+        None.
+        """
+        entry = self._tools.get(call.name)
+        if entry is None:
+            return None
+        from modules.agent_schema import validate_arguments
+        return validate_arguments(call.name, call.arguments, entry.input_schema)
+
     def authorizer(self, allow_confirm: bool = False) -> Callable[[ToolCall], Decision]:
         """Governance adapter: one `Decision` per call, consulted every time.
 
@@ -269,6 +308,29 @@ class ToolRegistry:
             if missing:
                 return Decision(False,
                                 f"missing required argument(s): {', '.join(missing)}")
+            # Shape, not just presence (§6.8.1 gap A). Deliberately BEFORE the
+            # tier branch: a malformed call should be corrected, not confirmed —
+            # otherwise a CONFIRM-tier tool asks the owner to approve arguments
+            # that were never going to work.
+            if problem := self.schema_problem(call):
+                return Decision(False, problem)
+            # Tool-layer preconditions (§6.8.1 gap E/F, rule 3) — read-before-
+            # write, and edit-uniqueness. Also before the tier branch: an edit
+            # that would land in the wrong place must be corrected, never sent
+            # to the owner for approval.
+            if entry.precondition is not None:
+                try:
+                    refusal = entry.precondition(dict(call.arguments or {}))
+                except Exception as exc:  # noqa: BLE001
+                    # A broken precondition must FAIL CLOSED. It exists to stop
+                    # a destructive call; if it cannot answer, the call does not
+                    # proceed on the strength of its silence.
+                    return Decision(False,
+                                    f"could not verify the preconditions for "
+                                    f"'{call.name}' ({type(exc).__name__}: {exc}) — "
+                                    "not proceeding")
+                if refusal:
+                    return Decision(False, refusal)
             if entry.tier == AUTO:
                 return Decision(True, AUTO)
             if entry.tier == CONFIRM:
@@ -318,6 +380,17 @@ class ToolRegistry:
                     output = entry.format_output(output)
                 except Exception:  # noqa: BLE001 — a formatter must never lose a
                     pass           # real result; the raw output still answers.
+            args = dict(call.arguments or {})
+            if entry is not None and entry.shape_output is not None:
+                try:
+                    output = entry.shape_output(output, args)
+                except Exception:  # noqa: BLE001 — same rule as format_output.
+                    pass
+            if entry is not None and entry.on_success is not None:
+                try:
+                    entry.on_success(args, output)
+                except Exception:  # noqa: BLE001 — bookkeeping must never lose a
+                    pass           # result the tool genuinely produced.
             return output
 
         return execute
@@ -432,10 +505,30 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "Recall facts JARVIS has been told before (preferences, people, "
                "past decisions). Check here before claiming something is unknown.",
                _obj(_QUERY))
+    # §6.8.1 gaps C/D/G. The schema grew `offset`/`limit` because the paging is
+    # real now: `workspace_agent.read_file` used to advise "consider reading a
+    # specific line range" for a parameter that did not exist.
     r.register("workspace_read",
-               "Read a file from the workspace so its exact contents are in context.",
+               "Read a file. Returns NUMBERED lines, so you can cite exact "
+               "locations as path:line. Long files come back one window at a "
+               "time — the footer tells you the offset to pass to continue. "
+               "The path must be ABSOLUTE.",
                _obj({"path": {"type": "string",
-                              "description": "File path, absolute or workspace-relative."}}))
+                              "description": "ABSOLUTE file path. Relative paths "
+                                             "are refused — different tools "
+                                             "resolve them against different "
+                                             "roots."},
+                     "offset": {"type": "integer", "minimum": 0,
+                                "description": "First line to show, 0-based. "
+                                               "Omit to start at the top."},
+                     "limit": {"type": "integer", "minimum": 1,
+                               "maximum": af.MAX_READ_LIMIT,
+                               "description": f"How many lines to show "
+                                              f"(default {af.DEFAULT_READ_LIMIT})."}},
+                    ["path"]),
+               shape_output=af.paginate_read,
+               on_success=af.note_read,
+               precondition=lambda a: af.absolute_path_problem(a.get("path")))
     r.register("list_directory",
                "List a directory (read-only, sandboxed to the user's home). Each "
                "entry comes back with its LAST-MODIFIED time, type and size, "
@@ -455,13 +548,46 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "answer depends on what he is looking at.",
                _obj({}, []))
     r.register("workspace_write",
-               "Create or overwrite a workspace file. Requires the owner's "
-               "confirmation.",
-               _obj({"path": {"type": "string", "description": "File path to write."},
+               "Create a file, or replace one ENTIRELY. Requires the owner's "
+               "confirmation. To change part of an existing file use "
+               "`edit_file` — a whole-file write loses anything you do not "
+               "re-emit. An existing file must be read before it can be "
+               "overwritten. The path must be ABSOLUTE.",
+               _obj({"path": {"type": "string",
+                              "description": "ABSOLUTE file path to write."},
                      "content": {"type": "string",
                                  "description": "Full file contents."}},
                     ["path", "content"]),
-               build_target=lambda a: f"{a.get('path', '')}|{a.get('content', '')}")
+               build_target=lambda a: f"{a.get('path', '')}|{a.get('content', '')}",
+               precondition=af.write_precondition)
+
+    # §6.8.1 gap F (rule 4). The engine's `workspace_patch` replaces EVERY
+    # occurrence by default — `_workspace_patch` never passes a count — so an
+    # ambiguous edit used to land in every match silently. `edit_precondition`
+    # makes that structurally impossible: an `old_string` matching more than
+    # once is refused unless the model says explicitly that it means all of them.
+    r.register("edit_file",
+               "Replace an exact string in a file, leaving everything else "
+               "untouched. `old_string` must match the file EXACTLY (including "
+               "indentation) and must be UNIQUE, or the edit is refused — strip "
+               "the line-number prefix from read output before matching. Read "
+               "the file first. Prefer this over rewriting a whole file. "
+               "Requires the owner's confirmation.",
+               _obj({"path": {"type": "string",
+                              "description": "ABSOLUTE path of the file to edit."},
+                     "old_string": {"type": "string",
+                                    "description": "Exact text to replace. Must "
+                                                   "be unique in the file unless "
+                                                   "replace_all is true."},
+                     "new_string": {"type": "string",
+                                    "description": "Replacement text."},
+                     "replace_all": {"type": "boolean",
+                                     "description": "Replace every occurrence. "
+                                                    "Only for a deliberate rename."}},
+                    ["path", "old_string", "new_string"]),
+               action_type="workspace_patch",
+               build_target=af.build_patch_target,
+               precondition=af.edit_precondition)
 
     # Answer a question that needs looking things up. Read-only by construction:
     # nothing in this set can change the machine, so it is the safe first intent
@@ -471,10 +597,13 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
     # "Where did I put that file" — local filesystem, still read-only.
     r.define_set("files", ["find_file", "list_directory", "workspace_read",
                            "search_documents", "memory_recall"])
-    # Read-only plus ONE writing tool, to exercise the confirmation path.
+    # Read-only plus the two writing tools, to exercise the confirmation path.
+    # `edit_file` is listed BEFORE `workspace_write` deliberately: a model
+    # reading the set in order meets the surgical tool first, and rewriting a
+    # whole file to change one line is the more damaging default.
     r.define_set("authoring", ["workspace_read", "list_directory",
                                "search_documents", "memory_recall",
-                               "workspace_write"])
+                               "edit_file", "workspace_write"])
     return r
 
 
