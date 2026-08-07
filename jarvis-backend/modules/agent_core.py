@@ -61,6 +61,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from modules import agent_search as ags
 from modules.tool_calls import (
     ToolCall,
     ToolTurn,
@@ -311,6 +312,7 @@ async def run_agent_loop(
     on_event: Callable[[str, dict], Any] | None = None,
     lock: Any | None = None,
     unlocked_tools: set | None = None,
+    shelf: Any | None = None,
 ) -> AgentResult:
     """Run the decide→act→observe loop until the model answers or a cap trips.
 
@@ -324,6 +326,13 @@ async def run_agent_loop(
     duration of a tool execution — never across a model turn or a human wait.
     """
     limits = limits or AgentLimits()
+
+    # §6.8.2 (rule 13). With a shelf, the tool list is not fixed for the run:
+    # `search_tools` promotes schemas mid-conversation, so the list is rebuilt
+    # before every model turn. The shelf owns the resident cap, so the
+    # `max_tools` check below still holds on the FIRST list and every later one.
+    if shelf is not None:
+        tools = shelf.defs()
 
     async def emit(kind: str, **data):
         if on_event is None:
@@ -408,6 +417,13 @@ async def run_agent_loop(
                   f"({', '.join(dropped_tools) or 'no tools'}) — transcript now "
                   f"{transcript_chars(messages)} chars", flush=True)
 
+        if shelf is not None:
+            # Rebuilt every turn: a promotion from the previous step only
+            # reaches the model if the list it is sent is regenerated here.
+            tools = shelf.defs()
+            tool_names = {t["function"]["name"] if "function" in t else t.get("name")
+                          for t in tools}
+
         steps += 1
         await emit("model_turn", step=steps)
         # The provider call is blocking HTTP; off-thread it so the event loop
@@ -447,6 +463,25 @@ async def run_agent_loop(
                         messages=messages)
                 messages.append(tool_result_message(
                     call, f"ERROR: {problem}. Correct the call and try once more."))
+                continue
+
+            # --- tool search: answered HERE, never dispatched ---------------
+            # `search_tools` changes only what the model can see. It touches
+            # nothing, so it has no governance decision to make and must not
+            # reach the authorizer (which would refuse it — it is not a
+            # registered action) or the engine (which has no handler). What it
+            # REVEALS stays gated: every promoted tool is still authorised on
+            # the call that uses it.
+            if shelf is not None and call.name == ags.SEARCH_TOOL_NAME:
+                observation = shelf.handle(call.arguments or {})
+                runs.append(ToolRun(call.name, call.arguments, ok=True,
+                                    output=observation))
+                await emit("tool_search", query=(call.arguments or {}).get("query"),
+                           resident=shelf.resident())
+                messages.append(tool_result_message(call, observation))
+                # A search is not a step towards the goal, but it is also not a
+                # failure — an unproductive one must not count against the
+                # error streak, or three bad guesses would kill a healthy run.
                 continue
 
             # --- governance, before EVERY execution (rule 4) ----------------

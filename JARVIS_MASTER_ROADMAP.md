@@ -1073,10 +1073,41 @@ lets through. **Nothing here needs hardware.**
 
 #### 6.8.2 Phase 2 — Scale
 
-- **Deferred tool schemas + `search_tools` (rule 13).** Today the registry caps a set at 8 tools,
-  so **93 of JARVIS's 103 actions are unreachable to the agent loop.** Curation is not the same
-  as addressability. Deferred loading keeps ~8 resident while making all of them findable — this
-  is the single biggest capability unlock in this section.
+- **Deferred tool schemas + `search_tools` (rule 13). 🟡 MECHANISM DONE 2026-08-08 — the
+  catalogue is not yet filled.** `modules/agent_search.py` (`ToolShelf`) keeps a small base set
+  resident and promotes matching schemas on demand; `run_agent_loop` takes `shelf=` and rebuilds
+  the tool list each turn. Opt-in: a run without a shelf behaves exactly as before, pinned by a
+  harness. `test_agent_search.py` (25).
+
+  **The honest arithmetic, which corrects an earlier claim of "103 actions":**
+
+  | | |
+  |---|---|
+  | governance rules | 103 |
+  | − BLOCK (can never be a tool, by design) | −15 |
+  | − registerable but with **no `action ==` branch** in `action_engine` | −16 |
+  | **= reachable ceiling** | **72** |
+  | registered today | 11 |
+
+  So the unlock is **11 → 72**, not 11 → 103. The 16 with no dispatch branch —
+  `open_browser`, `open_calculator`, `open_sticky_note`, `close_*`, `calendar_create/modify/delete`,
+  `github_create_pr/create_repo/merge_pr`, `gmail_draft`, `hud_retrieve_sensors`, `tv_cast`,
+  `gesture_control` — are authorised by governance but may be served elsewhere (HUD, fast-path).
+  **Check each before registering it:** `test_agent_tools.test_every_registered_action_type_is_dispatched_by_action_engine`
+  fails the build if one is registered without a handler, which is the guard that produced this list.
+
+  **Two deliberate divergences from the reference**, both forced by JARVIS's own design:
+  search is **governance-filtered** (a CONFIRM tool is never offered to an unattended run — nobody
+  can approve it, so surfacing it only teaches the model to ask for refusals), and the **8-tool
+  resident cap is never raised** — promotion evicts the oldest *promoted* tool and never the base
+  set. Raising the cap would quietly undo a decision made because small models degrade past ~8,
+  at exactly the moment the model is already struggling enough to go looking.
+
+  **What remains: writing ~61 more tool entries.** That is the actual work, and it is judgement,
+  not mechanism — rule 1 says the description IS the prompt, so generating them from action names
+  would produce exactly the `"Searches files."` labels the reference calls weak. Do it in waves,
+  by domain (messaging, media/TV, email/calendar, apps/windows, system), and put each wave through
+  the harness.
 - **Skills — progressive disclosure for instructions (rule 18).** `.md` playbooks with one-line
   descriptions plus a `load_skill(name)` tool, instead of pasting procedures into the system
   prompt. Groq has **no prompt caching**, so a fat system prompt is paid for on *every* request —
