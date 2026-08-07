@@ -36,11 +36,30 @@ The feature is no longer inert: a fact the Render gateway captured with the PC o
 distinguishable from one he said in person, which it was not before. Re-running `--apply` is a
 no-op.
 
-> ⚠️ **The mandatory backup wrote a NEW cleartext `.env` copy** —
-> `JARVIS-BACKUPS\pre-encryption-20260808-004215\.env`, 9,731 bytes, the same shape as the five
-> shredded 2026-08-01. `backup_memory.py` treats `.env` as a backup target, so **every** backup
-> re-creates one and shredding is a recurring chore until Step 3 lands. Kaustav's to shred; it
-> was deliberately not touched.
+> ⚠️ **THE `.env`-IN-BACKUPS LEAK IS RECURRING, NOT A ONE-OFF — AND IT HAS A CHEAP FIX.**
+> The mandatory backup wrote a NEW cleartext `.env` at
+> `JARVIS-BACKUPS\pre-encryption-20260808-004215\.env` (9,731 bytes), the same shape as the five
+> shredded 2026-08-01. `backup_memory.py` lists `.env` among its targets, so **every backup makes
+> another one** — and every future migration takes a mandatory backup first. Shredding them is
+> a chore that regenerates itself, which is the wrong shape for a secret.
+>
+> **Two fixes, and they are not alternatives — do (a) now-ish, (b) when it comes due:**
+>
+> - **(a) QUICK — drop `.env` from `backup_memory.py`'s target list.** Stops the recurring leak
+>   cheaply and today. The cost is real but small: a restore from backup no longer carries the
+>   keys, so `.env` has to be re-created by hand. That is acceptable precisely because it is the
+>   one file that must not be lying around in five copies. **Not done unasked** — it changes what
+>   a restore gives you back, and that is Kaustav's call.
+> - **(b) REAL — Step 3, secrets into the key store** (see the deferred item in the queue below).
+>   Removes cleartext `.env` entirely, so there is nothing for a backup to copy and the problem
+>   stops existing rather than being avoided. Still correctly sequenced after the §7 gate and the
+>   merge to `main`.
+>
+> **(a) does not make (b) unnecessary** — it stops the *copies*, while the live `.env` stays
+> plaintext on disk either way. Only (b) closes it.
+>
+> **The new copy still needs shredding — Kaustav's task**, exactly like the prior five. It was
+> deliberately not touched; see the off-machine list at the bottom.
 
 **2. ✅ `JARVIS_LOG_CONTACT_EVENTS` NOW DEFAULTS OFF (2026-08-08, Kaustav's ruling).**
 `modules/contact_events.py` was default-ON, which broke this project's default-OFF discipline
@@ -423,9 +442,15 @@ the `.exe` → Step 3 → then the post-Electron backlog, one item at a time.
 
 - [x] **Recovery code stored OFF this disk — DONE 2026-08-01.** Fresh code in his password
       manager; all earlier codes void; round-trip verified working (see the top section).
+- [ ] **A 6th cleartext `.env` copy is owed a shred — `JARVIS-BACKUPS\pre-encryption-20260808-004215\.env`,
+      9,731 bytes**, created 2026-08-08 by the backup the source-tag migration takes before it
+      touches anything. Same job as the five below. **This will keep happening on every backup
+      until fix (a) or (b) under checklist item 1 lands** — the sweep that "now finds no `.env`
+      anywhere under that tree" is true only until the next backup runs.
 - [x] **The 5 cleartext `.env` copies in `JARVIS-BACKUPS` were shredded 2026-08-01** — one per
-      `pre-encryption-*` folder, 9,731 bytes each. A recursive sweep now finds no `.env`
-      anywhere under that tree. The live `jarvis-backend\.env` is untouched, so nothing was
+      `pre-encryption-*` folder, 9,731 bytes each. The recursive sweep that found no `.env`
+      anywhere under that tree was true **on that date only** — the 2026-08-08 backup put one
+      back (see the entry above). The live `jarvis-backend\.env` is untouched, so nothing was
       lost. Folder structure and every `.db`/`.npz`/Chroma file left intact (verified: each
       folder exactly −1 file / −9,731 bytes, `plaintext-originals` byte-identical).
 - [ ] **Biometric + Chroma backup copies still owed a shred** — his task, off-tooling.
