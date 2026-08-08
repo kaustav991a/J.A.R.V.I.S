@@ -26,6 +26,16 @@ jarvis-backend/memory/vector_db/
 jarvis-backend/personal_chroma_db/
 jarvis-backend/action_chroma_db/
 
+# --- Agent measurement (§6.8.4) — counters, per machine, never shared ---
+# It stores no argument values and no goal text by construction, but it is still
+# a record of how this particular desk is used, and it is per-machine noise in a
+# diff. `run_evals.py --metrics` reads it locally.
+jarvis-backend/metrics/
+
+# --- External MCP servers (§6.8.3) — whose config names local paths and may
+# --- carry an env block. Never committed: the example lives in the roadmap.
+jarvis-backend/mcp_servers.json
+
 # --- Memory encryption keys (C#11a) — losing these loses the memory ---
 jarvis-backend/jarvis_key.*
 jarvis-backend/jarvis_x25519.enc

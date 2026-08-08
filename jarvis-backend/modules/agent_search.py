@@ -46,7 +46,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["ToolShelf", "SEARCH_TOOL", "SEARCH_TOOL_NAME", "MAX_RESULTS"]
+from modules.agent_schema import validate_arguments
+
+# `Decision` is imported INSIDE `CompositeRegistry.authorizer`, not here:
+# `agent_core` imports this module, so a top-level import would make the pair
+# circular and the failure would depend on which one a caller imported first.
+
+__all__ = ["ToolShelf", "SEARCH_TOOL", "SEARCH_TOOL_NAME", "MAX_RESULTS",
+           "CompositeRegistry"]
 
 SEARCH_TOOL_NAME = "search_tools"
 
@@ -109,11 +116,105 @@ def _terms(text: str) -> list[str]:
             if w not in _NOISE and len(w) > 1]
 
 
+def _variants(term: str) -> tuple[str, ...]:
+    """The term, plus its singular. People pluralise and tools do not.
+
+    Found by the eval set (§6.8.4), which is exactly the kind of thing an eval
+    is for: *"any emails from my accountant"* matched NOTHING, because matching
+    is `term in haystack` and "emails" is not inside "gmail_read". One letter,
+    and the whole mail catalogue was unreachable from a plural.
+    """
+    if len(term) > 3 and term.endswith("s") and not term.endswith("ss"):
+        return (term, term[:-1])
+    return (term,)
+
+
 @dataclass
 class SearchHit:
     name: str
     score: float
     tier: str
+
+
+@dataclass
+class CompositeRegistry:
+    """Two catalogues behind one set of accessors, so the shelf cannot tell them
+    apart — JARVIS's own actions, and whatever MCP servers are connected.
+
+    §6.8.3. Deferral is the whole reason this exists: a handful of MCP servers
+    is easily 60 tools, and 60 resident tools is worse than none. Composing the
+    catalogues here means foreign tools are searched, ranked, promoted and
+    evicted by exactly the code that already does it for local ones — including
+    the governance filter, since an `McpToolEntry` carries a real tier.
+
+    LOCAL WINS ON A NAME CLASH. It cannot happen today (foreign names are
+    namespaced `mcp__server__tool`) but the rule is stated rather than left to
+    dict ordering: a server that manages to claim the name of a JARVIS action
+    must not shadow it.
+    """
+
+    primary: Any                # ToolRegistry — JARVIS's own actions
+    secondary: Any              # McpRegistry — external servers
+
+    def names(self) -> list[str]:
+        local = self.primary.names()
+        return local + [n for n in self.secondary.names() if n not in local]
+
+    def get(self, name: str):
+        return self.primary.get(name) or self.secondary.get(name)
+
+    def tier_of(self, name: str):
+        tier = self.primary.tier_of(name)
+        return tier if tier is not None else self.secondary.tier_of(name)
+
+    def set_names(self, set_name: str) -> list[str]:
+        """Curated sets are a LOCAL idea: an intent is wired with JARVIS's own
+        tools, and a foreign tool is reached by searching for it."""
+        return self.primary.set_names(set_name)
+
+    def defs(self, names) -> list[dict]:
+        if isinstance(names, str):          # a set name — always local
+            return self.primary.defs(names)
+        local_names = set(self.primary.names())
+        # Order is preserved from the caller's list, because position carries
+        # weight for small models and the shelf hands them in a deliberate one.
+        return [d for name in names
+                for d in (self.primary.defs([name]) if name in local_names
+                          else self.secondary.defs([name]))]
+
+    def authorizer(self, allow_confirm: bool = False):
+        """Local calls take the local path; foreign calls are gated on the tier
+        governance gave `mcp_call`, which is the whole of §6.8.3's first
+        constraint. An external server never gets a softer check than an
+        `action_engine` action."""
+        from modules.agent_core import Decision
+
+        local = self.primary.authorizer(allow_confirm)
+
+        def authorize(call):
+            if self.primary.get(call.name) is not None:
+                return local(call)
+            entry = self.secondary.get(call.name)
+            if entry is None:
+                return Decision(False, f"'{call.name}' is not a registered tool")
+            problem = validate_arguments(call.name, call.arguments,
+                                         entry.input_schema)
+            if problem:
+                return Decision(False, problem)
+            if entry.tier == "AUTO":
+                return Decision(True, "AUTO")
+            if entry.tier == "CONFIRM":
+                if allow_confirm:
+                    return Decision(True, "CONFIRM (attended)")
+                return Decision(
+                    False,
+                    f"'{entry.server}' is an external tool server and this run "
+                    "is unattended — its tools need the owner's approval")
+            return Decision(False,
+                            f"external tools are blocked by governance "
+                            f"({entry.tier})")
+
+        return authorize
 
 
 @dataclass
@@ -198,19 +299,29 @@ class ToolShelf:
         hits: list[SearchHit] = []
         for name in candidates:
             entry = self.registry.get(name)
-            # Aliases rank WITH the name, not with the description: they exist
-            # because the action_type is internal jargon, and a spoken name that
-            # only scored 1 would need a second coincidence to clear the floor.
-            haystack_name = " ".join(
-                [name, entry.action_type, *getattr(entry, "aliases", ())]).lower()
+            # Three weights, and the ORDER is the point: a name match is the
+            # strongest evidence, an alias is a hand-written synonym, and a
+            # description hit is often a coincidence of ordinary English.
+            #
+            # Aliases sat at name weight until the eval set caught what that
+            # does: `tv_power` carries the alias "turn", so *"turn the tv volume
+            # up"* tied it with `tv_volume` — which matched TWO words of the
+            # request in its own name — and the tie-break handed the volume
+            # request to the power toggle. A synonym must not outweigh the
+            # thing itself.
+            haystack_name = f"{name} {entry.action_type}".lower()
+            haystack_alias = " ".join(getattr(entry, "aliases", ())).lower()
             description = (entry.description or "").lower()
             score = 0.0
             for term in terms:
+                forms = _variants(term)
                 if term == name.lower():
                     score += 10.0
-                elif term in haystack_name:
+                elif any(f in haystack_name for f in forms):
                     score += 4.0
-                if term in description:
+                elif any(f in haystack_alias for f in forms):
+                    score += 3.0
+                if any(f in description for f in forms):
                     score += 1.0
             if score >= MIN_SCORE:
                 # Tie-break on name length so the more specific of two equally

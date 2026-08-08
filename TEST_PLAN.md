@@ -515,6 +515,12 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 | 23b.18 | The playbook changes the behaviour | ask for an edit whose `old_string` appears 3× | it extends the string with surrounding context (what `edit-a-file` says) instead of reaching for `replace_all` | ⬜ |
 | 23b.19 | A playbook edited mid-session takes effect | change a line in `skills/the-two-screens.md` while the backend runs, then trigger a TV goal | the new wording is what comes back — no restart needed | ⬜ |
 | 23b.20 | Skills off = the old prompt | `JARVIS_AGENT_SKILLS=0`, repeat 23b.17 | no index in the prompt, no `load_skill` offered, run still completes | ⬜ |
+| 23b.21 | 🔴 An external server actually serves | write `mcp_servers.json` with a pinned filesystem server, `JARVIS_AGENT_MCP=1`, ask something only it can answer | log shows `[AGENT] mcp: N external tool(s)`; the tool is FOUND by search, asks for confirmation, and returns real data | ⬜ |
+| 23b.22 | 🔴 A foreign tool needs a human | same, but away from the desk | it is not offered at all — `mcp_call` is CONFIRM, so an unattended run cannot reach it | ⬜ |
+| 23b.23 | A dead server is honest | point a server entry at a command that does not exist | it says which server is unavailable and carries on with JARVIS's own tools; no crash, no silent shrink | ⬜ |
+| 23b.24 | Measurement is recording | run any agentic command, then `venv\Scripts\python.exe run_evals.py --metrics` | the run appears with per-tool counts and a `first_call_valid` figure | ⬜ |
+| 23b.25 | Measurement keeps nothing it should not | grep `metrics/agent_runs.jsonl` for a phrase you used in a goal | zero hits — lengths and names only | ⬜ |
+| 23b.26 | The live eval, at least once | `venv\Scripts\python.exe run_evals.py --live` | records the real end-to-end tool-selection accuracy. **Expect it to be well below the offline 100%** — that gap is the model, and it is the number that decides whether backlog item 2 (tiered brain) is next | ⬜ |
 
 **Gate notes (2026-07-26 session).** Three bugs only a live model could find, all fixed
 in `eee4b3a`: `list_directory`'s HUD payload (epoch floats in a `render_file_list`

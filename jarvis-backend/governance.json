@@ -3,6 +3,7 @@
   "_version": "1.5.0",
   "_policy": "Fail-safe: any action_type NOT listed here defaults to BLOCK.",
   "_note_partner_messaging": "message_partner is CONFIRM: the owner approves the resolved recipient AND the full message text verbatim before anything leaves his account. summarize_partner_chat is AUTO here because these tiers are per-ACTION, not per-caller — its admin-only restriction is enforced by action_engine.tier_allows (it is deliberately absent from VIP_GUEST_ALLOWED_ACTIONS), which runs before this gate.",
+  "_note_mcp_call": "mcp_call gates EVERY tool served by an external MCP server (roadmap 6.8.3). One rule for the whole class on purpose: a per-server rule would put the trust decision in a config file that the servers themselves cannot be checked against. CONFIRM because an MCP server is code JARVIS did not write, running with its credentials, whose tool descriptions land in the model's context — so a foreign tool needs a human in the same way sending mail does. A server may be declared STRICTER in mcp_servers.json; nothing there can make it looser than this line. Set it to BLOCK to switch external tools off entirely, or to AUTO only for a set of servers you have read the source of.",
   "_note_partner_contact_status": "partner_contact_status is the BUTLER answer (roadmap 6.7): fact of contact, timing and an urgency flag, never the message content. AUTO for the same per-ACTION reason as summarize_partner_chat, and admin-only by the same mechanism — absent from VIP_GUEST_ALLOWED_ACTIONS, so tier_allows refuses a guest before dispatch and one partner can never ask about another. The two actions answer different questions on purpose: this one is 'did she call', summarize_partner_chat is the explicit override for 'what did she say'.",
 
   "tiers": {
@@ -91,6 +92,8 @@
     "workspace_write": "CONFIRM",
     "workspace_patch": "CONFIRM",
     "ghost_save_file": "CONFIRM",
+
+    "mcp_call": "CONFIRM",
     "send_email": "CONFIRM",
     "create_event": "CONFIRM",
     "clear_schedule": "CONFIRM",

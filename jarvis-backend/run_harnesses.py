@@ -82,6 +82,8 @@ EXCLUDED = {
     "test_ping.py": "needs the backend running (TEST_PLAN part A2)",
     "test_ui_bridge_e2e.py": "needs the backend running (TEST_PLAN part A2)",
     "test_screen_reader.py": "live VLM script — screenshots and a real model call",
+    "test_mcp_server_fake.py": "an MCP SERVER, not a harness — test_mcp_bridge.py "
+                               "spawns it as a subprocess fixture",
 }
 
 

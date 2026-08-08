@@ -1,0 +1,40 @@
+{"id": "mail-01", "prompt": "check my email for anything new", "expect": ["gmail_read_unread"], "category": "mail"}
+{"id": "mail-02", "prompt": "any emails from my accountant this week", "expect": ["gmail_read", "search_email"], "category": "mail"}
+{"id": "mail-03", "prompt": "read me the latest one in full", "expect": ["read_email"], "category": "mail"}
+{"id": "mail-04", "prompt": "reply to that thread and say I will call tomorrow", "expect": ["gmail_reply"], "category": "mail", "confirm": true}
+{"id": "cal-01", "prompt": "what is on my calendar today", "expect": ["check_calendar"], "category": "calendar"}
+{"id": "cal-02", "prompt": "put dentist on the calendar for thursday at four", "expect": ["create_event"], "category": "calendar", "confirm": true}
+{"id": "brief-01", "prompt": "give me the morning briefing", "expect": ["morning_briefing"], "category": "calendar"}
+{"id": "tv-01", "prompt": "turn on the television", "expect": ["tv_power"], "category": "tv"}
+{"id": "tv-02", "prompt": "turn the tv volume up a bit", "expect": ["tv_volume"], "category": "tv"}
+{"id": "tv-03", "prompt": "put stranger things on netflix on the tv", "expect": ["tv_play_media"], "category": "tv"}
+{"id": "tv-04", "prompt": "open youtube on the television", "expect": ["tv_launch_app", "tv_play_media"], "category": "tv"}
+{"id": "tv-05", "prompt": "go back on the tv menu", "expect": ["tv_control"], "category": "tv"}
+{"id": "music-01", "prompt": "play some music", "expect": ["play_music"], "category": "media"}
+{"id": "app-01", "prompt": "open notepad on the computer", "expect": ["native_app_launcher"], "category": "apps"}
+{"id": "app-02", "prompt": "close chrome", "expect": ["close_app"], "category": "apps"}
+{"id": "app-03", "prompt": "lock the workstation", "expect": ["os_control"], "category": "apps"}
+{"id": "app-04", "prompt": "set me up for deep work", "expect": ["os_macro"], "category": "apps"}
+{"id": "hud-01", "prompt": "show the calendar panel on screen", "expect": ["hud_open_widget"], "category": "hud"}
+{"id": "hud-02", "prompt": "open this page in my browser", "expect": ["open_link"], "category": "hud"}
+{"id": "file-01", "prompt": "find the file called notes somewhere on this machine", "expect": ["find_file"], "category": "files"}
+{"id": "file-02", "prompt": "list what is in my documents folder", "expect": ["list_directory"], "category": "files"}
+{"id": "file-03", "prompt": "read that file and tell me what is in it", "expect": ["workspace_read"], "category": "files"}
+{"id": "file-04", "prompt": "change the timeout value in that config file", "expect": ["edit_file"], "category": "files", "confirm": true}
+{"id": "git-01", "prompt": "what have i changed in the repository", "expect": ["github_status", "github_diff"], "category": "git"}
+{"id": "git-02", "prompt": "what did i commit recently", "expect": ["github_log"], "category": "git"}
+{"id": "git-03", "prompt": "commit these changes for me", "expect": ["github_commit"], "category": "git", "confirm": true}
+{"id": "web-01", "prompt": "what is the news about the budget today", "expect": ["tavily_search"], "category": "web"}
+{"id": "web-02", "prompt": "click the sign in button on the page", "expect": ["web_click"], "category": "web"}
+{"id": "web-03", "prompt": "type my address into the form field", "expect": ["web_type"], "category": "web"}
+{"id": "web-04", "prompt": "find me a picture of a red panda", "expect": ["web_search_image"], "category": "web"}
+{"id": "sys-01", "prompt": "how is the machine doing on memory and disk", "expect": ["system_status"], "category": "system"}
+{"id": "sys-02", "prompt": "how did i sleep and what is my heart rate", "expect": ["check_vitals"], "category": "system"}
+{"id": "mem-01", "prompt": "remember that i prefer tea over coffee", "expect": ["remember_fact"], "category": "memory"}
+{"id": "mem-02", "prompt": "what did i tell you about my sister", "expect": ["memory_recall"], "category": "memory"}
+{"id": "partner-01", "prompt": "did she message me today", "expect": ["partner_contact_status"], "category": "partner"}
+{"id": "partner-02", "prompt": "what did she actually say to you", "expect": ["summarize_partner_chat"], "category": "partner"}
+{"id": "misc-01", "prompt": "send that report to my phone", "expect": ["telegram_send_file"], "category": "misc"}
+{"id": "misc-02", "prompt": "tidy up my downloads folder", "expect": ["organize_downloads"], "category": "misc", "confirm": true}
+{"id": "misc-03", "prompt": "draw me a chart of these numbers", "expect": ["render_chart"], "category": "misc"}
+{"id": "misc-04", "prompt": "set the room up for a film", "expect": ["movie_protocol"], "category": "misc"}

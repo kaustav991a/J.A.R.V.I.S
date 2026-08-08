@@ -40,10 +40,10 @@ import os
 import re
 from typing import Any
 
-from modules import (agent_confirm, agent_core, agent_skills, agent_subagents,
-                     agent_yield)
+from modules import (agent_confirm, agent_core, agent_metrics, agent_skills,
+                     agent_subagents, agent_yield)
 from modules.agent_core import AgentLimits, Decision
-from modules.agent_search import ToolShelf
+from modules.agent_search import CompositeRegistry, ToolShelf
 from modules.tool_calls import ToolCall
 
 #: Feature flag. OFF by default — the one-shot path stays the default everywhere.
@@ -52,6 +52,10 @@ FLAG_ENV = "JARVIS_AGENT_LOOP"
 SHELF_ENV = "JARVIS_AGENT_SHELF"
 #: Escape hatch for the skill playbooks (§6.8.2, rule 18). Default ON.
 SKILLS_ENV = "JARVIS_AGENT_SKILLS"
+#: External MCP tool servers (§6.8.3). Default OFF — unlike the shelf and the
+#: playbooks, turning this on SPAWNS SUBPROCESSES that JARVIS did not write, so
+#: it is opt-in even though an absent config file already makes it inert.
+MCP_ENV = "JARVIS_AGENT_MCP"
 
 #: WebSocket frame type the HUD listens for. Additive: no existing frame changes.
 FRAME = "agent_step"
@@ -187,6 +191,46 @@ def system_prompt(skills=None) -> str:
     if not extra:
         return SYSTEM_PROMPT
     return SYSTEM_PROMPT.replace("Rules:\n", "Rules:\n" + extra, 1)
+
+
+_mcp = None
+
+
+def mcp_enabled(env: dict | None = None) -> bool:
+    """Are external tool servers in force? Default OFF, and deliberately the
+    opposite of the shelf and the playbooks: this is the one switch that starts
+    processes JARVIS did not write."""
+    env = os.environ if env is None else env
+    return str(env.get(MCP_ENV, "0")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def mcp_registry(config_path=None):
+    """Connected MCP servers, started once per process.
+
+    Servers are long-lived subprocesses, so they are NOT restarted per run —
+    a filesystem server respawned on every command would spend more time
+    starting than serving. `None` when nothing is configured, which is the
+    normal state.
+    """
+    global _mcp
+    if _mcp is not None and config_path is None:
+        return _mcp
+    from pathlib import Path
+
+    from modules import mcp_bridge
+    path = Path(config_path) if config_path else \
+        Path(__file__).resolve().parent.parent / "mcp_servers.json"
+    config = mcp_bridge.load_config(path)
+    if not config:
+        return None
+    registry = mcp_bridge.McpRegistry()
+    registry.connect_all(config)
+    if not registry.names():
+        registry.close()
+        return None
+    if config_path is None:
+        _mcp = registry
+    return registry
 
 
 def skills_enabled(env: dict | None = None) -> bool:
@@ -451,12 +495,24 @@ async def run_agent_command(
     parked: list = []
     notes: list[str] = []
 
+    # §6.8.3. External servers join the SAME catalogue the shelf searches and
+    # the SAME authorizer gates, so a foreign tool is found, ranked, promoted,
+    # evicted and governed by the code that already does it for local ones.
+    # That is the constraint that does not move: an MCP server is not a trusted
+    # caller, so it does not get a softer check than `action_engine` gets.
+    mcp = mcp_registry() if mcp_enabled() else None
+    searchable = registry if mcp is None else CompositeRegistry(registry, mcp)
+    if mcp is not None:
+        print(f"[AGENT] mcp: {len(mcp.names())} external tool(s) from "
+              f"{len(mcp.servers)} server(s)", flush=True)
+
     if at_desk:
-        authorize = make_desk_authorizer(registry, send, confirms, confirm_timeout)
+        authorize = make_desk_authorizer(searchable, send, confirms,
+                                         confirm_timeout)
     else:
         # Nobody to ask in the moment — park it durably and ping the phone
         # (phase 5). The loop still gets a refusal: parked is not done.
-        authorize = make_away_authorizer(registry, send, goal, parked=parked,
+        authorize = make_away_authorizer(searchable, send, goal, parked=parked,
                                          notes=notes, queue=queue, notify=notify)
 
     # Two-tier CONFIRM execution: an approved tool must run with
@@ -468,7 +524,13 @@ async def run_agent_command(
     auto_exec = registry.executor(engine, payload_sink=send)
     approved_exec = registry.executor(engine, governance_bypass=True,
                                       payload_sink=send)
-    narrate = make_narrator(send, goal)
+    # §6.8.4. Measurement rides the SAME event stream the HUD narration reads —
+    # no second hooks, and no second version of the truth about a run. It
+    # records counts, names, lengths and timings; never an argument value and
+    # never a character of the goal.
+    run_metrics = agent_metrics.RunMetrics(
+        tool_set=tool_set, presence=presence, goal_chars=len(str(goal or "")))
+    narrate = agent_metrics.collector(run_metrics, make_narrator(send, goal))
 
     tools = registry.defs(tool_set)
     extra_defs: list[dict] = []
@@ -496,10 +558,19 @@ async def run_agent_command(
                 return Decision(True, "delegation to a read-only helper")
             return await agent_core._maybe_await(inner_authorize, call)
 
+    mcp_exec = mcp.executor() if mcp is not None else None
+
     async def execute(call: ToolCall):
         if delegate_run is not None and call.name == delegate_name:
             return await delegate_run(call)
         entry = registry.get(call.name)
+        if entry is None and mcp_exec is not None and \
+                mcp.get(call.name) is not None:
+            # A foreign tool: no action_engine payload, no governance_bypass to
+            # thread — it was already authorised above, and the server does the
+            # work. Errors come back as TEXT the model reads, because a server
+            # being down is information rather than a crash.
+            return await mcp_exec(call)
         runner = approved_exec if (entry and entry.tier == "CONFIRM") else auto_exec
         return await runner(call)
 
@@ -530,7 +601,7 @@ async def run_agent_command(
 
     shelf = None
     if shelf_enabled():
-        shelf = ToolShelf(registry, base=registry.set_names(tool_set),
+        shelf = ToolShelf(searchable, base=registry.set_names(tool_set),
                           max_tools=limits.max_tools, allow_confirm=at_desk,
                           extra=extra_defs)
         print(f"[AGENT] shelf: {len(shelf.resident())} resident of "
@@ -553,6 +624,13 @@ async def run_agent_command(
         unlocked_tools={delegate_name} if delegate_name else None,
         on_event=narrate,
     )
+    # The two fields the event stream cannot see, because they are the loop's
+    # verdict rather than something it announced along the way.
+    run_metrics.ok = bool(result.ok)
+    run_metrics.stop_reason = str(result.stop_reason or "")
+    run_metrics.parked += len(parked)
+    agent_metrics.record_run(run_metrics)
+
     # Anything the OWNER has to be told regardless of how the run ended — today
     # that is "I parked it as task ab12cd34". The caller speaks these even when
     # `ok` is False, instead of falling back to a path that would re-stage the

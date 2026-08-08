@@ -43,7 +43,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
 | **Automatic test baseline** | ✅ **876 checks / 39 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted; the pytest-only tier A3 was closed 2026-07-30) | `TEST_PLAN.md` |
 | **Agentic core** (Tier C #12) | ✅ **ALL 5 PHASES DONE + LIVE-GATED 2026-07-26** (14/14 §23 rows) — pushed | §5 Tier C |
-| **Agent tool-layer hardening** (§6.8) | 🟡 **Phases 1 + 2 COMPLETE 2026-08-08** — validation, errors-as-instructions, anchors, paging, read-before-write, edit uniqueness, absolute paths; **all six catalogue waves (registry 11 → 56 of 72 deliverable, 16 excluded with reasons), the shelf WIRED** (it had never been built in production), and **skills — all 18 reference rules now satisfied**. Left open: MCP (Phase 3), measurement (Phase 4). **Sequenced BEFORE the §7 gates** at Kaustav's instruction | §6.8 |
+| **Agent tool-layer hardening** (§6.8) | ✅ **ALL FOUR PHASES DONE 2026-08-08** — validation, errors-as-instructions, anchors, paging, read-before-write, edit uniqueness, absolute paths; six catalogue waves (registry 11 → 56 of 72 deliverable); the shelf WIRED (it had never been built in production); skills — **all 18 reference rules satisfied**; MCP client, gated by a new `mcp_call` CONFIRM rule and dependency-free; and measurement + a 40-task eval set that is **40/40 and now a suite gate**. Owed: the §23b live-gate rows | §6.8 |
 | **Memory-at-rest encryption** (Tier C #11a) | ✅ **DONE + LIVE 2026-07-30** — DPAPI + scrypt recovery, AES-256-GCM fields; `jarvis_longterm.db` encrypted, `jarvis_memory.db` retired into it | §5 #11a |
 | **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); **click-to-talk DONE 2026-07-26** (`POST /api/listen`), live-gate owed | §5 |
@@ -1324,20 +1324,105 @@ lets through. **Nothing here needs hardware.**
   - `JARVIS_AGENT_SKILLS=0` returns the loop to no index and no loader, which is how "the
     model ignored the playbook" is told apart from "the playbook made it worse".
 
-#### 6.8.3 Phase 3 — MCP client
+#### 6.8.3 Phase 3 — MCP client ✅ DONE 2026-08-08
 
-Already on the books as post-Electron backlog item 5 in `RESUME.md`. The reference's §6.2 bridge
-(~80 lines) is the implementation. **Constraint that does not move:** every MCP tool call passes
-`governance_manager` like any other action — an external tool server is not a trusted caller —
-and per the reference's §6.5, **tool descriptions from an MCP server are untrusted input**, never
-instructions.
+`modules/mcp_client.py` + `modules/mcp_bridge.py`, `test_mcp_bridge.py` (32). Both constraints
+held, and neither was softened to make the feature fit.
 
-#### 6.8.4 Phase 4 — Measurement (the part that turns opinion into decision)
+- **NO NEW DEPENDENCY.** The reference builds this on the `mcp` package; this speaks the
+  protocol directly, because MCP's stdio transport is newline-delimited JSON-RPC 2.0 and this
+  environment carries a hard `protobuf==6.33.6` pin that several subsystems depend on.
+  ~150 lines, nothing above `subprocess`. It implements exactly four messages —
+  `initialize`, `notifications/initialized`, `tools/list`, `tools/call` — and says so rather
+  than half-supporting the rest.
+- **EVERY MCP CALL PASSES GOVERNANCE.** Because governance fails closed on an unknown action
+  type, MCP needed a rule rather than an exemption: **`mcp_call`, shipped CONFIRM.** A server
+  may be declared *stricter* in config; nothing in a config file can make it looser than the
+  ruleset says. So an **unattended run cannot reach a foreign tool at all**, and one is not
+  even findable — the same treatment `gmail_send` gets. Set `mcp_call` to BLOCK to switch
+  external tools off wholesale.
+- **DESCRIPTIONS ARE DATA, NEVER INSTRUCTIONS** (reference §6.5). Each is framed with whose
+  words they are, capped at 800 chars, and stripped of injection framing by **two** patterns —
+  role prefixes and `### Instruction` blocks are only meaningful at a line start, while
+  *"ignore all previous instructions"* is an attack anywhere. One regex for both caught
+  neither: the leftmost match consumed the line start and the phrase after it was then no
+  longer at one. Text is **neutralised, not deleted** — a description mangled into silence
+  teaches nothing about a tool the model can still call, and one quietly rewritten hides that
+  a server tried. *What actually stops the attack is the paragraph above:* an injected
+  instruction can only ask for tools, and every tool is still gated.
+- **Foreign tools join the SAME catalogue** via `CompositeRegistry`, so they are searched,
+  ranked, promoted and evicted by the code that already does it for local ones — which is the
+  point, since a handful of servers is easily 60 tools and 60 resident tools is worse than
+  none. Local always wins a name clash.
+- **Nothing runs unless configured.** No `mcp_servers.json`, no servers, no subprocesses;
+  `JARVIS_AGENT_MCP` defaults **OFF** on top of that, because this is the one switch that
+  starts processes JARVIS did not write. `command` is a LIST and never reaches a shell, so a
+  config file cannot be an execution primitive dressed as configuration. Versions should be
+  pinned — `@latest` means an upstream compromise arrives on its own schedule.
+- **The harness drives a real subprocess** (`test_mcp_server_fake.py`, a genuine MCP server in
+  100 lines) through the handshake, a round trip, a non-text content block, a stdout banner, a
+  hang, a mid-call exit and an injected description. A mocked client would prove the code calls
+  the functions it calls; the framing, the timeouts and the shutdown are what actually break.
 
-Per-tool call counts, error rates, first-call-valid rate, tool-selection accuracy, token cost;
-plus an eval set of ~30 real tasks that re-runs on every change. Without this, every later tuning
-decision on the Groq cascade is a guess. Feeds directly into post-Electron backlog item 2
-(tiered brain) — you cannot route "hard" turns to a better model without a measure of hard.
+Config shape (`jarvis-backend/mcp_servers.json`, gitignored, absent by default):
+
+```json
+{"servers": [{"name": "fs",
+              "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem@0.6.2",
+                          "F:\\work\\JARVIS-Project"],
+              "tier": "CONFIRM", "enabled": true}]}
+```
+
+#### 6.8.4 Phase 4 — Measurement ✅ DONE 2026-08-08
+
+`modules/agent_metrics.py` + `evals/agent_tasks.jsonl` + `run_evals.py`,
+`test_agent_metrics.py` (22). Everything before this was reasoning about failure modes; this is
+the part that produces numbers.
+
+- **Metrics ride the existing event stream** — the same events the HUD narrator reads, wrapped
+  rather than duplicated. No new hooks in `agent_core`, and two sources of truth about one run
+  is how you end up debugging the metrics instead of the agent.
+- **Recorded:** per tool — calls, ok, errors, denials, first-call-valid, latency, output size,
+  argument NAMES; per run — steps, stop reason, repairs, searches, playbooks opened,
+  compactions, parks, duration. Written as JSONL to `metrics/` (gitignored).
+- **NOT recorded: any argument VALUE, and not one character of the goal.** The same rule the
+  sealed-queue dead-letter file follows. A metrics file that accumulated what he asked JARVIS
+  to do would be a transcript under another name, sitting unencrypted beside a project that
+  went to real trouble to encrypt the other one. Pinned by tests that push secrets through and
+  scan the serialised record for them.
+- **The headline number is `first_call_valid`** — the share of tool calls well-formed on the
+  first attempt, before any repair. It is the cleanest single signal that the TOOL LAYER is
+  working: descriptions, schemas and error messages all move it, and it needs no human to
+  judge an output. The denominator is attempts, not calls, because a repair *is* an attempt.
+- **The eval set: 40 real requests**, each with the tool that should serve it, across 13
+  domains. Two modes, and conflating them would be the easiest way to believe the agent is
+  better than it is:
+  - **offline (default)** scores the RETRIEVAL layer — does `search_tools` surface the right
+    tool from plain words? Deterministic, free, and therefore **in the suite**, where a
+    reworded description or a rename shows up as a failure instead of as an unreachable
+    capability nobody notices.
+  - **`--live`** runs the real loop against real Groq and records what was actually called.
+    That is the end-to-end number; it costs rate limit and minutes, so it is not in the suite.
+- **It paid for itself on the first run: 35/40, and every miss was real.** *"any emails from my
+  accountant"* matched **nothing**, because matching is `term in haystack` and "emails" is not
+  inside "gmail_read" — one letter, and the whole mail catalogue was unreachable from a plural
+  (fixed: terms now match their singular). *"check my email for anything new"* ranked
+  `gmail_read_unread` **sixth**, because "email" is not in that tool's name. `system_status`
+  and `memory_recall` were unreachable from ordinary phrasings. One miss was the eval's own
+  bug — it scored against a shelf whose base set was the expected answer, and a resident tool
+  is never a search result.
+- **And it caught a ranking bug the aliases had introduced:** an alias scored at name weight,
+  so `tv_power` (alias "turn") tied with `tv_volume` for *"turn the tv volume up"* — a tool
+  matching two words of the request **in its own name** — and the tie-break handed a volume
+  request to the power toggle. Weights are now name 4 > alias 3 > description 1: a synonym
+  must not outweigh the thing itself. **Retrieval is 40/40 after the fixes**, and that number
+  is now a gate rather than a claim.
+- Feeds post-Electron backlog item 2 (tiered brain) directly: routing "hard" turns to a better
+  model needs a measure of hard.
+
+**What measurement does NOT yet answer.** Token cost per run: the provider layer does not
+surface usage, so `out_chars` is a proxy and is labelled as one. And the live number is still
+zero-sample — nothing here substitutes for the §23b rows.
 
 #### 6.8.5 Sequencing and the tradeoff, stated plainly
 

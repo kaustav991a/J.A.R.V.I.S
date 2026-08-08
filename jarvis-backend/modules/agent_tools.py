@@ -819,7 +819,9 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
     r.register("memory_recall",
                "Recall facts JARVIS has been told before (preferences, people, "
                "past decisions). Check here before claiming something is unknown.",
-               _obj(_QUERY))
+               _obj(_QUERY),
+               aliases=("remember", "told", "tell", "said", "know", "about",
+                        "forgot", "mentioned"))
     # §6.8.1 gaps C/D/G. The schema grew `offset`/`limit` because the paging is
     # real now: `workspace_agent.read_file` used to advise "consider reading a
     # specific line range" for a parameter that did not exist.
@@ -857,7 +859,9 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                               "description": "File name or fragment."}}))
     r.register("system_status",
                "Current machine telemetry: CPU, memory, disk, battery.",
-               _obj({}, []))
+               _obj({}, []),
+               aliases=("machine", "computer", "cpu", "memory", "disk", "ram",
+                        "battery", "performance", "load"))
     r.register("read_screen",
                "Describe what is currently on Kaustav's screen. Use only when the "
                "answer depends on what he is looking at.",
@@ -926,7 +930,12 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                _obj({"count": {"type": "integer", "minimum": 1, "maximum": 20,
                                "description": "How many to fetch (default 5)."}},
                     []),
-               build_target=lambda a: str(a.get("count") or ""))
+               build_target=lambda a: str(a.get("count") or ""),
+               # "email" is not in this tool's NAME, so before these aliases
+               # "check my email for anything new" ranked it sixth, behind every
+               # tool that happens to have the word in its name (§6.8.4).
+               aliases=("email", "mail", "inbox", "unread", "new", "check",
+                        "anything"))
 
     r.register("gmail_read",
                "Search the mailbox with a Gmail search query and read what comes "
@@ -941,7 +950,9 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                      "max_results": {"type": "integer", "minimum": 1, "maximum": 20,
                                      "description": "How many to return (default 5)."}},
                     ["query"]),
-               build_target=_gmail_query_target)
+               build_target=_gmail_query_target,
+               aliases=("email", "mail", "from", "sender", "subject", "find",
+                        "older"))
 
     r.register("search_email",
                "Find emails matching plain-words text. Simpler than `gmail_read` "
@@ -1041,7 +1052,9 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "an awake one to sleep. Use it when he says to turn the TV on or "
                "off; do not use it to \"make sure\" it is on, because that is how "
                "you turn it off.",
-               _obj({}, []))
+               _obj({}, []),
+               aliases=("television", "turn", "switch", "standby", "screen",
+                        "off"))
 
     r.register("tv_volume",
                "Change the television's volume. `mute` is a toggle. This is the "
