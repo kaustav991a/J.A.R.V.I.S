@@ -15,8 +15,17 @@
 > **Skills (rule 18) landed too — all 18 reference rules are now satisfied.** Six playbooks
 > in `jarvis-backend/skills/`, one line each in the prompt, bodies loaded on demand
 > (measured: 824 chars standing in for 12 462 — 15×, and Groq has no prompt caching).
-> **Still open: MCP (Phase 3), measurement (Phase 4).** Item 5 is still the hardware gate to
-> Electron; it is no longer the only thing left. Read roadmap §6.8 first.
+> **✅ §6.8 IS COMPLETE — all four phases.** MCP landed (dependency-free stdio client, gated
+> by a new `mcp_call` **CONFIRM** rule; off unless configured) and so did measurement (metrics
+> that record counts but never argument values or goal text, plus a **40-task eval set that is
+> 40/40 and now a suite gate**). Item 5 — the hardware gate — **is once again the only thing
+> between here and Electron.** Read roadmap §6.8 before touching any of it.
+>
+> **The eval set paid for itself on its first run (35/40).** *"any emails from my accountant"*
+> matched **nothing** — matching is `term in haystack` and "emails" is not inside "gmail_read",
+> so one letter made the whole mail catalogue unreachable from a plural. It then caught a
+> ranking bug the aliases had introduced: a synonym scored at name weight, so *"turn the tv
+> volume up"* went to the **power toggle**. Weights are now name > alias > description.
 >
 > **Six real defects surfaced while filling the catalogue, all fixed:** the **shelf had never
 > been wired in production** (so every catalogue tool was registered and unreachable);
@@ -256,7 +265,7 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 | | |
 |---|---|
 | Branch | `feat/cloud-gateway`, **AHEAD of origin and not pushed** (the provenance arc, the contact-events flip, and the whole §6.8 tool-layer arc), and **not merged to `main`** |
-| Suite | **1351 checks / 57 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures). Harnesses are **discovered** now, not listed — a new `test_*.py` is in the suite the moment it exists |
+| Suite | **1405 checks / 60 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures). Harnesses are **discovered** now, not listed — a new `test_*.py` is in the suite the moment it exists |
 | Working tree | **clean of feature work.** The `source`-column arc that used to live here is committed (`326cbd2`); the only untracked file left is the pre-existing `jarvis-frontend/public/favicon.zip`, which is nobody's from this arc. |
 | Live store | `jarvis_longterm.db` — 58 rows, **all tagged `source=desk`**, all decrypting. The provenance column is populated, not merely present. |
 
