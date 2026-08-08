@@ -768,7 +768,19 @@ async def lifespan(app: FastAPI):
                             asyncio.create_task(overwatch_daemon.start()))
     
     # --- Phase 5: Start Ambient Vision Daemon ---
-    ambient_vision_daemon.start()
+    # JARVIS_AMBIENT_VISION=0 skips it entirely, the same opt-out the gesture
+    # daemon below already has. It exists because ambient is the heaviest
+    # resident on this box (YOLOv8n + its capture loop) and there are sessions
+    # where nothing needs scene perception. Default ON — unset behaves exactly
+    # as before, so this cannot change anything that is not deliberately off.
+    # NOTE: this daemon IS intruder detection (ambient_vision.py, intruder_streak
+    # → shared_optical_cache["intruder_detected"]). With it off, an unknown face
+    # raises nothing.
+    if os.getenv("JARVIS_AMBIENT_VISION", "1") == "1":
+        ambient_vision_daemon.start()
+    else:
+        print("[AMBIENT VISION] disabled by JARVIS_AMBIENT_VISION=0 "
+              "— scene perception and intruder detection are OFF.", flush=True)
 
     # --- Phase G3: Gesture + presence daemon (hand control, owner face gate,
     #     away soft-lock). Thread daemon with an internal retry shell, same
