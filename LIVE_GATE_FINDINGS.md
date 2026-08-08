@@ -17,7 +17,7 @@
 | ❌ Failed | **1** |
 | ⏸ Blocked | **1** |
 | Not yet attempted | **176** |
-| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **8 FIXED** (F-03, F-06, F-07, F-08, F-09, F-10, F-11, F-13) — **every high and medium closed**; 5 low/doc remain |
+| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **ALL 13 FIXED** — every high, medium and low finding is closed. What remains is live confirmation, not code |
 
 **The session was worth it before it got far.** 16 rows surfaced 3 high-severity bugs, all of
 the same family: **a failure the user cannot distinguish from normal operation.** A dropped
@@ -365,16 +365,16 @@ gate proving something once is not the same as a property being pinned.
 
 ### Group 4 — docs
 
-- [ ] **F-01** fix the calibration path in `LIVE_GATE_CHECKLIST.md`
-- [ ] **F-04** pin the venv interpreter in `TEST_PLAN.md` `0.1`
-- [ ] **F-05** rewrite `TEST_PLAN.md` `0.2`'s gateway expectation
-- [ ] Also still owed from the earlier audit: `TEST_PLAN.md` PART A table is stale (787 checks /
-      34 harnesses; actual 1405 / 59) and still says "add its filename to `HARNESSES`"
+- [x] **F-01** ✅ **DONE**
+- [x] **F-04** ✅ **DONE** — both TEST_PLAN and the checklist, with the reason stated
+- [x] **F-05** ✅ **DONE** — accepts either gateway; added `0.2b` for the CONFIG NOT LOADED banner
+- [x] ✅ **DONE** — PART A table marked as a snapshot, runner named as source of truth, dead
+      `HARNESSES` instruction removed (it is what hid `test_agent_wave2.py`)
 
 ### Group 5 — housekeeping
 
 - [x] **F-06** ✅ **DONE `278bca8`** — committed separately, message states plainly it did not achieve its RAM goal
-- [ ] **F-14** clean up TTS temp files and/or gitignore them
+- [x] **F-14** ✅ **DONE** — gitignored and the stray removed
 
 ---
 
