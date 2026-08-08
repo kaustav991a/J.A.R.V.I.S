@@ -17,7 +17,7 @@
 | ❌ Failed | **1** |
 | ⏸ Blocked | **1** |
 | Not yet attempted | **176** |
-| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **7 FIXED** (F-08, F-09, F-11, F-13, F-10, F-07, F-06) — **all high AND all medium closed** |
+| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **8 FIXED** (F-03, F-06, F-07, F-08, F-09, F-10, F-11, F-13) — **every high and medium closed**; 5 low/doc remain |
 
 **The session was worth it before it got far.** 16 rows surfaced 3 high-severity bugs, all of
 the same family: **a failure the user cannot distinguish from normal operation.** A dropped
@@ -250,7 +250,11 @@ the pre-wake attempt. No session was lost.
 
 ## 🟠 MEDIUM
 
-### F-03 — a missing dotenv silently disables the "JARVIS is dead" alert
+### F-03 — ✅ **FIXED 2026-08-09** — a missing dotenv silently disables the "JARVIS is dead" alert
+
+> **Fix shipped.** The failure is remembered, announced loudly at boot, and the owner alert now
+> distinguishes "`.env` could not be read, credentials may be present" from "the `.env` we read
+> has no token". `test_watchdog_policy.py` **14 → 19**.
 
 `watchdog.py:65–69`:
 
@@ -343,8 +347,8 @@ gate proving something once is not the same as a property being pinned.
       → `test_romanise_nudge.py` (15)
 - [x] **F-09** ✅ **DONE** — code-level guard on the briefing output + prompt truthfulness clause
       → `test_briefing_truthfulness.py` (29)
-- [ ] **F-03** stop swallowing a missing `dotenv` in `watchdog.py:65–69`
-      → `test_watchdog_policy.py`
+- [x] **F-03** ✅ **DONE** — loud at boot, remembered, and the alert stops blaming the token
+      → `test_watchdog_policy.py` 14 → 19
 
 ### Group 2 — reliability blockers (unblock the most rows)
 
