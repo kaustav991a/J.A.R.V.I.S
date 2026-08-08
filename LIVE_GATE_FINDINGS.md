@@ -15,9 +15,9 @@
 | Attempted | **15** |
 | ✅ Passed | **12** |
 | ❌ Failed | **1** |
-| ⏸ Blocked | **2** |
+| ⏸ Blocked | **1** |
 | Not yet attempted | **177** |
-| **Findings** | **14** — 3 high, 5 medium, 1 unclassified, 5 low |
+| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) |
 
 **The session was worth it before it got far.** 15 rows surfaced 3 high-severity bugs, all of
 the same family: **a failure the user cannot distinguish from normal operation.** A dropped
@@ -53,12 +53,17 @@ answer, an invented action, and an alert that cannot fire.
 |---|---|
 | `10.9` **Morning briefing** | Briefing fires and is well-formed prose, but **confabulates a destructive action it claims to have performed** (**F-09**) and is mis-framed as a morning briefing at 22:41 (**F-10**) |
 
-## ⏸ Blocked — 2
+## ⏸ Blocked — 1
 
 | Row | Blocked by |
 |---|---|
-| `17.7` backdoor after real auth | **F-12** — the authenticated POST never returns; can't distinguish "dispatched but no response" from "never reached the handler" without a console line |
 | `21.3` shared camera | **F-08** — the gesture daemon dies every ~2 min *without* a scan running, so the row's premise ("does the scan kill it?") can't be isolated |
+
+## ↩ Not run — 1
+
+| Row | Why |
+|---|---|
+| `17.7` backdoor after real auth | Was believed blocked by F-12; **F-12 is withdrawn** (assistant tooling, not JARVIS). Not blocked — needs a plain re-run in an authenticated session |
 
 ---
 
@@ -194,25 +199,36 @@ structurally.
 
 ---
 
-## ❓ UNCLASSIFIED
+## ⬜ WITHDRAWN
 
-### F-12 — `/api/backdoor` does not return after authentication
+### ~~F-12 — `/api/backdoor` does not return after authentication~~ — **NOT A BUG. Tooling artifact.**
 
-Two POSTs of `{"command":"system status"}` timed out at **20 s and 60 s** (`HTTP 000`) while the
-backend was healthy (`8000 → 200`, `watchdog: alive`) and the voice path was answering normally
-throughout. The **refusal** path returned instantly earlier (`403`), so it is the **authenticated
-dispatch** path that hangs.
+Two POSTs from the assistant's shell timed out at 20 s and 60 s (`HTTP 000`) while the backend was
+healthy and the voice path answered normally. It looked like the authenticated dispatch path
+hanging, and it was written up as blocking 26 agentic rows.
 
-**Splits two ways, and needs one console line to decide:**
+**It was the assistant's sandbox mangling POST bodies.** The same request run by Kaustav from
+PowerShell returned in **0.0015 s**. GET worked from the sandbox throughout; only POST hung, and
+the assistant's requests never appeared in the uvicorn access log at all — the tell that they
+never reached the handler.
 
-- a `[BACKDOOR]` line appeared → it dispatched and the HTTP response never came back (engine
-  lock, or awaiting a TTS that was busy speaking)
-- no line at all → the request never reached the handler
+**Kept rather than deleted, because the diagnostic tell is worth reusing:** if a request produces
+no access-log line, it did not arrive; suspect the caller before the server. `17.7` is not
+blocked — it needs a plain re-run.
 
-**Not captured before shutdown.** First job of session 2.
+The PowerShell form that works (backslash-escaped quotes inside a single-quoted PS string reach
+curl literally and yield a `422 json_invalid`):
 
-**Why it matters beyond `17.7`:** the HUD command line is how §23/§23b were driven. If
-authenticated dispatch hangs, **26 agentic rows** lose their driving surface.
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/api/backdoor -Method Post `
+  -ContentType 'application/json' -Body '{"command":"system status"}'
+```
+
+### Also checked and NOT a finding
+
+A `403 {"reason":"locked"}` seen in the browser console *after* a successful face scan looked like
+a lost authenticated session. It was **scrollback** — the React console had not been cleared since
+the pre-wake attempt. No session was lost.
 
 ---
 
@@ -311,8 +327,6 @@ gate proving something once is not the same as a property being pinned.
 
 - [ ] **F-08** time-based tolerance + reopen instead of die, `gesture_camera.py:232–247`
       → `test_gesture_camera.py` — **unblocks 34 rows**
-- [ ] **F-12** classify first (needs the console line), then fix
-      → **unblocks `17.7` + the driving surface for 26 agentic rows**
 
 ### Group 3 — correctness
 
@@ -346,7 +360,7 @@ A passed row is only valid against the tree it passed on.
 | F-03 (`watchdog.py`) | `0.1`, `0.2`, `1.3` |
 | F-11 (`main.py` voice loop) | `2.1`, `2.2`, `2.4` |
 | F-07 (`enroll_face.py`) | `16.1` |
-| F-13, F-09, F-10, F-08, F-12 | nothing already passed |
+| F-13, F-09, F-10, F-08 | nothing already passed |
 
 **7 rows to re-run.** The other 5 passes (`0.3`, `0.4`, `0.5`, `2.3`, `17.6`) stand.
 
@@ -357,7 +371,6 @@ A passed row is only valid against the tree it passed on.
 | Blocker | Rows | What it needs |
 |---|---|---|
 | **F-08** camera stability | ~34 (A18–A21) | the fix above. A phone-side quality reduction was attempted and not verified before shutdown |
-| **F-12** backdoor dispatch | 26 (§23b) | classification, then fix — this is the surface §23/§23b were driven from |
 | **Second device** | 7 (§22 + `23b.22`) | a second phone/tablet/laptop with a **pinned non-random MAC** on the home SSID, so the probe device can leave WiFi while the camera keeps feeding. **Not yet obtained** |
 | **Second person** | 15 (Group C) | any face ×2, a 2nd Telegram account ×1, **Kinshuk** ×1, **Mousumi** ×11. **Not yet scheduled** |
 | Nothing — just time | ~95 | A4–A11, A14–A17, A23, A24 + Group D |
