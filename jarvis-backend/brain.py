@@ -1170,6 +1170,37 @@ def extract_and_store_memory(user_text: str, active_user: str = "KAUSTAV") -> No
         print(f"[BRAIN] extract_and_store_memory error (non-fatal): {exc}", flush=True)
 
 
+def _has_indic_script(text: str) -> bool:
+    """True if the text contains Bengali (U+0980–09FF) or Devanagari
+    (U+0900–097F) characters — i.e. Kaustav spoke/wrote in Indic script and the
+    model would otherwise mirror that script straight back."""
+    return any("ऀ" <= ch <= "৿" for ch in text)
+
+
+# Injected as a FRESH system turn immediately before the user message when the
+# input is in Indic script.
+#
+# The persona already carries the Latin-letters rule, near the top of the prompt.
+# It is not enough, and the live gate proved it: on 2026-08-08 a spoken Bengali
+# question came back as "আমি ভালো, মিঃ কাউষ্টব..." and the TTS could not
+# synthesise it, so `speak_text` skipped the segment and the answer was never
+# spoken at all. Not a style violation — a lost reply. Measured payload that
+# turn was ~3,282 tokens, so the rule sat about 3,200 tokens above the message
+# it was supposed to govern, and the model ignored it.
+#
+# The cloud gateway hit exactly this and fixed it in 4fb0821 — but that commit
+# touched one file, cloud_gateway.py, so the desk path never got it. This is
+# that fix, ported. Recency is the whole mechanism: a system turn adjacent to
+# the user message is obeyed where the same words 3,000 tokens earlier are not.
+_ROMANISE_NUDGE = (
+    "SCRIPT OVERRIDE (highest priority): The operator's message is in Bengali "
+    "script, but you MUST reply using ONLY English/Latin letters — romanised "
+    "Benglish, NOT Bengali script (বাংলা). Write Bengali words phonetically in "
+    "Latin: 'Akhon 6:53 PM baje, Sir — apnar ki dorkar bolun.' EVERY sentence in "
+    "Latin letters. Do NOT output a single Bengali/Devanagari character."
+)
+
+
 # Notice the new 'active_user' parameter here
 def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
     print(f"[BRAIN] Processing: '{user_text}' for user: {active_user}")
@@ -1311,6 +1342,10 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
     # Token-trim: ship only the recent context window, not the whole 30-msg buffer.
     for msg in memory.get_context_window():
         messages.append(msg)
+    # Indic-script input gets the override RIGHT HERE, adjacent to the message
+    # it governs — the persona rule alone does not hold. See _ROMANISE_NUDGE.
+    if _has_indic_script(user_text):
+        messages.append({"role": "system", "content": _ROMANISE_NUDGE})
     messages.append({"role": "user", "content": user_text})
 
     memory.add_to_working_memory("user", user_text)
@@ -1638,6 +1673,10 @@ def process_stream(user_text: str, active_user: str = "KAUSTAV"):
     # Token-trim: ship only the recent context window, not the whole 30-msg buffer.
     for msg in memory.get_context_window():
         messages.append(msg)
+    # Indic-script input gets the override RIGHT HERE, adjacent to the message
+    # it governs — the persona rule alone does not hold. See _ROMANISE_NUDGE.
+    if _has_indic_script(user_text):
+        messages.append({"role": "system", "content": _ROMANISE_NUDGE})
     messages.append({"role": "user", "content": user_text})
 
     memory.add_to_working_memory("user", user_text)
