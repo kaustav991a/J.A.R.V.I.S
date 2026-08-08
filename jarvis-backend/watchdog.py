@@ -62,11 +62,28 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 # Load .env so token/ports can live alongside the rest of J.A.R.V.I.S.'s config.
+#
+# F-03: this used to be `except Exception: pass`, and on 2026-08-08 that cost
+# the one alert that matters. Launched under an interpreter without
+# python-dotenv, the watchdog ran with NO environment at all, then gave up on a
+# crash loop and reported "No TELEGRAM_BOT_TOKEN / TELEGRAM_USER_ID — owner
+# alert not sent" while .env contained both. The single signal that says the
+# server is unrecoverable failed silently AND blamed the wrong thing.
+#
+# A watchdog has no business running blind about its own config, so the failure
+# is now loud and it is remembered — _notify_owner_down uses it to say which of
+# the two things went wrong.
+DOTENV_LOADED = False
+DOTENV_ERROR: str | None = None
 try:
     from dotenv import load_dotenv
     load_dotenv()
-except Exception:
-    pass
+    DOTENV_LOADED = True
+except ImportError:
+    DOTENV_ERROR = ("python-dotenv is not installed for this interpreter, so "
+                    ".env was NOT read")
+except Exception as _dotenv_exc:            # a malformed .env, a permissions fault
+    DOTENV_ERROR = f".env could not be loaded: {type(_dotenv_exc).__name__}: {_dotenv_exc}"
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -218,7 +235,14 @@ def _notify_owner_down(reason: str) -> None:
            f"have stopped restarting it. {reason} It needs manual attention, Sir.")
     log(msg)
     if not (token and chat_id):
-        log("   (No TELEGRAM_BOT_TOKEN / TELEGRAM_USER_ID — owner alert not sent.)")
+        if DOTENV_ERROR:
+            # Do NOT say the credentials are missing — we never got to look.
+            log(f"   (Owner alert NOT sent: {DOTENV_ERROR}. The credentials may "
+                f"be present in .env; this process could not read it. "
+                f"Re-launch with the venv interpreter.)")
+        else:
+            log("   (No TELEGRAM_BOT_TOKEN / TELEGRAM_USER_ID in a .env that WAS "
+                "read — owner alert not sent.)")
         return
     try:
         data = urllib.parse.urlencode({"chat_id": chat_id, "text": msg}).encode()
@@ -249,6 +273,12 @@ def _terminate_child(proc: subprocess.Popen) -> None:
 def main() -> None:
     log("=" * 70)
     log("J.A.R.V.I.S. WATCHDOG ONLINE — the server is now unkillable.")
+    if DOTENV_ERROR:
+        # Loud, at boot, before anything depends on it (F-03).
+        log(f"⚠️  CONFIG NOT LOADED — {DOTENV_ERROR}.")
+        log("⚠️  Every setting in .env reads as absent, including the Telegram "
+            "credentials this watchdog needs to tell you it gave up.")
+        log("⚠️  Re-launch with: venv\\Scripts\\python.exe watchdog.py")
     if _TOKEN_AUTOGEN:
         log(f"🔑 No WATCHDOG_TOKEN set — generated session token: {TOKEN}")
         log("   (Set WATCHDOG_TOKEN in .env for a stable token across restarts.)")

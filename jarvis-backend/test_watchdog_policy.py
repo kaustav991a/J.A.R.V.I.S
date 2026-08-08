@@ -124,9 +124,59 @@ def test_notify_owner_down_unconfigured_is_safe():
                 os.environ[k] = v
 
 
+# ── F-03: a watchdog must not run blind about its own config ─────────────────
+# On 2026-08-08 the watchdog was launched under an interpreter without
+# python-dotenv. `except Exception: pass` swallowed it, so it ran with NO
+# environment, then gave up on a crash loop and reported "No TELEGRAM_BOT_TOKEN
+# / TELEGRAM_USER_ID — owner alert not sent" while .env contained both. The one
+# signal that says the server is unrecoverable failed silently and blamed the
+# wrong thing — the most misleading shape a failure can take.
+
+import ast as _ast
+import pathlib as _pathlib
+
+_WD_SRC = (_pathlib.Path(__file__).resolve().parent / "watchdog.py").read_text(
+    encoding="utf-8", errors="replace")
+
+
+def test_a_missing_dotenv_is_not_silently_swallowed():
+    tree = _ast.parse(_WD_SRC)
+    bare_pass_on_dotenv = False
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Try):
+            continue
+        if "load_dotenv" not in _ast.dump(node):
+            continue
+        for handler in node.handlers:
+            body = handler.body
+            if len(body) == 1 and isinstance(body[0], _ast.Pass):
+                bare_pass_on_dotenv = True
+    check(not bare_pass_on_dotenv,
+          "the dotenv import is no longer swallowed by a bare `except: pass`")
+    check("DOTENV_ERROR" in _WD_SRC,
+          "the failure is REMEMBERED, so later code can say which thing went wrong")
+
+
+def test_the_boot_banner_says_config_was_not_loaded():
+    check("CONFIG NOT LOADED" in _WD_SRC,
+          "a config failure is announced loudly at boot, before anything depends on it")
+
+
+def test_the_owner_alert_does_not_blame_a_token_it_never_looked_for():
+    # The specific lie from 2026-08-08: reporting the credentials as missing
+    # when the process never managed to read the file that holds them.
+    check("The credentials may" in _WD_SRC and "could not read it" in _WD_SRC,
+          "when .env was unreadable the alert says so, instead of calling the token missing")
+    check("in a .env that WAS" in _WD_SRC,
+          "and the genuinely-absent case is worded distinctly from the unreadable one")
+
+
 TESTS = [test_first_rapid_cycle_backs_off_not_give_up, test_gives_up_after_max_cycles,
          test_healthy_run_resets_strikes, test_spaced_crashes_never_give_up,
-         test_notify_owner_down_unconfigured_is_safe]
+         test_notify_owner_down_unconfigured_is_safe,
+         test_a_missing_dotenv_is_not_silently_swallowed,
+         test_the_boot_banner_says_config_was_not_loaded,
+         test_the_owner_alert_does_not_blame_a_token_it_never_looked_for]
 
 
 def main():
