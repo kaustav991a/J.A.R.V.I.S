@@ -104,6 +104,34 @@ def test_report_empty_pairs():
     check(r["warnings"] == [] and r["n"] == 1, "single-sample report is warning-free")
 
 
+# ── F-07: enrolment must follow the camera, like everything else does ────────
+# On 2026-08-08 the backend auto-selected .106 while `enroll_face.py` hard-failed
+# on a dead .105, because it read a single JARVIS_CAM while every other consumer
+# read the JARVIS_CAM_SOURCES ladder. The one tool that re-seeds biometric
+# identity was the only one that could not follow a DHCP move — the exact move
+# the ladder exists for, and one roadmap §7 records happening twice unprompted.
+
+import ast as _ast
+import pathlib as _pathlib
+
+_ENROLL_SRC = (_pathlib.Path(__file__).resolve().parent / "enroll_face.py").read_text(
+    encoding="utf-8", errors="replace")
+
+
+def test_enrolment_uses_the_same_camera_ladder_as_the_daemon():
+    check("parse_sources" in _ENROLL_SRC,
+          "enroll_face resolves through parse_sources — the JARVIS_CAM_SOURCES ladder")
+    check("make_frame_source" in _ENROLL_SRC,
+          "and opens via make_frame_source, so dead entries are skipped as the daemon does")
+    check("FrameSource(source" not in _ENROLL_SRC,
+          "the old single-source open is gone")
+
+
+def test_an_explicit_argv_camera_still_wins():
+    check("sys.argv[1]" in _ENROLL_SRC,
+          "an explicitly named camera still overrides the ladder — naming one by hand should win")
+
+
 TESTS = [
     test_face_box_good,
     test_face_box_low_score,
@@ -119,6 +147,8 @@ TESTS = [
     test_report_outlier,
     test_report_no_diversity,
     test_report_empty_pairs,
+    test_enrolment_uses_the_same_camera_ladder_as_the_daemon,
+    test_an_explicit_argv_camera_still_wins,
 ]
 
 

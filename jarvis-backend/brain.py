@@ -2165,6 +2165,25 @@ def synthesize_info(original_query: str, raw_data: str, active_user: str = "KAUS
     except Exception as e:
         return "I've retrieved the data, but I'm having trouble phrasing a summary. In short: " + raw_data[:100]
 
+def period_for_hour(hour: int) -> str:
+    """"Morning" / "Afternoon" / "Evening" / "Night" / "Late Night".
+
+    One definition, shared. main.py names the comprehensive briefing from this
+    and generate_briefing greets from it, so the label and the greeting cannot
+    disagree — which is precisely what F-10 was: an hour-aware "Good evening"
+    inside something hardcoded as a MORNING briefing.
+    """
+    if 5 <= hour < 12:
+        return "Morning"
+    if 12 <= hour < 17:
+        return "Afternoon"
+    if 17 <= hour < 21:
+        return "Evening"
+    if 21 <= hour < 24:
+        return "Night"
+    return "Late Night"
+
+
 # Verbs that describe changing the operator's world — his files, his calendar,
 # his mail, his messages. Claiming one of these falsely is not a phrasing slip,
 # it is a false report of work done on his data.
@@ -2256,19 +2275,8 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
     current_time = now.strftime("%I:%M %p")
     current_date = now.strftime("%A, %B %d, %Y")
     
-    # Calculate time of day to prevent "Good morning" at 1 AM
-    hour = now.hour
-    if 5 <= hour < 12:
-        time_of_day = "Morning"
-    elif 12 <= hour < 17:
-        time_of_day = "Afternoon"
-    elif 17 <= hour < 21:
-        time_of_day = "Evening"
-    elif 21 <= hour < 24:
-        time_of_day = "Night"
-    else:
-        time_of_day = "Late Night"
-    
+    time_of_day = period_for_hour(now.hour)
+
     # 1. Pull a quick news headline tailored to general tech news
     news_headline = "No significant tech news at the moment."
     try:
@@ -2318,10 +2326,25 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
     # 3. Instruct the LLM to write the script
     if comprehensive:
         # First boot of a new day → full "Comprehensive Morning Briefing".
-        requirements = f"""Requirements — COMPREHENSIVE MORNING BRIEFING (this is the FIRST boot of a new day):
+        # F-10: the header here used to hardcode the word MORNING. The
+        # comprehensive briefing fires on the first boot of a new DATE, which is
+        # often not the morning — on 2026-08-08 it ran at 22:41, opened "Good
+        # evening" (the greeting has always been hour-aware) and then closed by
+        # offering "your morning briefing", having just delivered one. The
+        # briefing is not at the wrong time; it was wearing the wrong name.
+        _late = time_of_day in ("Evening", "Night", "Late Night")
+        _horizon = (
+            "The working day is essentially over, so do NOT recap it as though it "
+            "is ahead of him: cover anything still outstanding today, then look "
+            "ahead to tomorrow's first commitments."
+            if _late else
+            "Walk through TODAY'S agenda using the Calendar data."
+        )
+        requirements = f"""Requirements — COMPREHENSIVE {time_of_day.upper()} BRIEFING (this is the FIRST boot of a new day):
+    0. It is {time_of_day}. Never call this a "morning briefing" unless it actually is morning, and never offer to deliver a briefing you are in the middle of delivering.
     1. Open with a warm, dignified {time_of_day} greeting, then clearly state the full date and time: it is {current_time} on {current_date}.
     2. Channel the EXACT witty, dry, polite British tone from the Iron Man films (Paul Bettany). Refined, extremely polite AI butler — never informal slang ("mate", "chap", "cheers", "reckon" are forbidden). Address the user exactly per the persona instructions above.
-    3. Walk through TODAY'S agenda using the Calendar data. If there are events, summarise the day's schedule (e.g. "Your first meeting is at 10, and you've three items on the calendar"). If the calendar is empty, say the day is clear.
+    3. {_horizon} If there are events, summarise them (e.g. "Your first meeting is at 10, and you've three items on the calendar"). If the calendar is empty, say so plainly.
     4. Briefly note unread email count and any notable vitals if present — one line each, do not list every item.
     5. Weave in the weather ({weather_str}) and optionally one tech headline ("{news_headline}") if it flows naturally.
     6. Confirm SYSTEM READINESS explicitly — that all primary systems are online and you are fully at the user's service.

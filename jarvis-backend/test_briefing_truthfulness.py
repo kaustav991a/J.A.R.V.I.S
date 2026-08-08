@@ -176,6 +176,52 @@ def test_generate_briefing_actually_passes_its_output_through_the_guard():
           "the model's output is returned THROUGH the guard — unwired, it is dead code")
 
 
+# ── F-10: the briefing is named for the hour ─────────────────────────────────
+# On 2026-08-08 the first boot of the day happened at 22:41. It logged
+# "Comprehensive Morning Briefing", opened "Good evening" (the greeting has
+# always been hour-aware) and closed by offering "your morning briefing" —
+# having just delivered one. The briefing was not at the wrong time; it was
+# wearing the wrong name, because the requirements block hardcoded MORNING
+# while the greeting computed the period.
+
+_period = None
+_period_fn = [n for n in _TREE.body
+              if isinstance(n, ast.FunctionDef) and n.name == "period_for_hour"]
+if _period_fn:
+    _pns: dict = {}
+    exec(compile(ast.fix_missing_locations(
+        ast.Module(body=_period_fn, type_ignores=[])), str(BRAIN), "exec"), _pns)
+    _period = _pns["period_for_hour"]
+
+
+def test_period_for_hour_is_shared_not_duplicated():
+    check(_period is not None,
+          "period_for_hour exists in brain.py — one definition, imported by main.py")
+    check("period_for_hour" in (HERE / "main.py").read_text(
+              encoding="utf-8", errors="replace"),
+          "main.py uses the shared period_for_hour rather than its own copy of the buckets")
+
+
+def test_the_hour_buckets_cover_the_whole_clock():
+    seen = {h: _period(h) for h in range(24)}
+    check(all(v for v in seen.values()), "every hour 0-23 maps to a period")
+    check(seen[9] == "Morning", "09:00 is Morning")
+    check(seen[14] == "Afternoon", "14:00 is Afternoon")
+    check(seen[19] == "Evening", "19:00 is Evening")
+    check(seen[22] == "Night", f"22:41 — the live-gate hour — is Night, got {seen[22]}")
+    check(seen[2] == "Late Night", "02:00 is Late Night")
+
+
+def test_the_comprehensive_requirements_are_no_longer_hardcoded_morning():
+    src = _SOURCE
+    check("COMPREHENSIVE MORNING BRIEFING" not in src,
+          "the hardcoded 'COMPREHENSIVE MORNING BRIEFING' header is gone")
+    check("COMPREHENSIVE {time_of_day.upper()} BRIEFING" in src,
+          "the header is built from the actual period")
+    check("Never call this a \"morning briefing\" unless it actually is morning" in src,
+          "the prompt says the thing that went wrong out loud")
+
+
 TESTS = [
     test_the_guard_exists,
     test_the_exact_live_gate_confabulation_is_removed,
@@ -188,6 +234,9 @@ TESTS = [
     test_empty_input_is_safe,
     test_the_known_limit_is_deliberate_and_recorded,
     test_generate_briefing_actually_passes_its_output_through_the_guard,
+    test_period_for_hour_is_shared_not_duplicated,
+    test_the_hour_buckets_cover_the_whole_clock,
+    test_the_comprehensive_requirements_are_no_longer_hardcoded_morning,
 ]
 
 

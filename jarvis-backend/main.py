@@ -38,6 +38,7 @@ from brain import (
     synthesize_briefing_gen,
     synthesize_deep_memory_gen,
     generate_briefing,
+    period_for_hour,
     extract_and_store_memory,
     classify_intent,
     BrevityManager,
@@ -258,7 +259,10 @@ def _smart_briefing(weather: dict, wake_phrase: str, user: str) -> str:
 
     # --- First-Boot Daily Briefing: a new day always earns the full briefing ---
     if _consume_new_day_briefing():
-        print("[BRAIN] New day detected -> delivering Comprehensive Morning Briefing.")
+        # Named for the hour, not for "morning" — the first boot of a new date
+        # is frequently an evening (F-10).
+        print(f"[BRAIN] New day detected -> delivering Comprehensive "
+              f"{period_for_hour(_dt.datetime.now().hour)} Briefing.")
         return generate_briefing(weather, wake_phrase, user, comprehensive=True)
 
     if _last_command_time is not None:

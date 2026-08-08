@@ -176,16 +176,28 @@ def main() -> int:
         save([feat], owner)
         return 0
 
-    from modules.gesture_camera import CameraError, FrameSource
+    from modules.gesture_camera import CameraError, make_frame_source, parse_sources
 
-    _src = (sys.argv[1] if len(sys.argv) > 1 else os.getenv("JARVIS_CAM", "0")).strip()
-    source = int(_src) if _src.isdigit() else _src
+    # F-07: this used to read a single JARVIS_CAM while the backend walked the
+    # JARVIS_CAM_SOURCES ladder with auto-select. On 2026-08-08 the daemon had
+    # already chosen .106 and enrolment hard-failed on a dead .105 — so the one
+    # tool that re-seeds biometric identity was the only consumer that could not
+    # follow the phone when DHCP moved it, which is the exact move the ladder was
+    # built for. Same list, same order, same skip-the-dead-ones behaviour now.
+    # An explicit argv[1] still wins, because naming a camera by hand should.
+    if len(sys.argv) > 1:
+        _src = sys.argv[1].strip()
+        sources = [int(_src) if _src.isdigit() else _src]
+    else:
+        sources = parse_sources(os.getenv("JARVIS_CAM_SOURCES"),
+                                os.getenv("JARVIS_CAM"))
     try:
-        fs = FrameSource(source, 640, 480,
-                         url_res=os.getenv("JARVIS_CAM_RES", "640x480") or None)
+        fs = make_frame_source(sources, 640, 480,
+                               url_res=os.getenv("JARVIS_CAM_RES", "640x480") or None)
     except CameraError as e:
         print(f"FAIL[{e.kind}]: {e}")
         return 1
+    print(f"camera: {fs.source}")
 
     # Mirror MUST resolve exactly like gesture_daemon (calibration JSON first,
     # env as the default) — SFace is not mirror-invariant, so enrolling from
