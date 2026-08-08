@@ -2431,6 +2431,37 @@ async def backdoor_command(req: BackdoorRequest):
 
     return {"status": "success"}
 
+# The wake-word loop lives inside the WebSocket handler, so it used to start
+# once PER CONNECTION. Reloading the HUD therefore left the old loop running
+# alongside the new one: two threads in wait_for_wake_word, every [VAD] and
+# [STT] line printed twice, one spoken "wake up" booting the system twice, and
+# the orphaned loop writing to a closed socket ("Cannot call send once a close
+# message has been sent"). Observed live 2026-08-08 (F-11).
+#
+# There is exactly one microphone, so there is exactly one wake-word loop. The
+# first connection owns it; later connections stay fully connected — they are
+# registered clients and receive every broadcast — they just do not drive the
+# mic. Ownership is released on disconnect, so the next HUD to connect picks it
+# up and reloading the page still leaves you with a working microphone.
+_VOICE_LOOP_OWNER = None
+
+
+def _claim_voice_loop(websocket) -> bool:
+    """True if this connection now owns the wake-word loop."""
+    global _VOICE_LOOP_OWNER
+    if _VOICE_LOOP_OWNER is not None:
+        return False
+    _VOICE_LOOP_OWNER = websocket
+    return True
+
+
+def _release_voice_loop(websocket) -> None:
+    """Give the loop up, but only if this connection is what holds it."""
+    global _VOICE_LOOP_OWNER
+    if _VOICE_LOOP_OWNER is websocket:
+        _VOICE_LOOP_OWNER = None
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     global active_user, SYSTEM_ONLINE # Allows us to modify the global state based on login
@@ -2462,6 +2493,20 @@ async def websocket_endpoint(websocket: WebSocket):
         except Exception as e:
             print(f"[SYSTEM] Telemetry sync failed: {e}")
         
+        # One microphone, one wake-word loop. A second HUD (or a reloaded page
+        # whose old socket has not closed yet) stays connected and keeps
+        # receiving broadcasts, but does not start a rival listener.
+        if not _claim_voice_loop(websocket):
+            print("[VOICE] wake-word loop already owned by another HUD "
+                  "connection — this one is view-only.", flush=True)
+            await safe_send({"status": "offline",
+                             "message": "SYSTEM OFFLINE // STANDBY FOR VOICE INPUT"})
+            while True:
+                # Blocks until this client goes away; WebSocketDisconnect is
+                # handled by the same except below, and the finally releases
+                # ownership if this connection happened to hold it.
+                await websocket.receive()
+
         while True:
             # ==========================================
             # STAGE 0: DEEP SLEEP & MEMORY WIPE
@@ -3225,4 +3270,5 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         print(f"Critical System Error: {e}")
     finally:
+        _release_voice_loop(websocket)
         unregister_client(websocket)
