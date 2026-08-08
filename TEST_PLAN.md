@@ -23,7 +23,19 @@
 It runs every self-running harness in a subprocess, prints per-harness checks +
 timing, totals them, and **exits 1 if anything fails** — so it works as a gate.
 Pass/fail comes from the exit code; the counts are parsed from each harness's own
-summary line. When a new harness lands, add its filename to `HARNESSES` in that file.
+summary line.
+
+> ⚠️ **The per-harness table below is a snapshot and goes stale — trust the runner, not this
+> page.** Harnesses are **discovered** now, not listed: since 2026-08-08 `run_harnesses.py`
+> globs `test_*.py` beside itself minus a short, staleness-checked `EXCLUDED` set, so a new
+> harness joins the suite the moment the file exists and nothing needs adding to a list. The old
+> instruction to "add its filename to `HARNESSES`" is what let `test_agent_wave2.py` (29 checks)
+> sit outside the suite while it reported all-green.
+>
+> **Current, 2026-08-09: `1501 checks / 62 harnesses`, 0 failed** — 66 `test_*.py` on disk minus
+> 4 excluded (`test_ping.py` and `test_ui_bridge_e2e.py` need the backend up, `test_screen_reader.py`
+> is a live VLM script, `test_mcp_server_fake.py` is a server fixture spawned by `test_mcp_bridge.py`).
+> The table below was last hand-updated at **787 / 34**.
 
 | Harness | Checks | Covers | Status |
 |---|---:|---|---|
@@ -120,8 +132,9 @@ a live script, deliberately excluded from the total.
 
 | # | Step | Expected | ✓ |
 |---|---|---|---|
-| 0.1 | `cd jarvis-backend && python watchdog.py` | Watchdog banner; `uvicorn main:app` boots; no traceback | ☐ |
-| 0.2 | Watch console on boot | `[GOVERNANCE] Ruleset loaded`, `[TELEGRAM] ✅ Gateway online`, daemons start (`[ROUTINES]`, overwatch, ambient) | ☐ |
+| 0.1 | `cd jarvis-backend && .env\Scripts\python.exe watchdog.py` | Watchdog banner; `uvicorn main:app` boots; no traceback. ⚠️ **Use the venv interpreter.** `watchdog.py` builds the server command from `sys.executable`, so launching under system python gives `No module named uvicorn` and takes the whole server down — and with `python-dotenv` also absent there, `.env` is never read (see 0.2b) | ☐ |
+| 0.2 | Watch console on boot | `[GOVERNANCE] Ruleset loaded`, **one of** `[TELEGRAM] ✅ Gateway online` **or** `[BRIDGE] ✅ Linked to cloud front door` — never both, `main.py` starts exactly one because Telegram delivers updates to a single consumer — plus daemons (`[ROUTINES]`, overwatch, ambient) | ☐ |
+| 0.2b | Confirm config actually loaded | **no** `⚠️  CONFIG NOT LOADED` line in the watchdog banner. If it appears, `.env` was not read and every setting reads as absent — including the credentials the watchdog needs to tell you it gave up | ☐ |
 | 0.3 | Open the React HUD in the browser | HUD renders; WebSocket `/ws` connects (no console errors) | ☐ |
 | 0.4 | Confirm `.env` | `JARVIS_LLM_MODE=cloud_first`, `TELEGRAM_USER_ID`=your numeric id, token set | ☐ |
 | 0.5 | Health check | `curl http://127.0.0.1:8009/health` → `watchdog: alive` | ☐ |

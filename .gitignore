@@ -36,6 +36,10 @@ jarvis-backend/metrics/
 # --- carry an env block. Never committed: the example lives in the roadmap.
 jarvis-backend/mcp_servers.json
 
+# --- TTS scratch (F-14) — a synthesis leaves its mp3 behind in the backend
+# --- root; they are per-utterance noise and one was found untracked mid-gate.
+jarvis-backend/temp_speech_*.mp3
+
 # --- Memory encryption keys (C#11a) — losing these loses the memory ---
 jarvis-backend/jarvis_key.*
 jarvis-backend/jarvis_x25519.enc
