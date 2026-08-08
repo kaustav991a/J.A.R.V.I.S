@@ -28,6 +28,48 @@
 
 ---
 
+# ▶ SESSION 2 STARTS HERE — read this before the setup below
+
+> Session 1 ran 15 rows and stopped to fix what they found. **All 13 findings are fixed**
+> (HEAD `3f49f42`, suite 62/62 harnesses / 1501 checks). None of the 8 code fixes is
+> **live**-verified — every one was *found* on real hardware and *proven* only against fakes.
+> So session 2 opens by confirming them, in this order.
+
+**1 · `21.3` FIRST — it validates F-08, and 34 rows are betting on it.**
+The gesture daemon used to die every ~2 min: 30 failed reads × 50 ms = **1.55 s** tolerance,
+then the reader thread returned permanently. Now the tolerance is 5 s and a stall **reopens**
+the capture. A fake capture proved the logic; only a real ffmpeg decoder desync proves the fix.
+**Pass:** run the daemon 5+ minutes with a face scan partway through — **zero**
+`session fault: camera stream died`, and `[VISION] … (shared with gesture daemon)` on the scan.
+**If it still dies, stop** — do not spend the 34 camera rows.
+
+**2 · RE-RUN these 7 — the fixes moved what they proved.**
+
+| Row | Why | Watch for |
+|---|---|---|
+| `0.1` `0.2` `1.3` | F-03 changed the boot path | **no** `⚠️  CONFIG NOT LOADED` banner |
+| `2.1` `2.2` `2.4` | F-11 changed the voice path | every `[VAD]`/`[STT]` line appears **once**, not twice — reload the HUD mid-session to force the old bug |
+| `16.1` | F-07 changed camera resolution | it prints `camera:` and picks a **live** source with a dead one first in `JARVIS_CAM_SOURCES` |
+
+**3 · Then the two remaining solo 🛑 rows, in this order: `4.4`, then `6.5`.**
+⚠️ **`6.5` is a HARD gate, not a data point.** If a BLOCK-tier action executes, **§24 does not
+run at all** — those rows send real messages to a real person, and `6.5` is the proof the gate
+that makes that safe actually works.
+
+**4 · Then the ~99 other unblocked solo rows.** That is a full session and needs nobody else.
+**Do it before arranging the second device and the second person** — no point booking people
+for rows that a solo failure might invalidate.
+
+**Also confirm these live, since only harnesses have seen them:**
+- **F-13** — say one Bengali sentence at the mic. The reply must be **spoken**, in Latin letters.
+  Silence means it's still emitting Bengali script the TTS can't synthesise.
+- **F-09** — read a full wake briefing. No claim of having done anything, **and** it should still
+  sound like JARVIS. The guard was kept narrow to protect the persona; this is where you check
+  that held.
+- **F-10** — first boot after midnight should say **Night**, not Morning.
+
+---
+
 # SETUP — do all of this before you start
 
 ## Running
