@@ -17,7 +17,7 @@
 | ❌ Failed | **1** |
 | ⏸ Blocked | **1** |
 | Not yet attempted | **176** |
-| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) |
+| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **2 FIXED** (F-08, F-06) |
 
 **The session was worth it before it got far.** 16 rows surfaced 3 high-severity bugs, all of
 the same family: **a failure the user cannot distinguish from normal operation.** A dropped
@@ -100,7 +100,14 @@ made deterministic over its inputs.
 
 ---
 
-### F-08 — the gesture camera dies every ~2 minutes, and never recovers its reader
+### F-08 — ✅ **FIXED 2026-08-09 (`bcb1c41`)** — the gesture camera dies every ~2 minutes, and never recovers its reader
+
+> **Fix shipped.** Tolerance is now a DURATION (5 s without a successful read) not a count, and a
+> stall **reopens the capture** instead of killing the reader thread. Death requires 3 consecutive
+> failed reopens. Reopen is injectable, the stale handle is released, `reopens` is observable.
+> `test_gesture_camera.py` **46 → 57** — there had been **no test for the death path at all**,
+> which is how a 1.55 s tolerance went unquestioned. Suite **59/59, 1416 checks**.
+> **Unblocks 41 rows.** Re-run `21.3` to confirm live.
 
 **What happened.** `[GESTURE] session fault: camera stream died (30 consecutive read failures)`
 **five times** in ~25 minutes, on a ~2 min cadence, each preceded by `[mjpeg @ …] overread 8`.
@@ -321,8 +328,8 @@ gate proving something once is not the same as a property being pinned.
 
 ### Group 2 — reliability blockers (unblock the most rows)
 
-- [ ] **F-08** time-based tolerance + reopen instead of die, `gesture_camera.py:232–247`
-      → `test_gesture_camera.py` — **unblocks 34 rows**
+- [x] **F-08** ✅ **DONE `bcb1c41`** — duration-based tolerance + reopen instead of die
+      → `test_gesture_camera.py` 46 → 57 · **unblocked 41 rows**
 
 ### Group 3 — correctness
 
@@ -342,7 +349,7 @@ gate proving something once is not the same as a property being pinned.
 
 ### Group 5 — housekeeping
 
-- [ ] **F-06** commit the ambient flag with an honest message (it is a gap-fill, **not** a RAM fix)
+- [x] **F-06** ✅ **DONE `278bca8`** — committed separately, message states plainly it did not achieve its RAM goal
 - [ ] **F-14** clean up TTS temp files and/or gitignore them
 
 ---
