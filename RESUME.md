@@ -12,8 +12,11 @@
 > **§6.8 agent tool-layer hardening BEFORE the §7 gates**. Phase 1 is done and **Phase 2's
 > catalogue is COMPLETE — all six waves, registry 11 → 56** of the 72 actions this layer can
 > deliver, with 16 excluded for stated reasons (roadmap §6.8.2 lists all of them).
-> **Still open: skills (rule 18), MCP (Phase 3), measurement (Phase 4).** Item 5 is still the
-> hardware gate to Electron; it is no longer the only thing left. Read roadmap §6.8 first.
+> **Skills (rule 18) landed too — all 18 reference rules are now satisfied.** Six playbooks
+> in `jarvis-backend/skills/`, one line each in the prompt, bodies loaded on demand
+> (measured: 824 chars standing in for 12 462 — 15×, and Groq has no prompt caching).
+> **Still open: MCP (Phase 3), measurement (Phase 4).** Item 5 is still the hardware gate to
+> Electron; it is no longer the only thing left. Read roadmap §6.8 first.
 >
 > **Six real defects surfaced while filling the catalogue, all fixed:** the **shelf had never
 > been wired in production** (so every catalogue tool was registered and unreachable);
@@ -253,7 +256,7 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 | | |
 |---|---|
 | Branch | `feat/cloud-gateway`, **AHEAD of origin and not pushed** (the provenance arc, the contact-events flip, and the whole §6.8 tool-layer arc), and **not merged to `main`** |
-| Suite | **1324 checks / 56 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures). Harnesses are **discovered** now, not listed — a new `test_*.py` is in the suite the moment it exists |
+| Suite | **1351 checks / 57 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures). Harnesses are **discovered** now, not listed — a new `test_*.py` is in the suite the moment it exists |
 | Working tree | **clean of feature work.** The `source`-column arc that used to live here is committed (`326cbd2`); the only untracked file left is the pre-existing `jarvis-frontend/public/favicon.zip`, which is nobody's from this arc. |
 | Live store | `jarvis_longterm.db` — 58 rows, **all tagged `source=desk`**, all decrypting. The provenance column is populated, not merely present. |
 
