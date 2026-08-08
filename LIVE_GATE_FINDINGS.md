@@ -17,7 +17,7 @@
 | ❌ Failed | **1** |
 | ⏸ Blocked | **1** |
 | Not yet attempted | **176** |
-| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **2 FIXED** (F-08, F-06) |
+| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **3 FIXED** (F-08, F-11, F-06) |
 
 **The session was worth it before it got far.** 16 rows surfaced 3 high-severity bugs, all of
 the same family: **a failure the user cannot distinguish from normal operation.** A dropped
@@ -258,7 +258,14 @@ sent"* while `.env` contained both. The one signal that says the server is unrec
 business running blind about its own config.
 **Harness owner.** `test_watchdog_policy.py` (14 checks).
 
-### F-11 — a HUD reload starts a second voice loop
+### F-11 — ✅ **FIXED 2026-08-09** — a HUD reload starts a second voice loop
+
+> **Fix shipped.** One microphone, one loop: the first connection claims it, later ones stay
+> connected and keep receiving broadcasts but do not drive the mic, and ownership is released in
+> the endpoint's `finally` so a crash cannot strand it. Release checks identity first — a stale
+> socket must not take the mic from the live one. New harness `test_voice_loop_owner.py` (21),
+> which compiles the helpers out of `main.py` with `ast` rather than importing it. Suite **60/60,
+> 1437 checks**. **Unconfounds the 11 remaining `2.x` rows.**
 
 Every voice line doubled (`Loading Silero VAD` ×2, `[VAD] Speech detected` ×2, `[STT] Heard:
 'wake up'` ×2, `[BOOT SEQUENCE INITIATED]` ×2), plus
@@ -333,8 +340,8 @@ gate proving something once is not the same as a property being pinned.
 
 ### Group 3 — correctness
 
-- [ ] **F-11** voice loop out of `websocket_endpoint` (`main.py:2435`)
-      → new harness: one loop across N connect/disconnect cycles
+- [x] **F-11** ✅ **DONE** — single-owner guard on the wake-word loop, released in `finally`
+      → `test_voice_loop_owner.py` (21) · **unconfounds 11 rows**
 - [ ] **F-10** briefing selection as a function of the hour
 - [ ] **F-07** `enroll_face.py:181` resolves via the `JARVIS_CAM_SOURCES` ladder
       → `test_enroll_face.py`
