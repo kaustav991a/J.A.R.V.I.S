@@ -2165,6 +2165,82 @@ def synthesize_info(original_query: str, raw_data: str, active_user: str = "KAUS
     except Exception as e:
         return "I've retrieved the data, but I'm having trouble phrasing a summary. In short: " + raw_data[:100]
 
+# Verbs that describe changing the operator's world — his files, his calendar,
+# his mail, his messages. Claiming one of these falsely is not a phrasing slip,
+# it is a false report of work done on his data.
+_MUTATING_CLAIM_VERBS = (
+    "deleted", "removed", "cleared", "cancelled", "canceled", "erased",
+    "wiped", "sent", "emailed", "messaged", "replied", "forwarded",
+    "scheduled", "booked", "rescheduled", "moved", "archived", "renamed",
+    "created", "added", "updated", "changed", "edited", "installed",
+    "purchased", "ordered", "unsubscribed",
+)
+# Phrases that assert the operator ASKED for something. When the model invents
+# the request as well as the action, this is the tell.
+_FABRICATED_MANDATE = (
+    "as per your request", "as you requested", "as you instructed",
+    "as you asked", "per your instruction", "as instructed",
+)
+_FIRST_PERSON = ("i have ", "i've ", "i had ", "i already ", "i just ")
+# "taken care of" / "handled" are the exact phrasing that shipped on 2026-08-08,
+# and they carry no object, so they are matched on their own.
+_BARE_COMPLETION = ("taken care of", "handled that", "handled this",
+                    "done that for you", "done as you asked")
+
+
+def _strip_unfounded_action_claims(text: str) -> str:
+    """Remove sentences in which JARVIS claims to have ACTED on the user's data.
+
+    F-09, live gate 2026-08-08. The wake briefing said:
+
+        "I did note, however, that you had instructed me to delete certain items
+         and clear your schedule for the day. I have taken care of this task,
+         as per your request."
+
+    No such instruction was given, and nothing was deleted — action_engine has
+    no calendar_delete branch at all, so the sentence was pure narration. The
+    cause is structural: the briefing prompt is handed recall_all_facts() and a
+    semantic recall of recent events, which are records of what the OPERATOR
+    SAID. A small model rewrites "he asked me to delete X" into "I have deleted
+    X", and the result is spoken with full authority every morning.
+
+    This is enforced in code rather than in the prompt on purpose. The prompt
+    already tells it not to; F-13 is the same lesson — a rule a model can ignore
+    is not a guarantee. generate_briefing REPORTS, it never acts, so any claim of
+    a completed mutation in its output is false by construction and can be cut
+    without needing to know what the truth was.
+
+    Deliberately narrow: "I have compiled your briefing" and "I have taken the
+    liberty of noting..." stay, because they describe speech, not mutation. Only
+    first-person completion + a world-changing verb is removed.
+    """
+    if not text:
+        return text
+    kept, dropped = [], []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        low = sentence.lower()
+        claims_mutation = (
+            any(p in low for p in _FIRST_PERSON)
+            and any(v in low for v in _MUTATING_CLAIM_VERBS)
+        )
+        bare = any(p in low for p in _BARE_COMPLETION)
+        mandate = any(p in low for p in _FABRICATED_MANDATE)
+        if claims_mutation or bare or mandate:
+            dropped.append(sentence)
+        else:
+            kept.append(sentence)
+    if dropped:
+        print(f"[BRAIN] briefing: dropped {len(dropped)} unfounded action "
+              f"claim(s) — it reports, it does not act.", flush=True)
+        for d in dropped:
+            print(f"[BRAIN]   dropped: {d[:110]}", flush=True)
+    cleaned = " ".join(kept).strip()
+    # If the guard ate everything the model produced, say something true rather
+    # than nothing — silence reads as a fault, and a fabricated briefing is the
+    # thing we are refusing to speak.
+    return cleaned or "All primary systems are online, Sir."
+
+
 def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_user: str = "KAUSTAV", comprehensive: bool = False) -> str:
     """
     Generates a dynamic, non-repeating J.A.R.V.I.S. morning briefing.
@@ -2287,15 +2363,26 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
 
     {requirements}"""
 
+    # The recalled facts above are records of what the OPERATOR SAID, not of
+    # anything JARVIS did. Saying so is cheap; the guard below is what enforces
+    # it (F-09).
+    prompt += """
+
+    TRUTHFULNESS (absolute): You are REPORTING status. You have performed no
+    actions this turn and you have no ability to perform any here. The recalled
+    facts above are things the user SAID, not things you DID. Never state or
+    imply that you have deleted, sent, cleared, scheduled, cancelled or
+    otherwise changed anything, and never claim the user asked you to."""
+
     try:
         # Higher temperature ensures he phrases it differently every time
-        return universal_llm_call(
+        return _strip_unfounded_action_claims(universal_llm_call(
             messages=[{"role": "system", "content": prompt}],
             temperature=_temperature,
             max_tokens=_max_tokens,
             stream=False,
             json_mode=False,
             timeout=30.0,
-        )
+        ))
     except Exception as e:
         return f"Systems online, sir. The time is {current_time}. I am experiencing a slight network anomaly, but I am standing by for your commands."
