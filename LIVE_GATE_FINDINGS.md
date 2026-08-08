@@ -17,7 +17,7 @@
 | ❌ Failed | **1** |
 | ⏸ Blocked | **1** |
 | Not yet attempted | **176** |
-| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **ALL 13 FIXED** — every high, medium and low finding is closed. What remains is live confirmation, not code |
+| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · 13 fixed, then **F-09 REOPENED and F-15 FOUND** by the first live run — see the SESSION 1b block below |
 
 **The session was worth it before it got far.** 16 rows surfaced 3 high-severity bugs, all of
 the same family: **a failure the user cannot distinguish from normal operation.** A dropped
@@ -64,6 +64,63 @@ answer, an invented action, and an alert that cannot fire.
 ---
 
 # 2 · FINDINGS
+
+> ## ⚠️ SESSION 1b — LIVE VERIFICATION, 2026-08-09 01:26–01:45
+>
+> The first live run against the fixed tree. **F-08, F-10 and F-11 confirmed. F-09 FAILED, and
+> one new finding (F-15) surfaced.**
+>
+> | Fix | Live result |
+> |---|---|
+> | **F-08** | ✅ **Behaved correctly.** The one death was legitimate — three `Connection to tcp://10.171.25.26:8080 failed` first (the phone genuinely left the network), then all five sources unreachable. It tolerated, tried 3 reopens, died with an honest message naming both, and the retry shell recovered when the phone returned. **No spurious death** across boot + face scan + ~20 min. Caveat: no decoder desync (`overread`) occurred, so the original trigger was never reproduced |
+> | **F-10** | ✅ `New day detected -> delivering Comprehensive **Late Night** Briefing` at 01:28. Cosmetic residue: the model still opened "Good evening" — the label is right, the model's greeting drifted |
+> | **F-11** | ✅ Every `[VAD]`/`[STT]`/boot line single, across many turns. Caveat: only one WS connection — a HUD reload is still the true test |
+> | **F-13** | ⏸ not exercised — no Bengali input this run |
+> | **F-09** | 🔴 **FAILED — see below** |
+>
+> ### 🔴 F-09 REOPENED — the guard was too narrow, and the axis was wrong
+>
+> The briefing said, with none of it true:
+>
+> > *"**As per your previous instructions, I have closed the current window, closed vital systems,
+> > and muted the room.** … I have also **taken the liberty of adjusting the volume** settings to
+> > your preferred level."*
+>
+> Three independent misses, all mine:
+>
+> | Claim | Why the guard let it through |
+> |---|---|
+> | `I have closed…`, `muted the room` | **"closed" and "muted" are not in `_MUTATING_CLAIM_VERBS`.** The list enumerates deleted/sent/cancelled/scheduled/archived and stops |
+> | `As per your previous instructions` | `_FABRICATED_MANDATE` holds `as per your request`, `as instructed`… — this wording matches none of them |
+> | `I have taken the liberty of adjusting…` | **Explicitly whitelisted** as legitimate butler phrasing. It is not, when what follows is a mutation |
+>
+> **Enumerating mutation verbs is unwinnable** — the model will always reach for one that is not
+> on the list. The advisory seat and I both reasoned about *passive voice* as the residual; the
+> real gap was **verb coverage in the active case**, the part we believed was handled.
+>
+> **Fix shape — invert it.** `generate_briefing` REPORTS, so the set of things it may legitimately
+> claim to have done is small and closed: compiled, noted, prepared, reviewed, checked, found,
+> monitored. Allowlist those and strip every other first-person completion. An allowlist is
+> enforceable over a closed set where a blocklist over an open one is not.
+>
+> ### 🔴 F-15 (NEW) — a transient statement is stored as a permanent Fact
+>
+> ```
+> [MEMORY_MANAGER] +Fact [KAUSTAV/desk]: User is not holding an umbrella.
+> [MEMORY_MANAGER] +Fact [KAUSTAV/desk]: User is smoking.
+> ```
+>
+> *"actually I am not holding an umbrella"* was a correction about **one moment**. It is now a
+> permanent fact in `jarvis_longterm.db`. That is **TEST_PLAN row `9.6`** — *"a one-off is NOT
+> stored as a long-term fact"* — failing live, and it is the first row to fail outside the
+> checklist's own ordering.
+>
+> **It compounds F-09 rather than sitting beside it.** `generate_briefing` is handed
+> `recall_all_facts()`; junk facts are the fuel that produced the confabulation above. Fixing the
+> briefing guard treats the symptom, and F-15 is upstream of it. **Fix them together.**
+>
+> Also observed, unresolved: `your heart rate remains at 0 BPM` reported as fact; RAM peaked at
+> **92.2%** with ambient on, and overwatch alerted correctly (row `12.4` evidence).
 
 ## 🔴 HIGH
 
