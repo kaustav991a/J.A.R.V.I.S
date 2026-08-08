@@ -69,8 +69,35 @@ _CHILD_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 HERE = Path(__file__).resolve().parent
 
-# The self-running harnesses, alphabetical. Add new ones here when they land.
-HARNESSES = [
+# Harnesses are DISCOVERED, not listed. Until 2026-08-08 this was a hand-kept
+# list with the comment "add new ones here when they land", and `test_agent_wave2.py`
+# (29 checks) did not land in it — the suite reported all-green while a whole
+# harness sat outside it, which is the failure a suite exists to prevent. A file
+# that is not in EXCLUDED and is not run is now impossible.
+#
+# EXCLUDED is the deliberate opposite list: files that are named `test_*` but are
+# not deterministic harnesses. It is checked for staleness on every run, so a
+# rename cannot leave a silent hole here either.
+EXCLUDED = {
+    "test_ping.py": "needs the backend running (TEST_PLAN part A2)",
+    "test_ui_bridge_e2e.py": "needs the backend running (TEST_PLAN part A2)",
+    "test_screen_reader.py": "live VLM script — screenshots and a real model call",
+}
+
+
+def discover() -> list[str]:
+    """Every `test_*.py` beside this file that is not deliberately excluded."""
+    found = sorted(p.name for p in HERE.glob("test_*.py"))
+    stale = [name for name in EXCLUDED if name not in found]
+    if stale:
+        print(f"[HARNESS] EXCLUDED names no longer on disk: {', '.join(stale)} "
+              f"— fix the exclusion list", flush=True)
+    return [name for name in found if name not in EXCLUDED]
+
+
+# Kept only as the historical record of what the list held on 2026-08-08, so a
+# discovery bug is visible as a DIFFERENCE rather than as a quiet shrink.
+_KNOWN_AT_LAST_EDIT = [
     "test_action_parser.py",
     "test_agent_core.py",
     "test_android_tv_agent.py",
@@ -124,6 +151,8 @@ HARNESSES = [
     "test_working_memory_lock.py",
 ]
 
+HARNESSES = discover()
+
 # "24/24 passed." | "15 passed, 0 failed"
 _SLASH = re.compile(r"(\d+)\s*/\s*(\d+)\s+passed", re.I)
 _WORDS = re.compile(r"(\d+)\s+passed,\s*(\d+)\s+failed", re.I)
@@ -147,6 +176,16 @@ def main() -> int:
     missing = [h for h in HARNESSES if not (HERE / h).exists()]
     if missing:
         print(f"[HARNESS] MISSING FILES: {', '.join(missing)}")
+    # Say what discovery added since the list was last written down. Not a
+    # failure — new harnesses are the normal case — but it should be VISIBLE
+    # that the count moved, because a silently growing suite is how a shrinking
+    # one goes unnoticed too.
+    added = [h for h in HARNESSES if h not in _KNOWN_AT_LAST_EDIT]
+    dropped = [h for h in _KNOWN_AT_LAST_EDIT if h not in HARNESSES]
+    if added:
+        print(f"[HARNESS] discovered since the last written list: {', '.join(added)}")
+    if dropped:
+        print(f"[HARNESS] GONE since the last written list: {', '.join(dropped)}")
 
     total_passed = total_failed = 0
     broken: list[str] = []

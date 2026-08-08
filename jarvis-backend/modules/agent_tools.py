@@ -77,6 +77,15 @@ class ToolEntry:
     input_schema: dict
     action_type: str
     tier: str
+    #: Extra words `search_tools` matches at NAME weight. JARVIS's action_types
+    #: are a decade of internal naming — `native_app_launcher`, `os_control`,
+    #: `os_macro` — and the shelf ranks a name hit at 4 but a description hit at
+    #: 1, so a tool whose name shares no word with the request needs TWO
+    #: description coincidences to clear the floor. Live-shaped miss that added
+    #: this: "open notepad on the computer" surfaced the HUD's notepad PANEL and
+    #: the link opener, and not the thing that opens programs. Aliases are the
+    #: spoken names, not synonyms for their own sake.
+    aliases: tuple[str, ...] = ()
     target_from: str | None = None
     build_target: Callable[[dict], Any] | None = None
     #: Optional adapter applied to a SUCCESSFUL result before the model sees it.
@@ -136,7 +145,8 @@ class ToolRegistry:
                  format_output: Callable[[Any], Any] | None = None,
                  shape_output: Callable[[Any, dict], Any] | None = None,
                  precondition: Callable[[dict], str | None] | None = None,
-                 on_success: Callable[[dict, Any], None] | None = None) -> ToolEntry:
+                 on_success: Callable[[dict, Any], None] | None = None,
+                 aliases: tuple[str, ...] | None = None) -> ToolEntry:
         """Add one tool. Raises `BlockedToolError` if governance says BLOCK.
 
         `target_from` names the argument that becomes `payload["target"]` (the
@@ -166,7 +176,7 @@ class ToolRegistry:
         props = input_schema.get("properties") or {}
         entry = ToolEntry(
             name=name, description=description, input_schema=input_schema,
-            action_type=atype, tier=tier,
+            action_type=atype, tier=tier, aliases=tuple(aliases or ()),
             target_from=target_from or (next(iter(props), None) if not build_target else None),
             build_target=build_target, format_output=format_output,
             shape_output=shape_output, precondition=precondition,
@@ -383,12 +393,13 @@ class ToolRegistry:
             entry = self._tools.get(call.name)
             # A HUD-effect result: the frame IS the action. It has to be sent, or
             # nothing happened. See `hud_frame`.
-            frame = hud_frame(output)
-            if frame is not None:
+            frames = hud_frames(output)
+            if frames:
                 if payload_sink is None:
                     raise ToolFailure(NO_DISPLAY)
-                await _maybe_await_sink(payload_sink, frame)
-                output = describe_hud_frame(frame)
+                for frame in frames:
+                    await _maybe_await_sink(payload_sink, frame)
+                output = describe_hud_frames(frames)
             if entry is not None and entry.format_output is not None:
                 try:
                     output = entry.format_output(output)
@@ -451,28 +462,52 @@ NO_DISPLAY = ("this tool works by driving the desk display, and this run has no 
               "as done; say it needs the desktop HUD.")
 
 
-def hud_frame(result: Any) -> dict | None:
-    """The frame main.py's one-shot path would have sent for this result.
+#: The bare string `close_app` returns for a HUD-embedded player, where there is
+#: no OS process to kill. main.py answers it with two frames.
+HUD_MEDIA_CLOSE = "HUD_MEDIA_CLOSE_REQUEST"
 
-    Returns None for everything else, which is nearly everything.
+
+def hud_frames(result: Any) -> list[dict]:
+    """The frames main.py's one-shot path would have sent for this result.
+
+    A LIST, because one result is not always one frame — clearing HUD media
+    takes two. Empty for everything else, which is nearly everything.
     """
+    if isinstance(result, str) and result.strip() == HUD_MEDIA_CLOSE:
+        return [{"status": "close_search", "message": "Clearing HUD media."},
+                {"status": "toggle_browser", "visible": False}]
     if not isinstance(result, dict):
-        return None
-    if result.get("action_type") == "play_youtube" and result.get("url"):
-        return {"status": "play_youtube", "url": result["url"]}
-    return None
+        return []
+    kind = result.get("action_type")
+    if kind == "play_youtube" and result.get("url"):
+        return [{"status": "play_youtube", "url": result["url"]}]
+    if kind == "hud_open_widget" and result.get("widget"):
+        return [{"type": "ui_state", "open_widget": result["widget"]}]
+    if kind == "hud_close_widget" and result.get("widget"):
+        return [{"type": "ui_state", "close_widget": result["widget"]}]
+    return []
 
 
-def describe_hud_frame(frame: dict) -> str:
-    """What the MODEL is told once the frame has actually been sent.
+def describe_hud_frames(frames: list[dict]) -> str:
+    """What the MODEL is told once the frames have actually been sent.
 
-    Phrased as what happened — handed to the player on the desk display — rather
-    than "you are now hearing it", which the loop cannot know.
+    Phrased as what happened — handed to the desk display — rather than "you are
+    now hearing it" or "he can see it", which the loop cannot know.
     """
-    if frame.get("status") == "play_youtube":
-        return (f"Started on the desk display's player: {frame.get('url')} . "
+    first = frames[0] if frames else {}
+    if first.get("status") == "play_youtube":
+        return (f"Started on the desk display's player: {first.get('url')} . "
                 f"It is playing on the desktop HUD, not through this "
                 f"conversation.")
+    if first.get("open_widget"):
+        return (f"The {first['open_widget']} panel is now open on the desk "
+                f"display.")
+    if first.get("close_widget"):
+        return f"The {first['close_widget']} panel is now closed."
+    if first.get("status") == "close_search":
+        return ("Stopped the HUD's own player. Nothing was closed at the "
+                "operating-system level — that player is part of the display, "
+                "not an application.")
     return "Sent to the desk display."
 
 
@@ -541,6 +576,22 @@ def _tv_media_precondition(args: dict) -> str | None:
                 "video, hotstar or spotify) so the colon stays part of the "
                 "title.")
     return None
+
+
+#: The HUD's panel ids, as `_normalize_hud_widget_id` resolves them. Used as a
+#: schema enum, which makes that normaliser a no-op for agent calls — every
+#: value here is one of its exact-match cases — and stops the model inventing a
+#: panel that silently becomes "vitals" by default.
+HUD_WIDGETS = ("vitals", "mail", "calendar", "calculator", "notepad",
+               "browser", "camera", "map")
+
+
+def _macro_target(args: dict) -> str:
+    """`_os_macro` takes "deep_work", or "deep_work:<url>" to override the page
+    that macro opens. It splits on the FIRST colon, so a url keeps its own."""
+    macro = str(args.get("macro", "")).strip()
+    url = str(args.get("url", "")).strip()
+    return f"{macro}:{url}" if url else macro
 
 
 def _music_target(args: dict) -> str:
@@ -867,7 +918,8 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                                "description": "How many notches (default 1). "
                                               "Ignored for mute."}},
                     ["direction"]),
-               build_target=_tv_volume_target)
+               build_target=_tv_volume_target,
+               aliases=("louder", "quieter", "sound", "television"))
 
     r.register("tv_control",
                "Press a navigation key on the television's remote — move the "
@@ -879,7 +931,8 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                _obj({"key": {"type": "string",
                              "enum": ["up", "down", "left", "right", "select",
                                       "back", "home", "play_pause"],
-                             "description": "The remote key to press."}}))
+                             "description": "The remote key to press."}}),
+               aliases=("remote", "navigate", "menu", "television", "arrow"))
 
     r.register("tv_launch_app",
                "Open an app on the television. Known names: youtube, netflix, "
@@ -906,7 +959,9 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                              "description": "Which app to play it in."}},
                     ["title"]),
                build_target=_tv_media_target,
-               precondition=_tv_media_precondition)
+               precondition=_tv_media_precondition,
+               aliases=("watch", "stream", "television", "movie", "show",
+                        "episode"))
 
     r.register("tv_type",
                "Type text into whatever text box is focused on the television, "
@@ -932,7 +987,106 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                                  "description": "Where to play it "
                                                 "(default youtube)."}},
                     []),
-               build_target=_music_target)
+               build_target=_music_target,
+               aliases=("song", "listen", "track", "album", "artist", "audio"))
+
+    # ── Wave 3 (§6.8.2): applications, the desk display, the machine ─────────
+    # All AUTO. Two reachable actions were left out, and for DIFFERENT reasons
+    # worth keeping apart:
+    #
+    #   * `launch_app` — a duplicate of `native_app_launcher` for the model's
+    #     purposes ("open X"), and the weaker of the two: it drives a GUI search
+    #     box, where the launcher resolves against the Start-Menu index with
+    #     fuzzy matching AND records the new window so a later `ghost_type`
+    #     targets the right one.
+    #   * `enable_focus_mode` / `disable_focus_mode` — NOT a duplicate: they are
+    #     unregisterable. `action_engine` returns the sentence "Focus mode
+    #     enabled. Notifications silenced." and does nothing; the actual
+    #     silencing lives in main.py's dispatcher, which builds a `RoutineEngine`
+    #     from objects the agent layer does not hold. Registering it would make
+    #     the loop announce a state change that never happened — the same
+    #     failure the HUD bridge exists to prevent, one layer further up.
+
+    r.register("native_app_launcher",
+               "Open an application on the desktop. Spoken names are fine and "
+               "near-misses are tolerated — it matches against the installed "
+               "app index. This opens a PROGRAM on the desk machine; for a "
+               "website use `open_link`, and for an app on the television use "
+               "`tv_launch_app`.",
+               _obj({"app": {"type": "string",
+                             "description": "App name, e.g. \"notepad\", "
+                                            "\"vs code\"."}}),
+               aliases=("open", "start", "run", "program", "application",
+                        "desktop", "computer"))
+
+    r.register("close_app",
+               "Close a running application on the desktop by name. Windows "
+               "Explorer is protected and will not be killed. If the thing "
+               "playing is the HUD's own player rather than an application, "
+               "say so — this stops that instead, and nothing at the "
+               "operating-system level is closed.",
+               _obj({"app": {"type": "string",
+                             "description": "App name, e.g. \"chrome\"."}}))
+
+    r.register("hud_open_widget",
+               "Open a panel on the desk display: his vitals, mail, calendar, "
+               "calculator, notepad, browser, camera feed or map. This SHOWS "
+               "him something on screen — it does not read anything back to "
+               "you, so if you need the data yourself, call the tool that "
+               "returns it (`check_calendar`, `gmail_read_unread`, "
+               "`system_status`).",
+               _obj({"widget": {"type": "string", "enum": list(HUD_WIDGETS),
+                                "description": "Which panel to open."}}),
+               aliases=("panel", "widget", "show", "display", "screen"))
+
+    r.register("hud_close_widget",
+               "Close a panel on the desk display.",
+               _obj({"widget": {"type": "string", "enum": list(HUD_WIDGETS),
+                                "description": "Which panel to close."}}),
+               aliases=("panel", "widget", "hide", "dismiss", "display"))
+
+    r.register("os_control",
+               "Control the desk machine itself: lock the workstation, or drive "
+               "system audio and whatever is currently playing on it. This is "
+               "the DESK machine's audio, not the television's — for that use "
+               "`tv_volume`. `lock_screen` locks him out until he signs back "
+               "in, so use it only when he asks.",
+               _obj({"command": {"type": "string",
+                                 "enum": ["lock_screen", "mute", "unmute",
+                                          "volume_up", "volume_down",
+                                          "play_pause", "next_track",
+                                          "prev_track"],
+                                 "description": "What to do."}}),
+               build_target=lambda a: str(a.get("command", "")).strip(),
+               aliases=("lock", "workstation", "volume", "mute", "pause",
+                        "track", "audio", "computer", "machine"))
+
+    r.register("os_macro",
+               "Run a named desktop routine that opens and closes several "
+               "things at once: `deep_work` (editor plus the dev page, "
+               "distractions closed), `shallow_work`, `diagnostic` (task "
+               "manager and a terminal) or `entertainment`. Use it when he asks "
+               "to set up a MODE; opening one app is `native_app_launcher`.",
+               _obj({"macro": {"type": "string",
+                               "enum": ["deep_work", "shallow_work",
+                                        "diagnostic", "entertainment"],
+                               "description": "Which routine to run."},
+                     "url": {"type": "string",
+                             "description": "Optional page for deep_work to "
+                                            "open instead of its default."}},
+                    ["macro"]),
+               build_target=_macro_target,
+               aliases=("mode", "routine", "setup", "workspace", "focus"))
+
+    r.register("open_link",
+               "Open a web page in his desktop browser so HE can look at it. "
+               "You do not get the contents back — if you need to READ the "
+               "page, use `web_browse`, and if you need an answer from the web, "
+               "use `tavily_search`.",
+               _obj({"url": {"type": "string",
+                             "description": "The address. https:// is added if "
+                                            "you leave it off."}}),
+               aliases=("website", "page", "browser", "url", "site"))
 
     # Answer a question that needs looking things up. Read-only by construction:
     # nothing in this set can change the machine, so it is the safe first intent

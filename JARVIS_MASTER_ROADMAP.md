@@ -1111,7 +1111,7 @@ lets through. **Nothing here needs hardware.**
   |---|---|---|---|
   | 1 | **email + calendar** | 10 | ✅ **DONE 2026-08-08** — `test_agent_wave1.py` (19). Registry 11 → 21 |
   | 2 | **media / TV** | 7 | ✅ **DONE 2026-08-08** — `test_agent_wave2.py` (29). Registry 21 → 28 |
-  | 3 | apps + windows | ~8 (`launch_app`, `close_app`, `native_app_launcher`, `hud_*`, `os_macro`) | ⬜ |
+  | 3 | **apps + windows** | 7 | ✅ **DONE 2026-08-08** — `test_agent_wave3.py` (22). Registry 28 → 35 |
   | 4 | git / GitHub | 5 (`github_status/diff/log`, +`commit`/`push` CONFIRM) | ⬜ |
   | 5 | web control | ~7 (`web_click/type/scroll/back/close`, `web_search*`) | ⬜ |
   | 6 | messaging + misc | remainder (`message_partner`, `telegram_send_file`, `remember_fact`, protocols) | ⬜ |
@@ -1173,6 +1173,48 @@ lets through. **Nothing here needs hardware.**
   the same broadcast the one-shot path uses, and **with no sink the tool fails honestly**
   rather than reporting success. Deliberately a NAMED mapping, not "forward any dict":
   `list_directory` returns one too, and its effect is information already delivered as text.
+  **Wave 3 (apps, the desk display, the machine), and the three things it changed.**
+  Seven tools: `native_app_launcher`, `close_app`, `hud_open_widget`, `hud_close_widget`,
+  `os_control`, `os_macro`, `open_link`. What this wave had to get right was BOUNDARIES —
+  open a program vs open a web page vs open an app on the TV; the desk's audio vs the
+  television's; *show him a panel* vs *fetch the data yourself* — so each is pinned by a
+  test rather than left to a description.
+
+  1. **Two exclusions, for different reasons.** `launch_app` is a weaker duplicate of
+     `native_app_launcher` (GUI search box vs the Start-Menu index with fuzzy matching and
+     post-launch window tracking). `enable_focus_mode` / `disable_focus_mode` are
+     **unregisterable, not duplicated**: `action_engine` returns *"Focus mode enabled.
+     Notifications silenced."* and does nothing — the silencing lives in main.py's
+     dispatcher, which builds a `RoutineEngine` from objects the agent layer does not hold.
+     Registering it would announce a state change that never happened. **That is a third
+     category** alongside BLOCK and no-dispatch: *reachable, dispatched, and still not
+     honestly deliverable from this layer.* Check for it before registering anything whose
+     handler returns a sentence instead of doing work.
+  2. **Tool NAMES are not the words people say, so `aliases` now exist.** The shelf scores a
+     name hit at 4 and a description hit at 1, so a tool whose name shares no word with the
+     request needs two description coincidences to clear the floor. Live-shaped miss that
+     forced this: *"open notepad on the computer"* surfaced the HUD's notepad PANEL and the
+     link opener — and not the thing that opens programs, because it is called
+     `native_app_launcher`. `ToolEntry.aliases` are matched at name weight and are the
+     spoken names, not synonyms for their own sake.
+  3. **The HUD bridge carries three frame kinds now, and returns a LIST.** Panels open and
+     close through it, and `close_app` on the HUD's own player returns a bare
+     `HUD_MEDIA_CLOSE_REQUEST` sentinel that main.py answers with **two** frames — so one
+     result is not one frame, and a partial send would leave the display half-changed. The
+     enum of panel ids is cross-checked against `_normalize_hud_widget_id`'s own branches,
+     because that normaliser silently defaults anything it does not recognise to `vitals`:
+     without the enum, *"open the stock ticker"* would open his heart rate.
+
+  **`run_harnesses.py` DISCOVERS harnesses now (2026-08-08).** It kept a hand-written list
+  with the comment *"add new ones here when they land"*, and `test_agent_wave2.py` (29
+  checks) never landed in it — the suite reported **all green while a whole harness sat
+  outside it**, which is precisely the failure a suite exists to prevent, and the same
+  shape as the unwired shelf. Discovery is now a glob minus an explicit `EXCLUDED` map
+  (backend-required and live-model scripts, each with its reason), the exclusion list is
+  checked for staleness on every run, and additions/removals versus the last written list
+  are printed. **Suite 1210 / 51 → 1261 / 53** the moment discovery landed: +51 checks that
+  had been passing where nobody was looking.
+
 - **Skills — progressive disclosure for instructions (rule 18).** `.md` playbooks with one-line
   descriptions plus a `load_skill(name)` tool, instead of pasting procedures into the system
   prompt. Groq has **no prompt caching**, so a fat system prompt is paid for on *every* request —

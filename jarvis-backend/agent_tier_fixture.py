@@ -67,6 +67,21 @@ TIERS: dict[str, str] = {
     "tv_type": "AUTO",
     "play_music": "AUTO",
 
+    # -- wave 3 (§6.8.2): apps, the desk display, the machine -------------- #
+    # `launch_app` and the two focus-mode actions are listed but NOT registered
+    # — see the comments in `agent_tools`. They are here because the drift check
+    # reads this map as "what governance knows".
+    "native_app_launcher": "AUTO",
+    "launch_app": "AUTO",
+    "close_app": "AUTO",
+    "hud_open_widget": "AUTO",
+    "hud_close_widget": "AUTO",
+    "os_control": "AUTO",
+    "os_macro": "AUTO",
+    "open_link": "AUTO",
+    "enable_focus_mode": "AUTO",
+    "disable_focus_mode": "AUTO",
+
     # -- present so the BLOCK guarantees can be exercised ------------------ #
     "delete_file": "BLOCK",
     "run_terminal_command": "BLOCK",

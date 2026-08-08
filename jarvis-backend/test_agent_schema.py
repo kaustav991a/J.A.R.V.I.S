@@ -175,6 +175,14 @@ def test_every_real_registry_schema_accepts_its_own_documented_shape():
         "tv_play_media": {"title": "Stranger Things", "app": "netflix"},
         "tv_type": {"text": "stranger things"},
         "play_music": {"query": "moonlight", "service": "spotify"},
+        # wave 3 — apps, the desk display, the machine
+        "native_app_launcher": {"app": "notepad"},
+        "close_app": {"app": "chrome"},
+        "hud_open_widget": {"widget": "calendar"},
+        "hud_close_widget": {"widget": "vitals"},
+        "os_control": {"command": "lock_screen"},
+        "os_macro": {"macro": "deep_work", "url": "http://localhost:5173"},
+        "open_link": {"url": "https://example.com"},
     }
     for name in reg.names():
         entry = reg.get(name)

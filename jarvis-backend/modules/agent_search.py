@@ -198,7 +198,11 @@ class ToolShelf:
         hits: list[SearchHit] = []
         for name in candidates:
             entry = self.registry.get(name)
-            haystack_name = f"{name} {entry.action_type}".lower()
+            # Aliases rank WITH the name, not with the description: they exist
+            # because the action_type is internal jargon, and a spoken name that
+            # only scored 1 would need a second coincidence to clear the floor.
+            haystack_name = " ".join(
+                [name, entry.action_type, *getattr(entry, "aliases", ())]).lower()
             description = (entry.description or "").lower()
             score = 0.0
             for term in terms:

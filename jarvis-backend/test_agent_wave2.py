@@ -205,9 +205,9 @@ def test_only_named_frames_are_forwarded():
     """Not "forward any dict". `list_directory` returns one too, and its effect
     is information that is already delivered as text — broadcasting it would
     redraw the HUD in the middle of an agent run."""
-    assert at.hud_frame({"ui_action": "render_file_list", "data": []}) is None
-    assert at.hud_frame("plain text") is None
-    assert at.hud_frame({"action_type": "play_youtube"}) is None      # no url
+    assert at.hud_frames({"ui_action": "render_file_list", "data": []}) == []
+    assert at.hud_frames("plain text") == []
+    assert at.hud_frames({"action_type": "play_youtube"}) == []       # no url
 
 
 def test_a_tool_that_answers_normally_is_untouched_by_the_bridge():
