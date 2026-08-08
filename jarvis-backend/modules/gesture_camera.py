@@ -212,14 +212,49 @@ def open_first_available(sources, width: int = 640, height: int = 480,
     )
 
 
+# How long the reader tolerates getting no frame before it treats the capture
+# as stalled and tries to reopen it.
+#
+# This used to be a COUNT — 30 consecutive failed reads with a 50ms sleep, so
+# 1.55 seconds — and hitting it killed the reader thread permanently. That is
+# far too tight and far too terminal for an MJPEG stream. One corrupt JPEG
+# segment (ffmpeg logs "overread N") makes cv2 return ok=False while its decoder
+# resyncs to the next SOI marker, and on a 27fps phone stream that resync
+# routinely takes longer than 1.55s. The result, measured on 2026-08-08: the
+# gesture daemon tore down its whole session — capture released, auto-select
+# re-run, MediaPipe re-initialised — five times in twenty-five minutes, on a
+# stream that was independently verified healthy (548 frames in a 20s pull, no
+# disconnect). A recoverable decoder desync was being escalated to a dead camera.
+STALL_SECONDS = 5.0
+# Consecutive REOPEN attempts that must fail before the camera is really dead.
+# Reopening is the recovery a desync actually needs; dying is not.
+MAX_REOPEN_ATTEMPTS = 3
+# Pause between reopen attempts, so a genuinely absent camera does not spin.
+REOPEN_BACKOFF_S = 0.5
+
+
 class FrameSource:
-    """Threaded latest-frame camera reader — consumers never see backlog."""
+    """Threaded latest-frame camera reader — consumers never see backlog.
+
+    A stalled capture is REOPENED, not fatal. Only when reopening fails
+    ``MAX_REOPEN_ATTEMPTS`` times in a row does the source report itself dead.
+    """
 
     def __init__(self, source, width: int = 640, height: int = 480,
-                 url_res: str | None = "640x480", *, cap=None):
+                 url_res: str | None = "640x480", *, cap=None, reopen=None,
+                 stall_seconds: float = STALL_SECONDS,
+                 max_reopen: int = MAX_REOPEN_ATTEMPTS):
         self.source = source
         self._cap = cap if cap is not None else _open_source(
             source, width, height, url_res)
+        # How to get a fresh capture when this one stalls. Injectable so a
+        # harness can drive the recovery path without a real camera; by default
+        # it re-opens exactly the source this instance was built from.
+        self._reopen = reopen or (
+            lambda: _open_source(source, width, height, url_res))
+        self._stall_seconds = stall_seconds
+        self._max_reopen = max_reopen
+        self.reopens = 0          # observable: how many times recovery ran
         self._lock = threading.Condition()
         self._frame = None
         self._seq = 0
@@ -229,24 +264,60 @@ class FrameSource:
                                         name="gesture-frame-source")
         self._thread.start()
 
+    def _reopen_once(self) -> bool:
+        """Swap in a fresh capture. True if we got one."""
+        try:
+            fresh = self._reopen()
+        except Exception:
+            return False
+        if fresh is None:
+            return False
+        old, self._cap = self._cap, fresh
+        try:
+            old.release()
+        except Exception:
+            pass          # the old handle is being discarded either way
+        self.reopens += 1
+        return True
+
     def _loop(self) -> None:
-        fails = 0
+        last_ok = time.monotonic()
+        reopen_failures = 0
         while not self._stop.is_set():
-            ok, frame = self._cap.read()
-            if not ok:
-                fails += 1
-                if fails > 30:
-                    with self._lock:
-                        self._dead = "camera stream died (30 consecutive read failures)"
-                        self._lock.notify_all()
-                    return
+            try:
+                ok, frame = self._cap.read()
+            except Exception:
+                ok, frame = False, None
+            if ok:
+                last_ok = time.monotonic()
+                reopen_failures = 0
+                with self._lock:
+                    self._frame = frame
+                    self._seq += 1
+                    self._lock.notify_all()
+                continue
+
+            # No frame this tick. A short gap is a decoder hiccup, not a death.
+            if time.monotonic() - last_ok < self._stall_seconds:
                 time.sleep(0.05)
                 continue
-            fails = 0
-            with self._lock:
-                self._frame = frame
-                self._seq += 1
-                self._lock.notify_all()
+
+            # Stalled long enough to act on. Try recovery before giving up.
+            if self._reopen_once():
+                last_ok = time.monotonic()
+                reopen_failures = 0
+                continue
+
+            reopen_failures += 1
+            if reopen_failures >= self._max_reopen:
+                with self._lock:
+                    self._dead = (
+                        f"camera stream died (no frame for "
+                        f"{self._stall_seconds:.0f}s and {reopen_failures} "
+                        f"reopen attempts failed)")
+                    self._lock.notify_all()
+                return
+            time.sleep(REOPEN_BACKOFF_S)
 
     def read_new(self, last_seq: int = 0, timeout: float = 1.0):
         """Block until a frame newer than last_seq arrives; returns (seq, frame).

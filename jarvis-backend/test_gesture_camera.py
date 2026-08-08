@@ -10,6 +10,8 @@ and _open_source's frame validation (index AND url must deliver a real frame)
 via an injected capture factory. No real camera or network is touched.
 """
 
+import time
+
 from modules import gesture_camera as gc
 from modules.gesture_camera import CameraError
 
@@ -323,6 +325,95 @@ def test_stalled_stream_loses_to_next_working_source():
     check(cap is working, "returned cap is the frame-delivering one")
 
 
+# ── FrameSource recovery (F-08, live gate 2026-08-08) ────────────────────────
+# The reader used to allow 30 failed reads at 50ms — 1.55s — and then kill its
+# own thread permanently. One corrupt JPEG desyncs cv2's decoder for longer than
+# that, so the gesture daemon tore down its whole session five times in twenty
+# five minutes against a stream measured healthy (548 frames / 20s). These pin
+# the two properties that were missing: a short gap is survivable, and a long
+# one is recovered by REOPENING rather than by dying.
+
+def _wait_until(predicate, timeout=3.0):
+    """True as soon as predicate() holds; False if it never does in time."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def test_brief_desync_does_not_kill_the_reader():
+    # Fails a few reads, then delivers — the ordinary decoder hiccup.
+    cap = _FakeCap(opened=True, fail_frames=4)
+    fs = gc.FrameSource("x", cap=cap, reopen=lambda: None,
+                        stall_seconds=2.0, max_reopen=2)
+    try:
+        got = _wait_until(lambda: fs._seq > 0)
+        check(got, "a frame arrived after a brief run of failed reads")
+        check(fs._dead is None, f"reader still alive, got dead={fs._dead}")
+        check(fs.reopens == 0, f"no reopen needed for a brief gap, got {fs.reopens}")
+    finally:
+        fs.release()
+
+
+def test_stalled_capture_is_reopened_not_declared_dead():
+    dead_cap = _FakeCap(opened=True, fail_frames=999)   # connects, never delivers
+    fresh_cap = _FakeCap(opened=True, fail_frames=0)
+    fs = gc.FrameSource("x", cap=dead_cap, reopen=lambda: fresh_cap,
+                        stall_seconds=0.05, max_reopen=3)
+    try:
+        got = _wait_until(lambda: fs._seq > 0)
+        check(got, "frames flow again after the stalled capture was reopened")
+        check(fs.reopens >= 1, f"recovery actually ran, got reopens={fs.reopens}")
+        check(fs._dead is None,
+              f"a stall that reopens is NOT death, got dead={fs._dead}")
+    finally:
+        fs.release()
+
+
+def test_reopen_releases_the_stale_capture():
+    dead_cap = _FakeCap(opened=True, fail_frames=999)
+    fresh_cap = _FakeCap(opened=True, fail_frames=0)
+    fs = gc.FrameSource("x", cap=dead_cap, reopen=lambda: fresh_cap,
+                        stall_seconds=0.05, max_reopen=3)
+    try:
+        _wait_until(lambda: fs.reopens >= 1)
+        check(dead_cap.released, "the stale capture was released, not leaked")
+    finally:
+        fs.release()
+
+
+def test_dead_only_after_reopen_attempts_are_exhausted():
+    dead_cap = _FakeCap(opened=True, fail_frames=999)
+    attempts = []
+
+    def _failing_reopen():
+        attempts.append(1)
+        raise OSError("camera really is gone")
+
+    backoff = gc.REOPEN_BACKOFF_S
+    gc.REOPEN_BACKOFF_S = 0.0          # keep the harness fast
+    fs = gc.FrameSource("x", cap=dead_cap, reopen=_failing_reopen,
+                        stall_seconds=0.05, max_reopen=3)
+    try:
+        got = _wait_until(lambda: fs._dead is not None)
+        check(got, "a camera that cannot be reopened does eventually die")
+        check(len(attempts) >= 3,
+              f"tried to reopen before dying, got {len(attempts)} attempts")
+        check("reopen attempts failed" in (fs._dead or ""),
+              f"message says recovery was tried, got {fs._dead!r}")
+        try:
+            fs.read_new(0, timeout=0.1)
+        except CameraError as e:
+            check(e.kind == "dead", f"read_new raises dead, got {e.kind}")
+        else:
+            check(False, "read_new should raise once the source is dead")
+    finally:
+        gc.REOPEN_BACKOFF_S = backoff
+        fs.release()
+
+
 TESTS = [
     test_parse_comma_list_order_and_types, test_parse_dedup_preserves_first,
     test_parse_blank_entries_dropped, test_parse_env_overrides_legacy,
@@ -335,6 +426,10 @@ TESTS = [
     test_url_accepted_only_after_a_real_frame, test_url_opens_but_stalls_raises_stream,
     test_url_slow_first_frame_is_tolerated, test_url_not_opened_still_unreachable,
     test_index_frame_gate_unchanged, test_stalled_stream_loses_to_next_working_source,
+    test_brief_desync_does_not_kill_the_reader,
+    test_stalled_capture_is_reopened_not_declared_dead,
+    test_reopen_releases_the_stale_capture,
+    test_dead_only_after_reopen_attempts_are_exhausted,
 ]
 
 
