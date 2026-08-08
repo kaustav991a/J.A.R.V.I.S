@@ -17,7 +17,7 @@
 | ❌ Failed | **1** |
 | ⏸ Blocked | **1** |
 | Not yet attempted | **176** |
-| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **3 FIXED** (F-08, F-11, F-06) |
+| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **4 FIXED** (F-08, F-11, F-13, F-06) |
 
 **The session was worth it before it got far.** 16 rows surfaced 3 high-severity bugs, all of
 the same family: **a failure the user cannot distinguish from normal operation.** A dropped
@@ -157,7 +157,13 @@ fails repeatedly.
 
 ---
 
-### F-13 — a Bengali-script reply is unspeakable, so the answer is silently dropped
+### F-13 — ✅ **FIXED 2026-08-09** — a Bengali-script reply is unspeakable, so the answer is silently dropped
+
+> **Fix shipped.** The `4fb0821` SCRIPT OVERRIDE is ported from `cloud_gateway.py` into `brain.py`,
+> injected immediately before the user turn on **both** paths (`process_command`, `process_stream`).
+> Detector covers Devanagari too — Whisper mishears Bengali as Hindi and that is equally
+> unspeakable. New harness `test_romanise_nudge.py` (15), no live model: it pins the detector
+> boundaries and that the override is adjacent to every user turn. Suite **61/61, 1452 checks**.
 
 **What happened.** Asked how he was, JARVIS replied:
 
@@ -326,8 +332,8 @@ gate proving something once is not the same as a property being pinned.
 
 ### Group 1 — silent failures (do first; these lie to the user)
 
-- [ ] **F-13** port the SCRIPT OVERRIDE from `cloud_gateway.py:381,391–393` into `brain.py`
-      → new harness: Bengali input ⇒ zero U+0980–09FF in the reply
+- [x] **F-13** ✅ **DONE** — override ported to `brain.py`, both message-building paths
+      → `test_romanise_nudge.py` (15)
 - [ ] **F-09** constrain the briefing composer so it cannot claim completed actions
       → new harness: empty action results ⇒ no completed-action claim in the text
 - [ ] **F-03** stop swallowing a missing `dotenv` in `watchdog.py:65–69`
