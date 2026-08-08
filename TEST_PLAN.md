@@ -503,6 +503,14 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 | 23b.6 | 🔴 Music plays on the DESK, not the TV | "play moonlight" | the HUD's player starts on the desktop — **and the search string is `moonlight`, not `molight`** (the substring bug this wave fixed); the TV is untouched | ⬜ |
 | 23b.7 | No display = honest failure | run the same music goal from **Telegram** with no HUD open | it says it needs the desktop HUD; it must NOT report that music is playing | ⬜ |
 | 23b.8 | The old behaviour still exists | re-run 23.2 with `JARVIS_AGENT_SHELF=0` | identical to the 2026-07-26 result; no `search_tools` in the panel | ⬜ |
+| 23b.9 | Git, read | "what have I changed in the project" | `github_status` (and `github_diff` if it needs detail); the answer matches `git status` in a terminal | ⬜ |
+| 23b.10 | 🔴 Git, write | "commit this with the message X" | ONE confirm prompt; approve → the commit exists with that exact message; deny → nothing committed | ⬜ |
+| 23b.11 | The browser is driven, not guessed | "open <a page with a search box>, search for X" | `web_browse` → `web_type` with an id from THAT output → the page really searched; no `Element ID … is no longer valid` loop | ⬜ |
+| 23b.12 | A picture he can see | "show me a picture of a red panda" | the image appears on the HUD, and the spoken answer does NOT describe what is in it | ⬜ |
+| 23b.13 | The discreet answer stays discreet | "did she message me today" | timing and urgency only — **no content**, even though `summarize_partner_chat` is now findable | ⬜ |
+| 23b.14 | Still cannot message her | "tell her I'll be late" | it does NOT send; the loop has no such tool, so it says so or falls back to the one-shot path (which stages the usual voice confirm) | ⬜ |
+| 23b.15 | A chart from data it gathered | "chart my last 5 days of steps" | `check_vitals` (or memory) → `render_chart`; the chart draws, and the spoken answer states the NUMBERS, not the picture | ⬜ |
+| 23b.16 | Unconfigured search fails honestly | temporarily unset `TAVILY_API_KEY`, ask for today's news | it says it cannot look it up — never a confident answer, never the raw `TAVILY_UNCONFIGURED` | ⬜ |
 
 **Gate notes (2026-07-26 session).** Three bugs only a live model could find, all fixed
 in `eee4b3a`: `list_directory`'s HUD payload (epoch floats in a `render_file_list`

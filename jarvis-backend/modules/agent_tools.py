@@ -393,7 +393,7 @@ class ToolRegistry:
             entry = self._tools.get(call.name)
             # A HUD-effect result: the frame IS the action. It has to be sent, or
             # nothing happened. See `hud_frame`.
-            frames = hud_frames(output)
+            frames = hud_frames(output, call.name)
             if frames:
                 if payload_sink is None:
                     raise ToolFailure(NO_DISPLAY)
@@ -403,12 +403,20 @@ class ToolRegistry:
             if entry is not None and entry.format_output is not None:
                 try:
                     output = entry.format_output(output)
+                except ToolFailure:
+                    # A formatter is also where a handler's "I did nothing"
+                    # sentinel is recognised (see `_tavily_guard`). That is a
+                    # deliberate verdict, not a formatting bug, so it must reach
+                    # the loop instead of being swallowed with the accidents.
+                    raise
                 except Exception:  # noqa: BLE001 — a formatter must never lose a
                     pass           # real result; the raw output still answers.
             args = dict(call.arguments or {})
             if entry is not None and entry.shape_output is not None:
                 try:
                     output = entry.shape_output(output, args)
+                except ToolFailure:
+                    raise
                 except Exception:  # noqa: BLE001 — same rule as format_output.
                     pass
             if entry is not None and entry.on_success is not None:
@@ -467,12 +475,35 @@ NO_DISPLAY = ("this tool works by driving the desk display, and this run has no 
 HUD_MEDIA_CLOSE = "HUD_MEDIA_CLOSE_REQUEST"
 
 
-def hud_frames(result: Any) -> list[dict]:
+def hud_frames(result: Any, tool: str | None = None) -> list[dict]:
     """The frames main.py's one-shot path would have sent for this result.
 
     A LIST, because one result is not always one frame — clearing HUD media
     takes two. Empty for everything else, which is nearly everything.
+
+    `tool` is the discriminator of last resort: `web_search_image` returns a
+    bare `{"success", "url", "title"}` with nothing in it naming the action, and
+    guessing from that shape alone would catch any future dict that happens to
+    carry a url.
     """
+    if tool == "web_search_image" and isinstance(result, dict):
+        if result.get("success") and result.get("url"):
+            return [{"status": "search_result_image", "url": result["url"],
+                     "title": result.get("title", "")}]
+        # An honest miss, not a frame: let the ordinary result reach the model.
+        return []
+    if tool == "render_chart" and isinstance(result, str):
+        # The handler hands back its payload as a JSON STRING, which main.py
+        # parses and broadcasts verbatim. It also answers "I don't have
+        # structured data to chart, sir." in plain text — that is a real result
+        # for the model to read, not a frame.
+        try:
+            import json as _json
+            spec = _json.loads(result)
+        except Exception:  # noqa: BLE001
+            return []
+        return [spec] if isinstance(spec, dict) and \
+            spec.get("ui_action") == "render_chart" else []
     if isinstance(result, str) and result.strip() == HUD_MEDIA_CLOSE:
         return [{"status": "close_search", "message": "Clearing HUD media."},
                 {"status": "toggle_browser", "visible": False}]
@@ -504,6 +535,15 @@ def describe_hud_frames(frames: list[dict]) -> str:
                 f"display.")
     if first.get("close_widget"):
         return f"The {first['close_widget']} panel is now closed."
+    if first.get("ui_action") == "render_chart":
+        return (f"Drew the chart \"{first.get('title')}\" on the desk display "
+                f"({len(first.get('data') or [])} points, "
+                f"{first.get('chart_type')}). He can see it; you cannot — "
+                f"describe what the numbers say, not what the chart looks like.")
+    if first.get("status") == "search_result_image":
+        return (f"Put the image on the desk display: {first.get('title') or 'result'} "
+                f"({first.get('url')}). You have NOT seen it — describe it only "
+                f"from the title, or use `read_screen` if what it shows matters.")
     if first.get("status") == "close_search":
         return ("Stopped the HUD's own player. Nothing was closed at the "
                 "operating-system level — that player is part of the display, "
@@ -594,6 +634,93 @@ def _macro_target(args: dict) -> str:
     return f"{macro}:{url}" if url else macro
 
 
+def _remember_target(args: dict) -> str:
+    """`_remember_fact` splits on the FIRST colon into (category, fact) and
+    falls back to category "Fact" for anything it does not recognise. The colon
+    is always emitted so a fact containing one cannot be read as a category."""
+    category = str(args.get("category") or "Fact").strip() or "Fact"
+    return f"{category}: {str(args.get('fact', '')).strip()}"
+
+
+def _note_target(args: dict) -> str:
+    """`FileAgent.create_note` takes "title: content", splitting on the first
+    colon; without one the whole string is the title and the note is empty."""
+    title = str(args.get("title", "")).strip()
+    content = str(args.get("content") or "").strip()
+    return f"{title}: {content}" if content else title
+
+
+def _note_precondition(args: dict) -> str | None:
+    """A colon in the TITLE moves the split point, so "Meeting: Tuesday" becomes
+    a note called "Meeting" whose body is the rest — quietly, and the title is
+    also what the filename is made from."""
+    if ":" in str(args.get("title", "")):
+        return ("the title contains a colon, which is where the note's title "
+                "ends and its body begins. Put everything after the colon in "
+                "`content` instead.")
+    return None
+
+
+def _chart_target(args: dict) -> dict:
+    """`_render_chart` accepts a dict directly, so the spec is handed over as
+    one rather than serialised — a JSON string would have to survive the model's
+    quoting as well as the handler's parse."""
+    return {"title": str(args.get("title", "")),
+            "type": str(args.get("chart_type") or "bar"),
+            "data": args.get("data") or []}
+
+
+#: What `_tavily_search` returns when TAVILY_API_KEY is absent.
+TAVILY_UNCONFIGURED = "TAVILY_UNCONFIGURED"
+
+
+def _tavily_guard(output: Any) -> Any:
+    """Turn the unconfigured-search sentinel into an honest failure.
+
+    Raising here rather than returning a message is deliberate: `format_output`
+    runs inside the executor, so a raise becomes a tool ERROR the loop feeds
+    back and counts, instead of a result the model reads as an answer.
+    """
+    if isinstance(output, str) and output.strip() == TAVILY_UNCONFIGURED:
+        raise ToolFailure(
+            "web search is not configured on this machine (no API key), so "
+            "nothing was searched. Try `search_documents` or `memory_recall` "
+            "for anything he has told you before, and otherwise say plainly "
+            "that you cannot look it up right now.")
+    return output
+
+
+def _git_log_target(args: dict) -> str:
+    """`_github_log` takes "", "N", or "repo_path|N" — it partitions on the first
+    pipe and only then checks whether what is left is a digit."""
+    repo = str(args.get("repo_path") or "").strip()
+    count = args.get("count")
+    tail = str(int(count)) if count else ""
+    return f"{repo}|{tail}" if repo else tail
+
+
+def _git_commit_target(args: dict) -> str:
+    """`_github_commit` takes "message" or "repo_path|message", partitioning on
+    the FIRST pipe — so the repo path is only a repo path when one was given."""
+    repo = str(args.get("repo_path") or "").strip()
+    message = str(args.get("message", "")).strip()
+    return f"{repo}|{message}" if repo else message
+
+
+def _git_commit_precondition(args: dict) -> str | None:
+    """Rule 3. Without a repo path, a pipe ANYWHERE in the message makes the
+    handler read everything before it as a directory — so the commit either
+    fails in a confusing place or lands in the wrong repository, and the message
+    is silently truncated either way."""
+    if str(args.get("repo_path") or "").strip():
+        return None
+    if "|" in str(args.get("message", "")):
+        return ("the commit message contains a pipe, which the handler reads as "
+                "the end of a repository path. Rewrite the message without a "
+                "pipe, or pass repo_path explicitly.")
+    return None
+
+
 def _music_target(args: dict) -> str:
     """`_play_music` picks Spotify when the word appears anywhere in the target
     and treats the rest as the search string (see `modules.media_query`)."""
@@ -671,7 +798,15 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
     r.register("tavily_search",
                "Search the live web and get a synthesised answer. Best first "
                "choice for current facts, news, prices, scores.",
-               _obj(_QUERY))
+               _obj(_QUERY),
+               aliases=("google", "internet", "online", "news", "lookup",
+                        "current"),
+               # `_tavily_search` returns the bare string "TAVILY_UNCONFIGURED"
+               # when the key is missing. Handed back as a RESULT it reads as
+               # data, and a model asked for today's news would either narrate
+               # the sentinel or invent an answer around it. As a failure it
+               # counts against the error streak and is said plainly.
+               format_output=_tavily_guard)
     r.register("web_browse",
                "Open a specific URL and read the page. Use when a search result "
                "must be verified or a named page has to be read in full.",
@@ -1087,6 +1222,314 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                              "description": "The address. https:// is added if "
                                             "you leave it off."}}),
                aliases=("website", "page", "browser", "url", "site"))
+
+    # ── Wave 4 (§6.8.2): git ─────────────────────────────────────────────────
+    # Three reads AUTO, two writes CONFIRM, and the split is the point: reading
+    # a repo is free, and the two that change history or publish it need a
+    # human. `github_create_pr`, `github_create_repo` and `github_merge_pr` are
+    # in governance but have NO `action ==` branch in the engine, so they cannot
+    # be registered at all — `test_agent_tools` fails the build if one is.
+    #
+    # Every one of these takes an OPTIONAL repo path and defaults to the active
+    # workspace repo. The descriptions say so, because a model that assumes
+    # otherwise starts inventing paths.
+
+    r.register("github_status",
+               "What has changed in a code repository: modified, staged and "
+               "untracked files, and the current branch. Defaults to the active "
+               "workspace repo. This is a GIT repository — for how the machine "
+               "itself is doing (CPU, memory, disk) use `system_status`.",
+               _obj({"repo_path": {"type": "string",
+                                   "description": "ABSOLUTE repo path. Omit for "
+                                                  "the active workspace repo."}},
+                    []),
+               aliases=("git", "repo", "repository", "uncommitted", "branch",
+                        "working", "tree"),
+               build_target=lambda a: str(a.get("repo_path") or "").strip())
+
+    r.register("github_diff",
+               "The actual changes in a repository, as a `git diff --stat` "
+               "summary — which files moved and by how many lines. Use it after "
+               "`github_status` when the file names are not enough. It does not "
+               "show the full patch text.",
+               _obj({"repo_path": {"type": "string",
+                                   "description": "ABSOLUTE repo path. Omit for "
+                                                  "the active workspace repo."}},
+                    []),
+               aliases=("git", "repo", "changes", "modified", "patch"),
+               build_target=lambda a: str(a.get("repo_path") or "").strip())
+
+    r.register("github_log",
+               "Recent commits, newest first, one line each. Use it to answer "
+               "\"what did I do last\", or to find the commit a change landed "
+               "in.",
+               _obj({"count": {"type": "integer", "minimum": 1, "maximum": 50,
+                               "description": "How many commits (default 5)."},
+                     "repo_path": {"type": "string",
+                                   "description": "ABSOLUTE repo path. Omit for "
+                                                  "the active workspace repo."}},
+                    []),
+               aliases=("git", "repo", "commits", "history", "recent"),
+               build_target=_git_log_target)
+
+    r.register("github_commit",
+               "Stage EVERY change in the repository and commit them together. "
+               "Requires the owner's confirmation. It cannot commit a subset — "
+               "if only some of the changes should go in, say so instead of "
+               "committing. Look at `github_status` first; committing without "
+               "reading what is uncommitted is how unrelated work ends up in "
+               "one commit. This does NOT publish anything — that is "
+               "`github_push`.",
+               _obj({"message": {"type": "string",
+                                 "description": "Commit message."},
+                     "repo_path": {"type": "string",
+                                   "description": "ABSOLUTE repo path. Omit for "
+                                                  "the active workspace repo."}},
+                    ["message"]),
+               aliases=("git", "repo", "save", "record"),
+               build_target=_git_commit_target,
+               precondition=_git_commit_precondition)
+
+    r.register("github_push",
+               "Publish the current branch's commits to the remote. Requires "
+               "the owner's confirmation. This is the step that makes work "
+               "public and is the hardest to take back — never push work you "
+               "have not been asked to push, and never push to a branch you "
+               "were not told to.",
+               _obj({"repo_path": {"type": "string",
+                                   "description": "ABSOLUTE repo path. Omit for "
+                                                  "the active workspace repo."}},
+                    []),
+               aliases=("git", "repo", "publish", "upload", "remote", "origin"),
+               build_target=lambda a: str(a.get("repo_path") or "").strip())
+
+    # ── Wave 5 (§6.8.2): driving a real browser ──────────────────────────────
+    # `web_browse` (already registered) opens a page and returns its text WITH a
+    # numbered map of the interactive elements. These five act on that map, so
+    # every description points back at where the numbers come from — and says
+    # that they go stale, because `_mark_and_extract_dom` RENUMBERS from 1 on
+    # every render. An id remembered from two steps ago is not "probably still
+    # right", it is a different element.
+    #
+    # `web_search` is NOT registered: it is `tavily_search` (already registered,
+    # and in the wired `research` set) with a DuckDuckGo fallback behind it.
+    # Registering both would make the model choose between two spellings of one
+    # job. The fallback is the better behaviour, which is why the Tavily tool now
+    # fails honestly when it is unconfigured instead of handing back a sentinel.
+
+    r.register("web_click",
+               "Click an element on the page the browser is currently showing. "
+               "Use ONLY an id from the element list in the most recent tool "
+               "output — the page renumbers its elements every time it changes, "
+               "so an id from an earlier step points at something else now. "
+               "Returns the page as it looks after the click, with a fresh list.",
+               _obj({"element_id": {"type": "string",
+                                    "description": "Id from the CURRENT element "
+                                                   "list, e.g. \"12\"."}}),
+               aliases=("browser", "page", "press", "button", "link"))
+
+    r.register("web_type",
+               "Type into a field on the page the browser is showing. Same rule "
+               "as clicking: the id must come from the most recent element "
+               "list, because the page renumbers its elements whenever it "
+               "changes. Enter is pressed for you ONLY in a search box — in an "
+               "ordinary field the text is filled and left there, so submit it "
+               "with `web_click` on the form's button.",
+               _obj({"element_id": {"type": "string",
+                                    "description": "Id from the CURRENT element "
+                                                   "list."},
+                     "text": {"type": "string", "description": "Text to type."}},
+                    ["element_id", "text"]),
+               aliases=("browser", "page", "fill", "input", "field", "form"),
+               build_target=lambda a: (f"{str(a.get('element_id', '')).strip()}|"
+                                       f"{a.get('text', '')}"))
+
+    r.register("web_scroll",
+               "Scroll the browser page by about one screen and return what is "
+               "now visible. Use it when the answer is further down the page "
+               "than what came back.",
+               _obj({"direction": {"type": "string", "enum": ["down", "up"],
+                                   "description": "Which way to scroll."}}),
+               aliases=("browser", "page", "further", "more"))
+
+    r.register("web_back",
+               "Go back one page in the browser, and return what is there. Use "
+               "it after following a link that turned out to be wrong.",
+               _obj({}, []),
+               aliases=("browser", "page", "previous", "return"))
+
+    r.register("web_close",
+               "Close the browser and free its memory. Do this when the "
+               "browsing is finished — it is not needed between pages, and "
+               "closing mid-task means starting the next page from nothing.",
+               _obj({}, []),
+               aliases=("browser", "quit", "finish", "done"))
+
+    r.register("web_search_image",
+               "Find a picture of something and put it on the desk display. "
+               "This SHOWS him an image — you never see it, so do not describe "
+               "what is in it. For information rather than a picture, use "
+               "`tavily_search`.",
+               _obj(_QUERY),
+               aliases=("picture", "photo", "image", "visual", "look like"))
+
+    # ── Wave 6 (§6.8.2): the people, the house, and what is left ─────────────
+    # The remainder, and the most heavily governed part of the catalogue: two of
+    # these reach another human being.
+    #
+    # DELIBERATELY NOT REGISTERED, each for a stated reason:
+    #   * `get_telemetry` — the same call as `system_status`, line for line
+    #     (`telemetry_agent.get_summary_string`). An exact duplicate.
+    #   * `close_display` — like focus mode (wave 3): the engine returns
+    #     "Display clear command received." and main.py does the work, so the
+    #     agent layer cannot deliver it honestly.
+    #   * `self_improve` — an agent that can rewrite its own source mid-run is a
+    #     different project with its own guard rails (post-Electron backlog
+    #     item 6), not a catalogue entry.
+    #   * `run_autopilot` — a multi-minute Figma→code pipeline. The loop's
+    #     wall-clock cap is 120 s, so registering it guarantees a run that dies
+    #     halfway through work it cannot resume.
+    #   * `gui_action`, `agentic_gui_task`, `ghost_type`, `ghost_save_file` —
+    #     they drive the real mouse and keyboard against whatever window has
+    #     focus. Reachable, and left for a wave that can pair them with a way to
+    #     verify the target window first.
+
+    # `message_partner` IS NOT HERE, and that is a standing decision rather than
+    # an oversight of this wave. `test_partner_messaging` has asserted since
+    # 2026-07-26 that the action name does not appear in this file at all —
+    # "the agentic loop must not be able to message a person on its own" — and
+    # the CONFIRM tier is not an answer to it: away, a CONFIRM does not die, it
+    # PARKS and pings his phone, so an approval tapped at a bus stop would send
+    # a private message whose text the loop wrote. The voice path is different
+    # in the way that matters: there he dictates the words.
+    #
+    # Registering it needs Kaustav's explicit call, not a wave's judgement.
+    # Reading about her is a separate question and is allowed below: both of
+    # those answer only because he asked, and neither reaches her.
+
+    r.register("partner_contact_status",
+               "Whether a registered partner has been in touch, when, and "
+               "whether it seemed urgent — with NO content. This is the "
+               "discreet answer to \"did she message me\". If he asks what she "
+               "actually SAID, that is `summarize_partner_chat`, a different "
+               "and more explicit request.",
+               _obj({"who": {"type": "string",
+                             "description": "Registered name. Omit for the "
+                                            "default partner."}},
+                    []),
+               aliases=("heard", "contact", "messaged", "called", "her", "him",
+                        "partner", "girlfriend", "today"),
+               build_target=lambda a: str(a.get("who") or "").strip())
+
+    r.register("summarize_partner_chat",
+               "Read back what a registered partner has actually told JARVIS. "
+               "This returns CONTENT, so use it only when he asks what she "
+               "said — for \"has she been in touch\" use "
+               "`partner_contact_status`, which answers without repeating a "
+               "word. It works only if he switched transcript logging on, and "
+               "says so plainly when he has not.",
+               _obj({"who": {"type": "string",
+                             "description": "Registered name. Omit for the "
+                                            "default partner."}},
+                    []),
+               aliases=("said", "told", "conversation", "chat", "her", "him",
+                        "partner", "girlfriend"),
+               build_target=lambda a: str(a.get("who") or "").strip())
+
+    r.register("telegram_send_file",
+               "Send a file to HIS OWN phone over Telegram. It has exactly one "
+               "recipient — the owner — so this is how you get a document, "
+               "report or image off the desk machine to him, and it can never "
+               "reach anyone else.",
+               _obj({"path": {"type": "string",
+                              "description": "ABSOLUTE path of the file."},
+                     "caption": {"type": "string",
+                                 "description": "Optional line to send with it."}},
+                    ["path"]),
+               aliases=("phone", "document", "attachment", "pdf", "share"),
+               build_target=lambda a: {"path": str(a.get("path", "")).strip(),
+                                       "caption": str(a.get("caption") or "")},
+               precondition=lambda a: af.absolute_path_problem(a.get("path")))
+
+    r.register("remember_fact",
+               "Store something about him for later — a preference, a "
+               "correction, or a plain fact. Use it when he says to remember "
+               "something, or states a lasting preference. Do NOT store "
+               "passing details of the current task; this is long-term memory, "
+               "and it is read back by `memory_recall`.",
+               _obj({"fact": {"type": "string",
+                              "description": "The fact, in one sentence, as he "
+                                             "would want it read back."},
+                     "category": {"type": "string",
+                                  "enum": ["Fact", "Preference", "Correction"],
+                                  "description": "Which kind (default Fact)."}},
+                    ["fact"]),
+               aliases=("remember", "memorise", "note", "store", "keep"),
+               build_target=_remember_target)
+
+    r.register("check_vitals",
+               "His health and fitness figures — heart rate, steps, sleep — "
+               "from his own health data. This is the PERSON; for how the "
+               "MACHINE is doing use `system_status`.",
+               _obj({}, []),
+               aliases=("health", "heart", "steps", "sleep", "fitness",
+                        "biometrics"))
+
+    r.register("movie_protocol",
+               "Set the room up for watching something: wakes the television "
+               "and prepares it. Use it for \"movie time\" or \"set up for a "
+               "film\" — to play one specific thing use `tv_play_media`.",
+               _obj({}, []),
+               aliases=("film", "cinema", "watch", "room", "evening"))
+
+    r.register("sleep_protocol",
+               "Wind the room down for the night: clears the desk displays and "
+               "pauses whatever is playing on the machine.",
+               _obj({}, []),
+               aliases=("bed", "night", "goodnight", "wind", "down"))
+
+    r.register("create_note",
+               "Write a short note into his notes folder. Requires the owner's "
+               "confirmation. For a file anywhere else, or for a file whose "
+               "exact path matters, use `workspace_write`.",
+               _obj({"title": {"type": "string",
+                               "description": "Short title — becomes the "
+                                              "filename."},
+                     "content": {"type": "string",
+                                 "description": "Body of the note."}},
+                    ["title"]),
+               aliases=("note", "jot", "write", "reminder", "memo"),
+               build_target=_note_target,
+               precondition=_note_precondition)
+
+    r.register("organize_downloads",
+               "Tidy his Downloads folder by MOVING every file into a "
+               "subfolder for its type. Requires the owner's confirmation. "
+               "Files move, so anything he was about to open is no longer "
+               "where he left it — only run it when he asks for the tidy-up.",
+               _obj({}, []),
+               aliases=("tidy", "sort", "clean", "downloads", "folder"))
+
+    r.register("render_chart",
+               "Draw a chart on the desk display from data YOU have already "
+               "gathered. Give it the numbers — it does no fetching of its own. "
+               "He sees the chart; you do not, so say what it shows rather "
+               "than describing how it looks.",
+               _obj({"title": {"type": "string",
+                               "description": "Chart title."},
+                     "chart_type": {"type": "string",
+                                    "enum": ["bar", "line", "pie"],
+                                    "description": "Which kind of chart."},
+                     "data": {"type": "array",
+                              "description": "Up to 24 points. Anything past "
+                                             "24 is dropped.",
+                              "items": {"type": "object",
+                                        "properties": {
+                                            "label": {"type": "string"},
+                                            "value": {"type": "number"}}}}},
+                    ["title", "data"]),
+               aliases=("chart", "graph", "plot", "visualise", "show", "trend"),
+               build_target=_chart_target)
 
     # Answer a question that needs looking things up. Read-only by construction:
     # nothing in this set can change the machine, so it is the safe first intent

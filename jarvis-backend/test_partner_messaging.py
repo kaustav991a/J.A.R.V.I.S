@@ -433,9 +433,25 @@ def test_no_autonomous_send_path_exists():
 
 
 def test_partner_send_is_not_an_agent_tool():
-    """The agentic loop must not be able to message a person on its own."""
+    """The agentic loop must not be able to message a person on its own.
+
+    Checked against the BUILT REGISTRY, not against the source text. The
+    original form asserted the action name appeared nowhere in `agent_tools.py`
+    at all, which broke the moment §6.8.2 wave 6 wrote down *why* it stays out —
+    a comment explaining the rule read to the test exactly like a violation of
+    it. The `f84f644` lesson applies to guards as much as to features: a grep
+    cannot tell "not registered" from "mentioned". The source check survives in
+    the narrower, still-meaningful form.
+    """
+    from agent_tier_fixture import tier_lookup
+    from modules import agent_tools
+
+    registry = agent_tools.build_default_registry(tier_lookup())
+    assert partner_messaging.ACTION_SEND not in registry.names()
+
     src = _src("modules", "agent_tools.py")
-    assert partner_messaging.ACTION_SEND not in src
+    assert f'r.register("{partner_messaging.ACTION_SEND}"' not in src
+    assert f"r.register('{partner_messaging.ACTION_SEND}'" not in src
 
 
 if __name__ == "__main__":

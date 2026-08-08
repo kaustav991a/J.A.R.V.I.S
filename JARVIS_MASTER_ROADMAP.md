@@ -43,7 +43,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
 | **Automatic test baseline** | ✅ **876 checks / 39 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted; the pytest-only tier A3 was closed 2026-07-30) | `TEST_PLAN.md` |
 | **Agentic core** (Tier C #12) | ✅ **ALL 5 PHASES DONE + LIVE-GATED 2026-07-26** (14/14 §23 rows) — pushed | §5 Tier C |
-| **Agent tool-layer hardening** (§6.8) | 🟡 **Phase 1 DONE 2026-08-08** — argument validation, errors-as-instructions, line anchors, paging, read-before-write, edit uniqueness, absolute paths. **Phase 2 catalogue waves 1–2 DONE + the shelf is now WIRED** (registry 11 → 28; it had never been built in production, so the catalogue was unreachable). Waves 3–6, skills, MCP and measurement open. **Sequenced BEFORE the §7 gates** at Kaustav's instruction | §6.8 |
+| **Agent tool-layer hardening** (§6.8) | 🟡 **Phase 1 DONE + Phase 2 catalogue COMPLETE 2026-08-08** — validation, errors-as-instructions, anchors, paging, read-before-write, edit uniqueness, absolute paths; **all six catalogue waves shipped (registry 11 → 56 of 72 deliverable, 16 excluded with reasons) and the shelf WIRED** (it had never been built in production, so the catalogue was unreachable). Left open: **skills (rule 18)**, MCP (Phase 3), measurement (Phase 4). **Sequenced BEFORE the §7 gates** at Kaustav's instruction | §6.8 |
 | **Memory-at-rest encryption** (Tier C #11a) | ✅ **DONE + LIVE 2026-07-30** — DPAPI + scrypt recovery, AES-256-GCM fields; `jarvis_longterm.db` encrypted, `jarvis_memory.db` retired into it | §5 #11a |
 | **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); **click-to-talk DONE 2026-07-26** (`POST /api/listen`), live-gate owed | §5 |
@@ -1112,9 +1112,83 @@ lets through. **Nothing here needs hardware.**
   | 1 | **email + calendar** | 10 | ✅ **DONE 2026-08-08** — `test_agent_wave1.py` (19). Registry 11 → 21 |
   | 2 | **media / TV** | 7 | ✅ **DONE 2026-08-08** — `test_agent_wave2.py` (29). Registry 21 → 28 |
   | 3 | **apps + windows** | 7 | ✅ **DONE 2026-08-08** — `test_agent_wave3.py` (22). Registry 28 → 35 |
-  | 4 | git / GitHub | 5 (`github_status/diff/log`, +`commit`/`push` CONFIRM) | ⬜ |
-  | 5 | web control | ~7 (`web_click/type/scroll/back/close`, `web_search*`) | ⬜ |
-  | 6 | messaging + misc | remainder (`message_partner`, `telegram_send_file`, `remember_fact`, protocols) | ⬜ |
+  | 4 | **git** | 5 | ✅ **DONE 2026-08-08** — `test_agent_wave4.py` (19). Registry 35 → 40 |
+  | 5 | **web control** | 6 | ✅ **DONE 2026-08-08** — `test_agent_wave5.py` (20). Registry 40 → 46 |
+  | 6 | **people, house, remainder** | 10 | ✅ **DONE 2026-08-08** — `test_agent_wave6.py` (25). Registry 46 → 56 |
+
+  **✅ THE CATALOGUE IS FILLED — 56 tools, 2026-08-08.** The arithmetic, recomputed against
+  the shipped ruleset rather than quoted:
+
+  | | |
+  |---|---|
+  | governance rules (excluding 3 section separators) | 103 |
+  | − BLOCK (can never be a tool, by design) | −15 |
+  | − no `action ==` branch in `action_engine` | −10 |
+  | − dispatched but **served by main.py**, not the engine (the six `open_*`/`close_*` HUD toggles) | −6 |
+  | **= deliverable ceiling** | **72** |
+  | **registered** | **56** |
+  | deliberately excluded, each with a stated reason | 16 |
+
+  **The 16 exclusions, because the reasons are the design.** Four kinds, and the second and
+  fourth are the ones worth remembering:
+
+  - **Duplicates** (6) — `check_email` (its handler names `gmail_read_unread` as primary),
+    `send_email` (superseded by `gmail_send`), `tv_search` (= `tv_play_media` with the app
+    pre-chosen), `launch_app` (weaker `native_app_launcher`), `web_search` (= `tavily_search`
+    plus a DDG fallback), `get_telemetry` (the same call as `system_status`, line for line).
+    Two tools for one job make the model guess, and a guess costs a step.
+  - **The effect lives in main.py, not the engine** (3) — `enable_focus_mode`,
+    `disable_focus_mode`, `close_display`. The engine returns a *sentence* claiming the thing
+    happened and main.py does the actual work from objects the agent layer does not hold.
+    **This is a third category beside BLOCK and no-dispatch, and it is invisible from
+    governance:** the action is authorised, dispatched, and still cannot be delivered.
+    Registering one makes the loop announce a state change that never happened.
+  - **Out of scope for a tool catalogue** (6) — `self_improve` (rewrites JARVIS's own source;
+    post-Electron backlog item 6 with its own guard rails), `run_autopilot` (a multi-minute
+    pipeline against a 120 s wall clock), and the four blind-GUI actions `gui_action`,
+    `agentic_gui_task`, `ghost_type`, `ghost_save_file` (they drive the real mouse and
+    keyboard against whatever window has focus, with nothing in the loop to verify the target
+    first).
+  - **`message_partner` — a standing decision, not a wave's judgement** (1). `test_partner_messaging`
+    has asserted since 2026-07-26 that *the agentic loop must not be able to message a person
+    on its own*. Wave 6 registered it, that guard caught it, and **the guard won**: CONFIRM is
+    not an answer here, because away a CONFIRM does not die — it **parks and pings his phone**,
+    so an approval tapped at a bus stop would send a private message whose words the loop
+    chose. The voice path differs in the way that matters: there he dictates the text.
+    Registering it needs Kaustav's explicit call. *(Reading about her is a separate question
+    and is allowed: `partner_contact_status` and `summarize_partner_chat` both answer only
+    because he asked, and neither reaches her.)*
+    The guard itself was **strengthened** in the process: it used to assert the action name
+    appeared nowhere in `agent_tools.py`, so writing down *why the tool stays out* read to it
+    exactly like a violation. It now checks the **built registry** and only the literal
+    `register(...)` call — the `f84f644` lesson applied to a guard rather than a feature.
+
+  **Waves 4–6, the things worth not re-deriving:**
+
+  - **The pipe is the recurring hazard, and it is not uniform.** `web_type` splits with
+    `split("|", 1)`, so a pipe in the typed text is safe; `github_commit` partitions on the
+    first pipe to find an optional repo path, so a pipe in a COMMIT MESSAGE silently becomes a
+    directory name plus a truncated message. Same shape, opposite safety, one argument to
+    `split()` apart — so the commit tool refuses that call in code, and a harness pins both
+    behaviours side by side. `message_partner`'s dict target existed for the same reason.
+  - **Element ids go stale by renumbering, not by expiry.** `web_agent`'s DOM marker
+    renumbers every `data-jarvis-id` from 1 on each render, so an id from two steps ago is not
+    approximately right — it is a different element. The handlers already recover honestly
+    (they hand back a fresh map rather than clicking blind); what the wave added is that every
+    description says the ids come from the most recent output, pinned against the marker's
+    own source.
+  - **`tavily_search` returned a SENTINEL to the model when unconfigured.** `TAVILY_UNCONFIGURED`
+    handed back as a result reads as data, and a model asked for today's news would narrate it
+    or invent an answer around it. It is now an honest `ToolFailure` — which required the
+    executor to stop swallowing `ToolFailure` from a formatter: a formatter is also where a
+    handler's "I did nothing" sentinel is recognised, and that is a verdict, not a formatting
+    accident. Ordinary formatter bugs are still swallowed, so a broken adapter cannot lose a
+    real result.
+  - **The HUD bridge now carries five frame kinds** (`play_youtube`, panel open/close, HUD
+    media clear, image result, chart) and takes the TOOL NAME as a discriminator, because
+    `web_search_image` returns a bare `{"success", "url", "title"}` with nothing in it naming
+    the action — shape-matching that would broadcast any future dict carrying a url as a
+    picture.
 
   **Wave 1 decisions worth not re-deriving:**
   - **Two reachable actions were deliberately NOT registered.** `check_email` (its own handler says

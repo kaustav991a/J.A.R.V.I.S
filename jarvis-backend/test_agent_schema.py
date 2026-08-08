@@ -183,6 +183,31 @@ def test_every_real_registry_schema_accepts_its_own_documented_shape():
         "os_control": {"command": "lock_screen"},
         "os_macro": {"macro": "deep_work", "url": "http://localhost:5173"},
         "open_link": {"url": "https://example.com"},
+        # wave 4 — git
+        "github_status": {},
+        "github_diff": {"repo_path": r"F:\work\JARVIS-Project"},
+        "github_log": {"count": 5},
+        "github_commit": {"message": "fix: the thing"},
+        "github_push": {},
+        # wave 5 — the browser
+        "web_click": {"element_id": "12"},
+        "web_type": {"element_id": "12", "text": "hello"},
+        "web_scroll": {"direction": "down"},
+        "web_back": {},
+        "web_close": {},
+        "web_search_image": {"query": "red panda"},
+        # wave 6 — people, house, remainder
+        "partner_contact_status": {"who": "girlfriend"},
+        "summarize_partner_chat": {},
+        "telegram_send_file": {"path": r"F:\out\report.pdf", "caption": "Q3"},
+        "remember_fact": {"fact": "he prefers tea", "category": "Preference"},
+        "check_vitals": {},
+        "movie_protocol": {},
+        "sleep_protocol": {},
+        "create_note": {"title": "Sprint Plan", "content": "ship the exe"},
+        "organize_downloads": {},
+        "render_chart": {"title": "Spend", "chart_type": "pie",
+                         "data": [{"label": "rent", "value": 1200}]},
     }
     for name in reg.names():
         entry = reg.get(name)

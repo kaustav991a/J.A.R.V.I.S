@@ -426,7 +426,7 @@ def test_the_real_registry_builds_against_governance_json():
     from governance_manager import governance_manager
 
     r = at.build_default_registry(governance_manager.get_tier)
-    assert len(r.names()) == 35, r.names()
+    assert len(r.names()) == 56, r.names()
     assert r.tier_of("workspace_write") == "CONFIRM"
     assert r.tier_of("edit_file") == "CONFIRM", \
         "the surgical edit tool must be CONFIRM like every other writer"

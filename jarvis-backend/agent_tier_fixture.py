@@ -82,6 +82,48 @@ TIERS: dict[str, str] = {
     "enable_focus_mode": "AUTO",
     "disable_focus_mode": "AUTO",
 
+    # -- wave 4 (§6.8.2): git ---------------------------------------------- #
+    # Reads AUTO, the two that change or publish history CONFIRM.
+    "github_status": "AUTO",
+    "github_diff": "AUTO",
+    "github_log": "AUTO",
+    "github_commit": "CONFIRM",
+    "github_push": "CONFIRM",
+
+    # -- wave 5 (§6.8.2): driving a real browser --------------------------- #
+    # `web_search` is listed but NOT registered — it is `tavily_search` with a
+    # DuckDuckGo fallback, and two spellings of one job make the model choose.
+    "web_click": "AUTO",
+    "web_type": "AUTO",
+    "web_scroll": "AUTO",
+    "web_back": "AUTO",
+    "web_close": "AUTO",
+    "web_search_image": "AUTO",
+    "web_search": "AUTO",
+
+    # -- wave 6 (§6.8.2): people, house, and the remainder ----------------- #
+    # The trailing entries are listed but NOT registered — see the exclusion
+    # comments in `agent_tools`.
+    "message_partner": "CONFIRM",      # listed, deliberately NOT registered
+    "partner_contact_status": "AUTO",
+    "summarize_partner_chat": "AUTO",
+    "telegram_send_file": "AUTO",
+    "remember_fact": "AUTO",
+    "check_vitals": "AUTO",
+    "movie_protocol": "AUTO",
+    "sleep_protocol": "AUTO",
+    "create_note": "CONFIRM",
+    "organize_downloads": "CONFIRM",
+    "render_chart": "AUTO",
+    "get_telemetry": "AUTO",
+    "close_display": "AUTO",
+    "self_improve": "CONFIRM",
+    "run_autopilot": "AUTO",
+    "ghost_type": "AUTO",
+    "ghost_save_file": "CONFIRM",
+    "gui_action": "AUTO",
+    "agentic_gui_task": "AUTO",
+
     # -- present so the BLOCK guarantees can be exercised ------------------ #
     "delete_file": "BLOCK",
     "run_terminal_command": "BLOCK",
