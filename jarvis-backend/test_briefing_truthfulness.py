@@ -49,15 +49,15 @@ def check(cond, label):
 _SOURCE = BRAIN.read_text(encoding="utf-8", errors="replace")
 _TREE = ast.parse(_SOURCE)
 
-_WANTED_CONSTS = {"_MUTATING_CLAIM_VERBS", "_FABRICATED_MANDATE",
-                  "_FIRST_PERSON", "_BARE_COMPLETION"}
+_WANTED_CONSTS = {"_ALLOWED_REPORTING", "_IRREGULAR_PARTICIPLES",
+                  "_COMPLETION_RE", "_MANDATE_RE", "_BARE_COMPLETION"}
 _consts = [n for n in _TREE.body
            if isinstance(n, ast.Assign)
            and any(isinstance(t, ast.Name) and t.id in _WANTED_CONSTS
                    for t in n.targets)]
 _func = [n for n in _TREE.body
          if isinstance(n, ast.FunctionDef)
-         and n.name == "_strip_unfounded_action_claims"]
+         and n.name in ("_claims_a_completion", "_strip_unfounded_action_claims")]
 
 _NS: dict = {}
 if _func and _consts:
@@ -80,7 +80,7 @@ LIVE_GATE_TEXT = (
 def test_the_guard_exists():
     check(bool(_func), "_strip_unfounded_action_claims exists in brain.py")
     check(len(_consts) == len(_WANTED_CONSTS),
-          f"all four claim vocabularies are module-level, found {len(_consts)}")
+          f"all five claim vocabularies are module-level, found {len(_consts)}")
 
 
 def test_the_exact_live_gate_confabulation_is_removed():
@@ -96,6 +96,32 @@ def test_the_true_parts_of_that_same_briefing_survive():
     check("Good evening, Sir." in out, "the greeting survives")
     check("201 unread emails" in out,
           "a real reported figure survives — this strips lies, not content")
+
+
+def test_the_2026_08_09_live_failure_is_caught():
+    """The first version of this guard shipped and then FAILED on its first real
+    briefing. These are the exact sentences it let through."""
+    spoken = ("Good evening, Sir. As per your previous instructions, I have closed "
+              "the current window, closed vital systems, and muted the room. I have "
+              "also taken the liberty of adjusting the volume settings to your "
+              "preferred level. Your calendar is clear for today.")
+    out = _strip(spoken)
+    check("I have closed" not in out, "'I have closed' — a verb the old blocklist never listed")
+    check("muted the room" not in out, "'muted' — likewise")
+    check("As per your previous instructions" not in out,
+          "'as per your PREVIOUS instructions' — the old exact-phrase list missed the word 'previous'")
+    check("taken the liberty of adjusting" not in out,
+          "'taken the liberty of adjusting' — 'taken the liberty' was WHITELISTED before; the gerund decides now")
+    check("Good evening, Sir." in out and "calendar is clear" in out,
+          "and the true sentences around them survive")
+
+
+def test_an_unlisted_verb_is_still_caught_because_the_list_is_now_an_allowlist():
+    # The whole point of the inversion: verbs nobody enumerated must still fail.
+    for s in ("I have throttled the network.", "I have defenestrated the router.",
+              "I have reticulated the splines."):
+        check(_strip(f"Good evening. {s}") == "Good evening.",
+              f"unlisted verb still stripped: {s[:34]}")
 
 
 def test_a_bare_completion_claim_is_caught():
@@ -225,6 +251,8 @@ def test_the_comprehensive_requirements_are_no_longer_hardcoded_morning():
 TESTS = [
     test_the_guard_exists,
     test_the_exact_live_gate_confabulation_is_removed,
+    test_the_2026_08_09_live_failure_is_caught,
+    test_an_unlisted_verb_is_still_caught_because_the_list_is_now_an_allowlist,
     test_the_true_parts_of_that_same_briefing_survive,
     test_a_bare_completion_claim_is_caught,
     test_each_mutating_verb_is_caught,

@@ -2184,27 +2184,86 @@ def period_for_hour(hour: int) -> str:
     return "Late Night"
 
 
-# Verbs that describe changing the operator's world — his files, his calendar,
-# his mail, his messages. Claiming one of these falsely is not a phrasing slip,
-# it is a false report of work done on his data.
-_MUTATING_CLAIM_VERBS = (
-    "deleted", "removed", "cleared", "cancelled", "canceled", "erased",
-    "wiped", "sent", "emailed", "messaged", "replied", "forwarded",
-    "scheduled", "booked", "rescheduled", "moved", "archived", "renamed",
-    "created", "added", "updated", "changed", "edited", "installed",
-    "purchased", "ordered", "unsubscribed",
+# The FIRST version of this guard blocklisted mutation verbs — deleted, sent,
+# cancelled and so on. It failed live on 2026-08-09, on its first real briefing,
+# because the model reached for "closed" and "muted", which were simply not on
+# the list. That is not a gap to patch; it is the wrong axis. The set of verbs a
+# language model might use is open, so no blocklist over it can be complete.
+#
+# So it is inverted. generate_briefing REPORTS — it has no ability to act and
+# never did — which makes the set of things it may legitimately claim to have
+# done small and CLOSED. Everything else that reads as a first-person completion
+# is false by construction and goes.
+_ALLOWED_REPORTING = frozenset({
+    # past participles
+    "compiled", "noted", "prepared", "reviewed", "checked", "found",
+    "monitored", "observed", "gathered", "summarised", "summarized",
+    "counted", "detected", "seen", "read", "looked", "watched",
+    # gerunds, reached via "I have been ..." / "taken the liberty of ..."
+    "compiling", "noting", "preparing", "reviewing", "checking", "finding",
+    "monitoring", "observing", "gathering", "summarising", "summarizing",
+    "counting", "detecting", "seeing", "reading", "looking", "watching",
+})
+# Irregular participles, so "I have taken/done/sent" is recognised as a
+# completion claim even though it does not end in -ed.
+_IRREGULAR_PARTICIPLES = frozenset({
+    "taken", "done", "made", "sent", "put", "set", "kept", "left", "written",
+    "given", "shut", "cut", "run", "begun", "brought", "bought", "built",
+    "told", "sold", "held", "gone", "been", "seen", "found", "read", "dealt",
+    "met", "lost", "won", "spent", "drawn", "shown", "thrown",
+})
+# "I have / I've / I had / I already / I just", optionally "also", then the verb.
+_COMPLETION_RE = re.compile(
+    r"\bi(?:'ve|\s+have|\s+had|\s+already|\s+just)\s+(?:also\s+)?(\w+)(?:\s+(\w+))?"
+    r"(?:\s+(\w+)\s+(\w+)\s+(\w+))?",
+    re.IGNORECASE,
 )
-# Phrases that assert the operator ASKED for something. When the model invents
-# the request as well as the action, this is the tell.
-_FABRICATED_MANDATE = (
-    "as per your request", "as you requested", "as you instructed",
-    "as you asked", "per your instruction", "as instructed",
+# Any claim that the operator asked for it. Broadened after 2026-08-09, where
+# "as per your previous instructions" slipped past a list of exact phrases.
+_MANDATE_RE = re.compile(
+    r"\bas\s+(?:per\s+)?your\b[\w\s,'-]{0,30}?\b(instruction|instructions|request|"
+    r"requests|order|orders|wish|wishes|direction|directions)\b"
+    r"|\bper\s+your\b[\w\s,'-]{0,30}?\b(instruction|request|order|wish)\w*\b"
+    r"|\bas\s+you\s+(?:asked|instructed|requested|wished|directed|wanted)\b",
+    re.IGNORECASE,
 )
-_FIRST_PERSON = ("i have ", "i've ", "i had ", "i already ", "i just ")
-# "taken care of" / "handled" are the exact phrasing that shipped on 2026-08-08,
-# and they carry no object, so they are matched on their own.
+# Completions with no object at all — the exact phrasing that shipped 2026-08-08.
 _BARE_COMPLETION = ("taken care of", "handled that", "handled this",
                     "done that for you", "done as you asked")
+
+
+def _claims_a_completion(sentence: str) -> bool:
+    """True if the sentence claims JARVIS finished doing something it may not do.
+
+    Reads the verb rather than pattern-matching a phrase list, and judges it
+    against the closed set of things a REPORT may legitimately claim.
+    """
+    for m in _COMPLETION_RE.finditer(sentence):
+        words = [w.lower() for w in m.groups() if w]
+        if not words:
+            continue
+        verb = words[0]
+        # Resolving through "been" or "the liberty of" lands on a GERUND, which
+        # does not end in -ed. Both constructions are completions by shape, so
+        # the -ed test is skipped and the allowlist decides on its own.
+        resolved_through_construction = False
+        # "I have been monitoring ..." — the claim is the gerund, not "been".
+        if verb == "been" and len(words) > 1:
+            verb, resolved_through_construction = words[1], True
+        # "I have taken the liberty of adjusting ..." — likewise. This exact
+        # construction shipped a false claim on 2026-08-09 while "taken the
+        # liberty" sat on the old allow-list as harmless butler phrasing.
+        elif verb == "taken" and words[1:4] == ["the", "liberty", "of"]:
+            if len(words) > 4:
+                verb, resolved_through_construction = words[4], True
+        looks_completed = (resolved_through_construction
+                           or verb.endswith("ed")
+                           or verb in _IRREGULAR_PARTICIPLES)
+        if not looks_completed:
+            continue          # "I have three items to report" — not a verb claim
+        if verb not in _ALLOWED_REPORTING:
+            return True
+    return False
 
 
 def _strip_unfounded_action_claims(text: str) -> str:
@@ -2238,13 +2297,8 @@ def _strip_unfounded_action_claims(text: str) -> str:
     kept, dropped = [], []
     for sentence in re.split(r"(?<=[.!?])\s+", text):
         low = sentence.lower()
-        claims_mutation = (
-            any(p in low for p in _FIRST_PERSON)
-            and any(v in low for v in _MUTATING_CLAIM_VERBS)
-        )
         bare = any(p in low for p in _BARE_COMPLETION)
-        mandate = any(p in low for p in _FABRICATED_MANDATE)
-        if claims_mutation or bare or mandate:
+        if _claims_a_completion(sentence) or bare or _MANDATE_RE.search(sentence):
             dropped.append(sentence)
         else:
             kept.append(sentence)
