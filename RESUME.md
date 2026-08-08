@@ -6,6 +6,82 @@
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
 > bookmark, not a plan.
 
+## ▶▶ RESUME POINT — 2026-08-09, 02:00. READ THIS, THEN `LIVE_GATE_CHECKLIST.md`.
+
+**The §7 live gate has STARTED. It runs in sessions, not one desk day.** Everything below this
+block predates it and is still true about the *feature* queue — but the gate is now the work.
+
+| | |
+|---|---|
+| HEAD | **`c3945a4`**, pushed, `0 0`, tree clean |
+| Suite | **62/62 harnesses, 1509 checks, 0 failed** (was 59/1405 when the gate began) |
+| Rows | **15 of 192 run** — 13 pass, 1 fail (`10.9`), 1 blocked (`21.3`) |
+| Findings | **16 raised, 13 fixed.** Open: **F-15**, **F-16** |
+
+### What happened, in order
+
+1. **Session 1 (2026-08-08, 22:00–23:00)** — ran 15 rows, stopped deliberately. 13 findings,
+   3 high-severity, all of one shape: *a failure the user cannot tell apart from working*.
+2. **Fix pass (2026-08-09, 00:00–01:30)** — all 13 fixed, 8 code + 5 doc, each with a harness.
+3. **Session 1b — first live run on the fixed tree (01:26–01:55).** This is the part that matters:
+
+| Fix | Live verdict |
+|---|---|
+| **F-08** camera | ✅ **held.** Its one death was real (phone left the network): tolerated → 3 reopens → honest message → self-recovered. No spurious death in ~25 min. ⚠️ A decoder desync (`overread`) never occurred, so the original trigger is still unreproduced |
+| **F-10** briefing period | ✅ `Comprehensive **Late Night** Briefing` at 01:28 |
+| **F-11** voice loop | ✅ every `[VAD]`/`[STT]` single across many turns. ⚠️ only one WS connection — a HUD reload is still the real test |
+| **F-13** romanise | ⏸ never exercised — no Bengali input |
+| **F-09** briefing truth | 🔴 **FAILED, then re-fixed** (`af26d88`) — see below |
+
+### The lesson worth carrying forward
+
+**F-09's first guard was not too short — it was on the wrong axis.** It blocklisted mutation
+verbs; the model said *"I have **closed** the current window… **muted** the room"* and
+*"as per your **previous** instructions"*, none of which were on any list. **A blocklist over the
+set of verbs a model might use can never be complete**, and every miss looks like a small gap.
+
+Now inverted: `generate_briefing` **reports**, so what it may legitimately claim is a small
+**closed** set (compiled, noted, prepared, reviewed, checked, found, monitored). Everything else
+reading as a first-person completion is false by construction and is stripped. Proof it
+generalises: *throttled*, *defenestrated*, *reticulated* are caught for free.
+
+### ⏭ TOMORROW — do these in this order
+
+1. **`21.3` FIRST** — five minutes, and **34 rows depend on it.** Run the daemon 5+ min with a
+   face scan partway. Any `session fault: camera stream died` **that is not preceded by real TCP
+   failures** means F-08 is not done. Stop there if so.
+2. **Re-run 7** — `0.1` `0.2` `1.3` (F-03 boot), `2.1` `2.2` `2.4` (F-11 voice — **reload the HUD
+   mid-session**, that is the true trigger), `16.1` (F-07 camera ladder).
+3. **`4.4`**, then **`6.5`**. ⚠️ `6.5` is a **hard gate**: if a BLOCK-tier action executes, §24
+   does not run at all.
+4. **Live-confirm the two never exercised:** one Bengali sentence at the mic (**F-13** — silence
+   means still broken), and a full wake briefing (**F-09** — no false claims **and** it must
+   still sound like JARVIS; the guard was kept narrow on purpose).
+5. **Then the ~99 remaining unblocked solo rows.** A full session, needs nobody else.
+
+### ⏳ STILL OPEN — two findings, deliberately not fixed tonight
+
+- **F-16** — the same confabulation on the **conversational** path: *"Now that I've adjusted the
+  camera…"* It adjusted nothing. F-09's guard wraps `generate_briefing` only. The allowlist
+  approach ports, **but the allowlist must be wider there** — conversation legitimately claims
+  more than a report does, and reusing the briefing set would flatten ordinary speech.
+- **F-15** — a transient stored as a permanent Fact (`User is not holding an umbrella`). That is
+  row `9.6` failing. **It did NOT recur** on comparable corrections later the same session, so
+  **confirm it reproduces before building anything against it.** It is upstream of F-09:
+  `recall_all_facts()` feeds the briefing, so junk facts are the fuel.
+
+### Not code — arrange these, they block 22 rows
+
+- **Second device** with a pinned non-random MAC on the home SSID (7 rows). The phone cannot be
+  both camera and presence probe. Phone-settings chore, do it **before** the desk day.
+- **Second person** (15 rows): Kinshuk ×1, Mousumi ×11. For the Mousumi block, **her knowing and
+  consenting is the real gate, not a technical one.**
+
+> Full detail: `LIVE_GATE_FINDINGS.md` (every finding, fix, harness, and the re-run list) and
+> `LIVE_GATE_CHECKLIST.md` (all 192 rows by prerequisite; **it opens with the session-2 order**).
+
+---
+
 ## NEXT SESSION STARTS HERE — pick a number
 
 > **2026-08-08 — the queue is NOT drained after all.** Kaustav's instruction put
