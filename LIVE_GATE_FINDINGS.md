@@ -17,7 +17,7 @@
 | ❌ Failed | **1** |
 | ⏸ Blocked | **1** |
 | Not yet attempted | **176** |
-| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **5 FIXED** (F-08, F-09, F-11, F-13, F-06) — **all 3 high-severity closed** |
+| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **7 FIXED** (F-08, F-09, F-11, F-13, F-10, F-07, F-06) — **all high AND all medium closed** |
 
 **The session was worth it before it got far.** 16 rows surfaced 3 high-severity bugs, all of
 the same family: **a failure the user cannot distinguish from normal operation.** A dropped
@@ -355,9 +355,9 @@ gate proving something once is not the same as a property being pinned.
 
 - [x] **F-11** ✅ **DONE** — single-owner guard on the wake-word loop, released in `finally`
       → `test_voice_loop_owner.py` (21) · **unconfounds 11 rows**
-- [ ] **F-10** briefing selection as a function of the hour
-- [ ] **F-07** `enroll_face.py:181` resolves via the `JARVIS_CAM_SOURCES` ladder
-      → `test_enroll_face.py`
+- [x] **F-10** ✅ **DONE** — hour buckets extracted to shared `brain.period_for_hour`; header built from the real period
+- [x] **F-07** ✅ **DONE** — resolves via `parse_sources` + `make_frame_source`; argv[1] still overrides
+      → `test_enroll_face.py` 17 → 21
 
 ### Group 4 — docs
 
