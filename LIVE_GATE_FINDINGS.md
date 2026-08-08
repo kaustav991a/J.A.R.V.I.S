@@ -119,6 +119,19 @@ answer, an invented action, and an alert that cannot fire.
 > `recall_all_facts()`; junk facts are the fuel that produced the confabulation above. Fixing the
 > briefing guard treats the symptom, and F-15 is upstream of it. **Fix them together.**
 >
+> ### F-16 (NEW) — the same confabulation on the CONVERSATIONAL path
+>
+> 01:52, ordinary voice turn: *"**Now that I've adjusted the camera**, I can see you clearly,
+> Sir."* It adjusted nothing. Same false-completion class as F-09, different function.
+> **F-09's guard wraps `generate_briefing` only** — `process_command` and `process_stream` are
+> unguarded. The allowlist approach ports directly, but the allowlist itself must be WIDER
+> there: conversation legitimately claims more than a report does, so reusing the briefing set
+> would flatten normal speech.
+>
+> Also observed: it described "a cigarette in hand" when there was none, and on correction
+> agreed without revising. **F-15 did NOT recur** on those same corrections — the extractor
+> returned empty — so F-15 may be intermittent rather than deterministic. Confirm before fixing.
+>
 > Also observed, unresolved: `your heart rate remains at 0 BPM` reported as fact; RAM peaked at
 > **92.2%** with ambient on, and overwatch alerted correctly (row `12.4` evidence).
 
