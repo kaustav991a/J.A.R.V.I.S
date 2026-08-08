@@ -62,6 +62,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from modules import agent_search as ags
+from modules import agent_skills as asx
 from modules.tool_calls import (
     ToolCall,
     ToolTurn,
@@ -313,6 +314,7 @@ async def run_agent_loop(
     lock: Any | None = None,
     unlocked_tools: set | None = None,
     shelf: Any | None = None,
+    skills: Any | None = None,
 ) -> AgentResult:
     """Run the decide→act→observe loop until the model answers or a cap trips.
 
@@ -327,12 +329,24 @@ async def run_agent_loop(
     """
     limits = limits or AgentLimits()
 
+    # §6.8.2 (rule 18). The skill loader is one tool for the whole library, so
+    # it is added to every list rather than searched for — and de-duplicated,
+    # because the runner also hands it to the shelf as an `extra` so the
+    # resident cap counts it.
+    skill_def = skills.tool_def() if skills is not None else None
+
+    def with_skill_loader(defs: list) -> list:
+        if skill_def is None:
+            return defs
+        if any((d or {}).get("name") == skill_def["name"] for d in defs):
+            return defs
+        return list(defs) + [skill_def]
+
     # §6.8.2 (rule 13). With a shelf, the tool list is not fixed for the run:
     # `search_tools` promotes schemas mid-conversation, so the list is rebuilt
     # before every model turn. The shelf owns the resident cap, so the
     # `max_tools` check below still holds on the FIRST list and every later one.
-    if shelf is not None:
-        tools = shelf.defs()
+    tools = with_skill_loader(shelf.defs() if shelf is not None else tools)
 
     async def emit(kind: str, **data):
         if on_event is None:
@@ -420,7 +434,7 @@ async def run_agent_loop(
         if shelf is not None:
             # Rebuilt every turn: a promotion from the previous step only
             # reaches the model if the list it is sent is regenerated here.
-            tools = shelf.defs()
+            tools = with_skill_loader(shelf.defs())
             tool_names = {t["function"]["name"] if "function" in t else t.get("name")
                           for t in tools}
 
@@ -472,6 +486,24 @@ async def run_agent_loop(
             # registered action) or the engine (which has no handler). What it
             # REVEALS stays gated: every promoted tool is still authorised on
             # the call that uses it.
+            # --- skill loading: answered HERE, for the same reason -----------
+            # A skill is INSTRUCTIONS. It grants no capability, so there is
+            # nothing for governance to decide and nothing for the engine to
+            # dispatch; a playbook that names a blocked tool still cannot reach
+            # one, because tools are gated where they are called.
+            if skills is not None and call.name == asx.LOAD_TOOL_NAME:
+                observation = skills.handle(call.arguments or {})
+                runs.append(ToolRun(call.name, call.arguments, ok=True,
+                                    output=observation))
+                await emit("skill_loaded",
+                           name=(call.arguments or {}).get("name"),
+                           chars=len(observation))
+                messages.append(tool_result_message(call, observation))
+                # Like a search: not a step towards the goal, and not a failure
+                # either. Opening the wrong playbook must not count against the
+                # error streak.
+                continue
+
             if shelf is not None and call.name == ags.SEARCH_TOOL_NAME:
                 observation = shelf.handle(call.arguments or {})
                 runs.append(ToolRun(call.name, call.arguments, ok=True,

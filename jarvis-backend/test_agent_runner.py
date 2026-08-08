@@ -21,6 +21,7 @@ from modules import agent_confirm as acf
 from modules import agent_core as ac
 from modules import agent_runner as ar
 from modules import agent_search as ags
+from modules import agent_skills as ask
 from modules import agent_subagents as sa
 from modules import agent_tools as at
 from modules.tool_calls import ToolCall, ToolTurn
@@ -655,9 +656,21 @@ def test_switching_the_shelf_off_restores_the_fixed_per_intent_list():
     try:
         run(ar.run_agent_command("read it", engine, registry=reg, tool_set="files",
                                  send=hud, presence="at_desk", call_model=spy))
+        # The two flags are independent: with the shelf off the list is the
+        # wired set plus the skill loader — no `search_tools`, nothing promoted.
+        assert ags.SEARCH_TOOL_NAME not in offered[0]
+        assert set(offered[0]) - {ask.LOAD_TOOL_NAME} == set(reg.set_names("files"))
+
+        os.environ[ar.SKILLS_ENV] = "0"
+        run(ar.run_agent_command("read it", engine, registry=reg, tool_set="files",
+                                 send=hud, presence="at_desk", call_model=spy))
     finally:
-        del os.environ[ar.SHELF_ENV]
-    assert offered[0] == reg.set_names("files")
+        os.environ.pop(ar.SHELF_ENV, None)
+        os.environ.pop(ar.SKILLS_ENV, None)
+    # Both off: exactly the pre-§6.8.2 behaviour, which is what the escape
+    # hatches are for — telling "the loop got worse" apart from "the loop got
+    # different" needs the old one still reachable.
+    assert offered[-1] == reg.set_names("files")
 
 
 def test_a_tool_outside_the_wired_set_can_be_found_and_then_called():

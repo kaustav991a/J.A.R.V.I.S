@@ -511,6 +511,10 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 | 23b.14 | Still cannot message her | "tell her I'll be late" | it does NOT send; the loop has no such tool, so it says so or falls back to the one-shot path (which stages the usual voice confirm) | ⬜ |
 | 23b.15 | A chart from data it gathered | "chart my last 5 days of steps" | `check_vitals` (or memory) → `render_chart`; the chart draws, and the spoken answer states the NUMBERS, not the picture | ⬜ |
 | 23b.16 | Unconfigured search fails honestly | temporarily unset `TAVILY_API_KEY`, ask for today's news | it says it cannot look it up — never a confident answer, never the raw `TAVILY_UNCONFIGURED` | ⬜ |
+| 23b.17 | A playbook is opened before the work | a file-editing goal, flag on | log shows `[AGENT] skills: 6 playbook(s)`; the panel shows `load_skill` **before** the first edit, not after a refusal | ⬜ |
+| 23b.18 | The playbook changes the behaviour | ask for an edit whose `old_string` appears 3× | it extends the string with surrounding context (what `edit-a-file` says) instead of reaching for `replace_all` | ⬜ |
+| 23b.19 | A playbook edited mid-session takes effect | change a line in `skills/the-two-screens.md` while the backend runs, then trigger a TV goal | the new wording is what comes back — no restart needed | ⬜ |
+| 23b.20 | Skills off = the old prompt | `JARVIS_AGENT_SKILLS=0`, repeat 23b.17 | no index in the prompt, no `load_skill` offered, run still completes | ⬜ |
 
 **Gate notes (2026-07-26 session).** Three bugs only a live model could find, all fixed
 in `eee4b3a`: `list_directory`'s HUD payload (epoch floats in a `render_file_list`

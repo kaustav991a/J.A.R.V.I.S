@@ -43,7 +43,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
 | **Automatic test baseline** | ✅ **876 checks / 39 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted; the pytest-only tier A3 was closed 2026-07-30) | `TEST_PLAN.md` |
 | **Agentic core** (Tier C #12) | ✅ **ALL 5 PHASES DONE + LIVE-GATED 2026-07-26** (14/14 §23 rows) — pushed | §5 Tier C |
-| **Agent tool-layer hardening** (§6.8) | 🟡 **Phase 1 DONE + Phase 2 catalogue COMPLETE 2026-08-08** — validation, errors-as-instructions, anchors, paging, read-before-write, edit uniqueness, absolute paths; **all six catalogue waves shipped (registry 11 → 56 of 72 deliverable, 16 excluded with reasons) and the shelf WIRED** (it had never been built in production, so the catalogue was unreachable). Left open: **skills (rule 18)**, MCP (Phase 3), measurement (Phase 4). **Sequenced BEFORE the §7 gates** at Kaustav's instruction | §6.8 |
+| **Agent tool-layer hardening** (§6.8) | 🟡 **Phases 1 + 2 COMPLETE 2026-08-08** — validation, errors-as-instructions, anchors, paging, read-before-write, edit uniqueness, absolute paths; **all six catalogue waves (registry 11 → 56 of 72 deliverable, 16 excluded with reasons), the shelf WIRED** (it had never been built in production), and **skills — all 18 reference rules now satisfied**. Left open: MCP (Phase 3), measurement (Phase 4). **Sequenced BEFORE the §7 gates** at Kaustav's instruction | §6.8 |
 | **Memory-at-rest encryption** (Tier C #11a) | ✅ **DONE + LIVE 2026-07-30** — DPAPI + scrypt recovery, AES-256-GCM fields; `jarvis_longterm.db` encrypted, `jarvis_memory.db` retired into it | §5 #11a |
 | **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); **click-to-talk DONE 2026-07-26** (`POST /api/listen`), live-gate owed | §5 |
@@ -1289,10 +1289,40 @@ lets through. **Nothing here needs hardware.**
   are printed. **Suite 1210 / 51 → 1261 / 53** the moment discovery landed: +51 checks that
   had been passing where nobody was looking.
 
-- **Skills — progressive disclosure for instructions (rule 18).** `.md` playbooks with one-line
-  descriptions plus a `load_skill(name)` tool, instead of pasting procedures into the system
-  prompt. Groq has **no prompt caching**, so a fat system prompt is paid for on *every* request —
-  this is a direct token saving, not just tidiness.
+- **Skills — progressive disclosure for instructions (rule 18). ✅ DONE 2026-08-08 —
+  `modules/agent_skills.py` + `skills/*.md`, `test_agent_skills.py` (27). THE LAST OF THE
+  EIGHTEEN RULES.** Six playbooks: `find-a-file`, `edit-a-file`, `the-two-screens`,
+  `handle-email`, `work-with-git`, `ask-about-her`. One line each in the system prompt;
+  the body arrives only when the model calls `load_skill`.
+
+  **The measured economics, since the claim is an economic one:** index **824 chars (~206
+  tokens)** standing in for **12 462 chars (~3 115 tokens)** of procedure — **15×**, and Groq
+  has no prompt caching, so the alternative is buying all of it on every request of every run
+  (one task is 5–20 requests). The other half is quality: a prompt explaining file editing,
+  TV apps, mail and git at once is one in which none of them stand out.
+
+  - **A skill is INSTRUCTIONS, never CAPABILITY.** Loading one cannot add a tool, raise a
+    tier, or bypass a gate — a playbook naming `delete_file` changes nothing, because that
+    action is BLOCK and therefore not registered. So `load_skill` is answered inside the loop
+    like `search_tools`: it never reaches the authorizer or the engine, and a bad skill name
+    does not count against the error streak.
+  - **The loader occupies a tool slot for the whole run**, so it is handed to the shelf as an
+    `extra` — a shelf that did not count it would promote one tool too many and the loop
+    would refuse the very list it had just built.
+  - **Names are `[a-z0-9-]+` and cannot escape the directory.** The model picks that string,
+    and `../../.env` is exactly what a confused model produces after two failed loads.
+  - **Bodies are capped at 6 000 chars with the cap ANNOUNCED** (rule 8), descriptions at 160
+    (an overlong one is bought on every request and would undo the point), and files are
+    **re-read on mtime** so a playbook can be fixed mid-session.
+  - **The playbooks carry lessons already paid for**, not generic advice: the two file
+    sandboxes that are not the same one, why an ambiguous edit is refused and what to do
+    instead, that `tv_power` is a toggle with no readable state, that the discreet partner
+    answer is the default, and that the loop cannot message a person at all.
+  - **A harness checks the shipped playbooks against the live registry** — every backticked
+    identifier must be a real tool or a real argument of one. A procedure that names something
+    that no longer exists reads as authoritative and is trusted over the schema in front of it.
+  - `JARVIS_AGENT_SKILLS=0` returns the loop to no index and no loader, which is how "the
+    model ignored the playbook" is told apart from "the playbook made it worse".
 
 #### 6.8.3 Phase 3 — MCP client
 

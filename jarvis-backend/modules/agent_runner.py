@@ -40,7 +40,8 @@ import os
 import re
 from typing import Any
 
-from modules import agent_confirm, agent_core, agent_subagents, agent_yield
+from modules import (agent_confirm, agent_core, agent_skills, agent_subagents,
+                     agent_yield)
 from modules.agent_core import AgentLimits, Decision
 from modules.agent_search import ToolShelf
 from modules.tool_calls import ToolCall
@@ -49,6 +50,8 @@ from modules.tool_calls import ToolCall
 FLAG_ENV = "JARVIS_AGENT_LOOP"
 #: Escape hatch for the deferred-schema shelf (§6.8.2, rule 13). Default ON.
 SHELF_ENV = "JARVIS_AGENT_SHELF"
+#: Escape hatch for the skill playbooks (§6.8.2, rule 18). Default ON.
+SKILLS_ENV = "JARVIS_AGENT_SKILLS"
 
 #: WebSocket frame type the HUD listens for. Additive: no existing frame changes.
 FRAME = "agent_step"
@@ -146,12 +149,57 @@ def workspace_note() -> str:
     return note
 
 
-def system_prompt() -> str:
-    """The system prompt with the live workspace roots spliced in."""
-    note = workspace_note()
-    if not note:
+#: Process-wide skill library, built on first use. The directory is scanned per
+#: run (a stat and a small read per file), so a new playbook is available
+#: without a restart — but the object is shared, because parsing it per run for
+#: a directory that rarely changes is waste.
+_library = None
+
+
+def skill_library(root=None):
+    """The playbooks JARVIS ships with, as a `SkillLibrary`.
+
+    `root` is for tests; production always reads `jarvis-backend/skills`.
+    """
+    global _library
+    if root is not None:
+        return agent_skills.SkillLibrary(root)
+    if _library is None:
+        from pathlib import Path
+        _library = agent_skills.SkillLibrary(
+            Path(__file__).resolve().parent.parent / "skills")
+    else:
+        _library.refresh()
+    return _library
+
+
+def system_prompt(skills=None) -> str:
+    """The system prompt, with the live workspace roots and the skill INDEX.
+
+    The index is the whole cost of rule 18 while nothing is loaded: one line per
+    playbook, against a body that can be thousands of tokens. Groq has no prompt
+    caching, so anything in here is paid for on every request of every run —
+    which is exactly why the bodies are not.
+    """
+    extra = workspace_note()
+    if skills is not None:
+        extra += skills.index()
+    if not extra:
         return SYSTEM_PROMPT
-    return SYSTEM_PROMPT.replace("Rules:\n", "Rules:\n" + note, 1)
+    return SYSTEM_PROMPT.replace("Rules:\n", "Rules:\n" + extra, 1)
+
+
+def skills_enabled(env: dict | None = None) -> bool:
+    """Are the playbooks in force? Default ON, like the shelf.
+
+    `JARVIS_AGENT_SKILLS=0` returns the loop to a prompt with no index and no
+    loader — useful for telling "the model ignored the playbook" apart from
+    "the playbook made it worse", which are different problems with different
+    fixes.
+    """
+    env = os.environ if env is None else env
+    return str(env.get(SKILLS_ENV, "1")).strip().lower() not in \
+        ("0", "false", "no", "off")
 
 
 def flag_enabled(env: dict | None = None) -> bool:
@@ -465,6 +513,21 @@ async def run_agent_command(
     # in the WIRED set still parks as it always did; what stays hidden is a
     # CONFIRM the model went LOOKING for, because parking is capped at one per
     # run and it should be spent on the task he asked for.
+    # §6.8.2 rule 18. The library is built BEFORE the shelf so its loader can be
+    # counted as an `extra`: it occupies a tool slot for the whole run, and a
+    # shelf that did not know that would promote one tool too many and have the
+    # loop refuse the list it just built.
+    skills = None
+    if skills_enabled():
+        skills = skill_library()
+        loader = skills.tool_def()
+        if loader is not None:
+            extra_defs.append(loader)
+            print(f"[AGENT] skills: {len(skills.names())} playbook(s) — "
+                  f"{', '.join(skills.names())}", flush=True)
+        else:
+            skills = None      # nothing on disk: no index, no loader, no slot
+
     shelf = None
     if shelf_enabled():
         shelf = ToolShelf(registry, base=registry.set_names(tool_set),
@@ -479,7 +542,8 @@ async def run_agent_command(
         tools,
         execute,
         shelf=shelf,
-        system=system_prompt(),
+        skills=skills,
+        system=system_prompt(skills),
         authorize=authorize,
         call_model=call_model,
         limits=limits,
