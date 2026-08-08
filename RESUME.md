@@ -9,17 +9,21 @@
 ## NEXT SESSION STARTS HERE — pick a number
 
 > **2026-08-08 — the queue is NOT drained after all.** Kaustav's instruction put
-> **§6.8 agent tool-layer hardening BEFORE the §7 gates**, so the keyboard-buildable work
-> below item 5 has reopened: Phase 1 is done, Phase 2's catalogue is filling in waves
-> (1 email+calendar, 2 television+music — registry 11 → 28), and **waves 3–6, skills, MCP
-> and measurement are still open**. Item 5 is still the hardware gate to Electron; it is no
-> longer the only thing left. Read roadmap §6.8 before picking any of it up.
+> **§6.8 agent tool-layer hardening BEFORE the §7 gates**. Phase 1 is done and **Phase 2's
+> catalogue is COMPLETE — all six waves, registry 11 → 56** of the 72 actions this layer can
+> deliver, with 16 excluded for stated reasons (roadmap §6.8.2 lists all of them).
+> **Still open: skills (rule 18), MCP (Phase 3), measurement (Phase 4).** Item 5 is still the
+> hardware gate to Electron; it is no longer the only thing left. Read roadmap §6.8 first.
 >
-> Wave 2 also fixed three things that were not catalogue work: the **shelf had never been
-> wired in production** (so both waves were registered and unreachable), `ToolShelf.promote`
-> **evicted the tool it had just found** while reporting it as loaded, and `_play_music`
-> stripped `"on"` as a substring so *"play Moonlight"* searched for *"Molight"* — that last
-> one on the ordinary voice path too. New live-gate rows: **TEST_PLAN §23b**.
+> **Six real defects surfaced while filling the catalogue, all fixed:** the **shelf had never
+> been wired in production** (so every catalogue tool was registered and unreachable);
+> `ToolShelf.promote` **evicted the tool it had just found** while reporting it as loaded;
+> `_play_music` stripped `"on"` as a substring (*"play Moonlight"* searched *"Molight"* — the
+> ordinary voice path too); `run_harnesses.py` **was not running one of its own harnesses**
+> (hand-kept list, now discovery); `tavily_search` handed the model its `TAVILY_UNCONFIGURED`
+> sentinel as if it were data; and wave 6's `message_partner` was **caught by the 2026-07-26
+> guard** that says the loop must not be able to message a person on its own — the guard won
+> and was strengthened. Live-gate rows: **TEST_PLAN §23b, 16 of them.**
 
 **Where things stand:** HEAD on `feat/cloud-gateway`, **ahead of origin**,
 **not merged to `main`**. Suite **1210 checks / 51 harnesses green**. Done:
@@ -249,7 +253,7 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 | | |
 |---|---|
 | Branch | `feat/cloud-gateway`, **AHEAD of origin and not pushed** (the provenance arc, the contact-events flip, and the whole §6.8 tool-layer arc), and **not merged to `main`** |
-| Suite | **1210 checks / 51 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
+| Suite | **1324 checks / 56 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures). Harnesses are **discovered** now, not listed — a new `test_*.py` is in the suite the moment it exists |
 | Working tree | **clean of feature work.** The `source`-column arc that used to live here is committed (`326cbd2`); the only untracked file left is the pre-existing `jarvis-frontend/public/favicon.zip`, which is nobody's from this arc. |
 | Live store | `jarvis_longterm.db` — 58 rows, **all tagged `source=desk`**, all decrypting. The provenance column is populated, not merely present. |
 
