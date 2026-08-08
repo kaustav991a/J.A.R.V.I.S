@@ -1452,7 +1452,23 @@ certify — gating an agent loop that cannot validate its own arguments certifie
 > every new item ships with (a) a self-running harness and (b) a one-line gate recipe added
 > below — the harness is what keeps the stack honest until that session.
 
-**PUSH STATUS 2026-08-01:** `origin/feat/cloud-gateway` is caught up with HEAD at `9c8c5eb`
+**PUSH STATUS 2026-08-08:** `origin/feat/cloud-gateway` is caught up with HEAD at `a905a9d` —
+the whole **§6.8 agent tool-layer arc**, 12 commits (`342f1c4`…`a905a9d`). Suite
+**1405 checks / 59 harnesses, 0 failed, 0 broken**.
+
+Harnesses are **discovered, not listed** (`run_harnesses.py`, since 2026-08-08), so the count
+now moves with the tree instead of with someone remembering to edit a list: 63 `test_*.py` on
+disk − 4 deliberately EXCLUDED = 59. The four, each excluded for a stated reason that is
+staleness-checked on every run: `test_ping.py` and `test_ui_bridge_e2e.py` need the backend up
+(TEST_PLAN part A2), `test_screen_reader.py` is a live VLM script, and `test_mcp_server_fake.py`
+is an MCP **server** spawned as a subprocess fixture by `test_mcp_bridge.py` — not a harness.
+
+⚠️ **Still NOT merged to `main`, and the merge is still not a fast-forward.** `origin/main`
+carries `8d0ea4f` ("Add GNU General Public License v3") which this branch does not.
+**Fetch before judging this:** local `main` is one commit behind `origin/main`, so a local-only
+`git log main..HEAD` reports a clean fast-forward and will mislead.
+
+*Superseded, kept for the trail —* **PUSH STATUS 2026-08-01:** `origin/feat/cloud-gateway` is caught up with HEAD at `9c8c5eb`
 (the cp1252 CLI hardening + governance guards, §11a). Suite
 **876 checks / 39 harnesses, 0 failures**; 3 environmental non-greens (`test_ping` and
 `test_ui_bridge_e2e` need the backend up; `test_screen_reader.py` is a live VLM script, not a
