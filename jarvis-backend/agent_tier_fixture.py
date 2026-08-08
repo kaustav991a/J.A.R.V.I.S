@@ -53,6 +53,20 @@ TIERS: dict[str, str] = {
     "create_event": "CONFIRM",
     "clear_schedule": "CONFIRM",
 
+    # -- wave 2 (§6.8.2): television + music ------------------------------- #
+    # All AUTO in the shipped ruleset: a keypress on a TV is undone by another
+    # keypress. `tv_search` is listed although it is deliberately NOT
+    # registered — the drift check compares this map against governance.json,
+    # and an entry missing here would read as governance not knowing it.
+    "tv_power": "AUTO",
+    "tv_volume": "AUTO",
+    "tv_control": "AUTO",
+    "tv_launch_app": "AUTO",
+    "tv_play_media": "AUTO",
+    "tv_search": "AUTO",
+    "tv_type": "AUTO",
+    "play_music": "AUTO",
+
     # -- present so the BLOCK guarantees can be exercised ------------------ #
     "delete_file": "BLOCK",
     "run_terminal_command": "BLOCK",

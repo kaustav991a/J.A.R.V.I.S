@@ -484,6 +484,26 @@ treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-
 | 23.13 | Nothing else freezes | while a confirm prompt is open, run an unrelated command | it executes immediately — the engine lock is not held across the wait | ✅ answered in <1 s |
 | 23.14 | Long run trims itself | a goal that needs several big reads | a TRIMMED row appears and the run still finishes; no provider 400 in the log | ✅ 10 compactions, 5 rows |
 
+### 23b. The shelf and the tool catalogue (§6.8.2, added 2026-08-08 — RE-RUN OWED)
+
+> **These rows change what 23.1–23.14 tested**, so run them in the same sitting. The
+> deferred-schema shelf is now WIRED (it never was), so a run no longer sees a fixed six
+> tools — it sees its intent's set plus `search_tools`, and can load more mid-run from a
+> 28-tool catalogue. `JARVIS_AGENT_SHELF=0` restores the old fixed list if a row here
+> misbehaves and you want to isolate it. Rows 23b.4–23b.6 need the **Android TV powered
+> and on the same network** (ADB, `TV_IP`), so they belong to the §7 desk day.
+
+| # | Test | Steps | Expected | ✓ |
+|---|---|---|---|---|
+| 23b.1 | The catalogue is reachable | flag on, ask the read demo phrase, watch the log | `[AGENT] shelf: N resident of 28 catalogued` appears; the AGENT panel shows a `search_tools` step only if the model needs one | ⬜ |
+| 23b.2 | What it says it loaded, it can call | ask for something outside the wired set ("what's on my calendar" during a file goal) | the search result names the tools, and the very next call is one of THOSE names — never `unknown tool` | ⬜ |
+| 23b.3 | Nothing found is said plainly | ask for a capability JARVIS has none of | one search, then an honest "no tool for this" — **not** a second and third identical search | ⬜ |
+| 23b.4 | 🔴 TV volume, found not wired | "turn the TV volume up three notches" | `search_tools` → `tv_volume` → the TV actually gets louder by 3 | ⬜ |
+| 23b.5 | 🔴 Put something on the TV | "put Stranger Things on Netflix on the TV" | Netflix opens on the TV and searches the title; the answer does not claim it is playing if it only opened the search | ⬜ |
+| 23b.6 | 🔴 Music plays on the DESK, not the TV | "play moonlight" | the HUD's player starts on the desktop — **and the search string is `moonlight`, not `molight`** (the substring bug this wave fixed); the TV is untouched | ⬜ |
+| 23b.7 | No display = honest failure | run the same music goal from **Telegram** with no HUD open | it says it needs the desktop HUD; it must NOT report that music is playing | ⬜ |
+| 23b.8 | The old behaviour still exists | re-run 23.2 with `JARVIS_AGENT_SHELF=0` | identical to the 2026-07-26 result; no `search_tools` in the panel | ⬜ |
+
 **Gate notes (2026-07-26 session).** Three bugs only a live model could find, all fixed
 in `eee4b3a`: `list_directory`'s HUD payload (epoch floats in a `render_file_list`
 wrapper) made the model declare mtimes "not provided"; bare filenames from a listing

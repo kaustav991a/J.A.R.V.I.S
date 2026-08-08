@@ -426,7 +426,7 @@ def test_the_real_registry_builds_against_governance_json():
     from governance_manager import governance_manager
 
     r = at.build_default_registry(governance_manager.get_tier)
-    assert len(r.names()) == 21, r.names()
+    assert len(r.names()) == 28, r.names()
     assert r.tier_of("workspace_write") == "CONFIRM"
     assert r.tier_of("edit_file") == "CONFIRM", \
         "the surgical edit tool must be CONFIRM like every other writer"
@@ -436,6 +436,11 @@ def test_the_real_registry_builds_against_governance_json():
         assert r.tier_of(name) == "CONFIRM", f"{name} is {r.tier_of(name)}"
     for name in ("gmail_read", "gmail_read_unread", "check_calendar",
                  "morning_briefing", "search_email", "read_email"):
+        assert r.tier_of(name) == "AUTO", f"{name} is {r.tier_of(name)}"
+    # Wave 2: the whole television + music wave is AUTO in the shipped ruleset.
+    # If that ever changes, this fails here rather than at the microphone.
+    for name in ("tv_power", "tv_volume", "tv_control", "tv_launch_app",
+                 "tv_play_media", "tv_type", "play_music"):
         assert r.tier_of(name) == "AUTO", f"{name} is {r.tier_of(name)}"
 
 

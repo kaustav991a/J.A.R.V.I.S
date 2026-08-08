@@ -117,7 +117,13 @@ def test_a_query_of_only_noise_words_matches_nothing():
 
 
 def test_an_unknown_capability_matches_nothing():
-    assert shelf().search("launch the orbital cannon") == []
+    """The query changed with §6.8.2 wave 2, and the reason is worth recording:
+    it used to be "launch the orbital cannon", which stopped matching nothing
+    the moment `tv_launch_app` was registered — "launch" is in that tool's NAME,
+    which scores 4. That is the ranking working, not failing; a catalogue with
+    72 entries owns most ordinary capability verbs. What must still match
+    nothing is a request whose words JARVIS shares no vocabulary with."""
+    assert shelf().search("teleport the goldfish") == []
 
 
 # ── governance survives the shortcut ─────────────────────────────────────────
@@ -210,7 +216,7 @@ def test_search_tools_itself_always_has_a_slot():
 def test_a_fruitless_search_says_not_to_search_again():
     """A bare "no results" sends a model into a second and third identical
     search — the exact loop the step cap then has to stop."""
-    out = shelf().handle({"query": "launch the orbital cannon"})
+    out = shelf().handle({"query": "teleport the goldfish"})
     assert "no tool" in out.lower(), out
     assert "do not search again" in out.lower(), out
 
@@ -218,6 +224,60 @@ def test_a_fruitless_search_says_not_to_search_again():
 def test_a_successful_search_names_what_can_now_be_called():
     out = shelf().handle({"query": "find a file by name"})
     assert "find_file" in out and "call them now" in out, out
+
+
+# ── the cap: what happens when more matches than slots ───────────────────────
+
+def test_a_search_never_evicts_the_tool_it_just_found():
+    """The defect this pins, found live-shaped by the wave 2 end-to-end test:
+    eviction ran oldest-first over a queue the CURRENT search had just filled
+    best-first, so the top hit was thrown out to make room for a worse one —
+    and was still reported as loaded. The model called it and got
+    `unknown tool`."""
+    s = shelf(base=["system_status", "read_screen", "find_file",
+                    "list_directory", "memory_recall", "search_documents"])
+    assert s.room() == 1
+    hits = [h.name for h in s.search("turn the tv volume up")]
+    promoted, _ = s.promote(hits[:3])
+    assert promoted == [hits[0]], f"kept {promoted}, best was {hits[0]}"
+    assert hits[0] in s.resident()
+
+
+def test_what_the_message_says_is_loaded_is_what_the_model_can_call():
+    """The invariant underneath it: every name the observation says is callable
+    must be in the very next tool list."""
+    s = shelf(base=["system_status", "read_screen", "find_file",
+                    "list_directory", "memory_recall", "search_documents"])
+    out = s.handle({"query": "turn the tv volume up"})
+    offered = {d["name"] for d in s.defs()}
+    for line in out.splitlines():
+        if line.startswith("  - "):
+            assert line[4:].split(":")[0] in offered, line
+
+
+def test_a_match_that_did_not_fit_is_reported_rather_than_dropped():
+    """Rule 8's principle applied to the shelf: a silently discarded match reads
+    to the model as a tool it has."""
+    s = shelf(base=["system_status", "read_screen", "find_file",
+                    "list_directory", "memory_recall", "search_documents"])
+    hits = [h.name for h in s.search("turn the tv volume up")]
+    out = s.handle({"query": "turn the tv volume up"})
+    assert "not loaded" in out
+    for name in hits[1:3]:
+        assert name in out, f"{name} matched, did not fit, and was not mentioned"
+
+
+def test_an_extra_definition_counts_against_the_cap():
+    """`extra` carries defs that belong to no registry entry — the sub-agent
+    delegate. Counted, or a run with a delegate would be handed max_tools + 1
+    and `agent_core` would refuse the whole run."""
+    delegate = {"name": "delegate_subtask", "description": "d",
+                "input_schema": {"type": "object", "properties": {}}}
+    plain = shelf(base=["system_status", "read_screen"])
+    with_extra = shelf(base=["system_status", "read_screen"], extra=[delegate])
+    assert with_extra.room() == plain.room() - 1
+    with_extra.promote([h.name for h in with_extra.search("check my email")])
+    assert len(with_extra.defs()) <= with_extra.max_tools
 
 
 def test_searches_are_recorded_for_the_audit_trail():

@@ -167,6 +167,14 @@ def test_every_real_registry_schema_accepts_its_own_documented_shape():
         "gmail_reply": {"thread_id": "abc123", "body": "Thanks."},
         "create_event": {"description": "dentist Thursday 4pm"},
         "clear_schedule": {},
+        # wave 2 — television + music
+        "tv_power": {},
+        "tv_volume": {"direction": "up", "steps": 3},
+        "tv_control": {"key": "play_pause"},
+        "tv_launch_app": {"app": "netflix"},
+        "tv_play_media": {"title": "Stranger Things", "app": "netflix"},
+        "tv_type": {"text": "stranger things"},
+        "play_music": {"query": "moonlight", "service": "spotify"},
     }
     for name in reg.names():
         entry = reg.get(name)

@@ -8,9 +8,21 @@
 
 ## NEXT SESSION STARTS HERE — pick a number
 
-**Where things stand:** HEAD on `feat/cloud-gateway`, **ahead of origin by 2 commits**,
-**not merged to `main`**. Suite **1078 checks / 46 harnesses green**, and the working tree is
-now clean of feature work — the provenance arc that used to sit in it is committed. Done:
+> **2026-08-08 — the queue is NOT drained after all.** Kaustav's instruction put
+> **§6.8 agent tool-layer hardening BEFORE the §7 gates**, so the keyboard-buildable work
+> below item 5 has reopened: Phase 1 is done, Phase 2's catalogue is filling in waves
+> (1 email+calendar, 2 television+music — registry 11 → 28), and **waves 3–6, skills, MCP
+> and measurement are still open**. Item 5 is still the hardware gate to Electron; it is no
+> longer the only thing left. Read roadmap §6.8 before picking any of it up.
+>
+> Wave 2 also fixed three things that were not catalogue work: the **shelf had never been
+> wired in production** (so both waves were registered and unreachable), `ToolShelf.promote`
+> **evicted the tool it had just found** while reporting it as loaded, and `_play_music`
+> stripped `"on"` as a substring so *"play Moonlight"* searched for *"Molight"* — that last
+> one on the ordinary voice path too. New live-gate rows: **TEST_PLAN §23b**.
+
+**Where things stand:** HEAD on `feat/cloud-gateway`, **ahead of origin**,
+**not merged to `main`**. Suite **1210 checks / 51 harnesses green**. Done:
 **both halves of partner-messaging** (`message_partner` outbound + the `partner_contact_status`
 butler inbound, with **two-layer urgency detection** on Kaustav's real Benglish term list),
 **Chroma at-rest encryption**, the **cloud→desk sealed-fact arc**, and **memory provenance**.
@@ -236,8 +248,8 @@ Nothing about memory-at-rest encryption is outstanding. Do not reopen it looking
 
 | | |
 |---|---|
-| Branch | `feat/cloud-gateway`, **3 commits AHEAD of origin — the provenance arc, the contact-events flip and this file are LOCAL, not pushed**, and **not merged to `main`** |
-| Suite | **1078 checks / 46 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
+| Branch | `feat/cloud-gateway`, **AHEAD of origin and not pushed** (the provenance arc, the contact-events flip, and the whole §6.8 tool-layer arc), and **not merged to `main`** |
+| Suite | **1210 checks / 51 harnesses green, 0 failed, 0 broken** — `venv\Scripts\python.exe run_harnesses.py` (venv python; system python fakes failures) |
 | Working tree | **clean of feature work.** The `source`-column arc that used to live here is committed (`326cbd2`); the only untracked file left is the pre-existing `jarvis-frontend/public/favicon.zip`, which is nobody's from this arc. |
 | Live store | `jarvis_longterm.db` — 58 rows, **all tagged `source=desk`**, all decrypting. The provenance column is populated, not merely present. |
 

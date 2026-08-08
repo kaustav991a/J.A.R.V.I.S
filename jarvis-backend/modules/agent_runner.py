@@ -42,10 +42,13 @@ from typing import Any
 
 from modules import agent_confirm, agent_core, agent_subagents, agent_yield
 from modules.agent_core import AgentLimits, Decision
+from modules.agent_search import ToolShelf
 from modules.tool_calls import ToolCall
 
 #: Feature flag. OFF by default — the one-shot path stays the default everywhere.
 FLAG_ENV = "JARVIS_AGENT_LOOP"
+#: Escape hatch for the deferred-schema shelf (§6.8.2, rule 13). Default ON.
+SHELF_ENV = "JARVIS_AGENT_SHELF"
 
 #: WebSocket frame type the HUD listens for. Additive: no existing frame changes.
 FRAME = "agent_step"
@@ -154,6 +157,22 @@ def system_prompt() -> str:
 def flag_enabled(env: dict | None = None) -> bool:
     env = os.environ if env is None else env
     return str(env.get(FLAG_ENV, "0")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def shelf_enabled(env: dict | None = None) -> bool:
+    """Is the deferred-schema shelf in force? Default ON, inside a loop that is
+    itself opt-in (`JARVIS_AGENT_LOOP`).
+
+    Defaults the opposite way to `flag_enabled` on purpose. The loop's flag
+    guards a behaviour change at the microphone; this one guards only WHICH
+    tools a run that is already agentic can reach — and with it off, the tool
+    catalogue §6.8.2 exists to fill is unreachable, which is the state this
+    wave found and fixed. `JARVIS_AGENT_SHELF=0` restores the fixed per-intent
+    list exactly.
+    """
+    env = os.environ if env is None else env
+    return str(env.get(SHELF_ENV, "1")).strip().lower() not in \
+        ("0", "false", "no", "off")
 
 
 def limits_from_env(env: dict | None = None) -> AgentLimits:
@@ -395,11 +414,16 @@ async def run_agent_command(
     # Two-tier CONFIRM execution: an approved tool must run with
     # governance_bypass=True, or the engine would re-pend it and hand back a
     # GOVERNANCE_CONFIRM sentinel that the loop (correctly) treats as a refusal.
-    auto_exec = registry.executor(engine)
-    approved_exec = registry.executor(engine, governance_bypass=True)
+    # `payload_sink` is the same broadcast the one-shot path uses for a result
+    # whose effect IS a HUD frame (`play_music`). Without it such a tool fails
+    # honestly instead of reporting playback nobody can hear.
+    auto_exec = registry.executor(engine, payload_sink=send)
+    approved_exec = registry.executor(engine, governance_bypass=True,
+                                      payload_sink=send)
     narrate = make_narrator(send, goal)
 
     tools = registry.defs(tool_set)
+    extra_defs: list[dict] = []
     delegate_run = None
     delegate_name = None
     if delegate:
@@ -411,6 +435,7 @@ async def run_agent_command(
             call_model=call_model, on_event=narrate)
         delegate_name = delegate_def["name"]
         tools = tools + [delegate_def]
+        extra_defs.append(delegate_def)
 
         inner_authorize = authorize
 
@@ -430,10 +455,30 @@ async def run_agent_command(
         runner = approved_exec if (entry and entry.tier == "CONFIRM") else auto_exec
         return await runner(call)
 
+    # §6.8.2 rule 13, and the hole this wave found: `ToolShelf` shipped with
+    # `run_agent_loop` able to take one, and NOTHING ever built one. So every
+    # tool outside the wired intent's six — both catalogue waves — was
+    # registered and unreachable. The shelf is what makes the catalogue mean
+    # anything at the microphone.
+    #
+    # `allow_confirm` follows presence, not the park machinery. Away, a CONFIRM
+    # in the WIRED set still parks as it always did; what stays hidden is a
+    # CONFIRM the model went LOOKING for, because parking is capped at one per
+    # run and it should be spent on the task he asked for.
+    shelf = None
+    if shelf_enabled():
+        shelf = ToolShelf(registry, base=registry.set_names(tool_set),
+                          max_tools=limits.max_tools, allow_confirm=at_desk,
+                          extra=extra_defs)
+        print(f"[AGENT] shelf: {len(shelf.resident())} resident of "
+              f"{len(registry.names())} catalogued, {shelf.room()} free slot(s)",
+              flush=True)
+
     result = await agent_core.run_agent_loop(
         goal,
         tools,
         execute,
+        shelf=shelf,
         system=system_prompt(),
         authorize=authorize,
         call_model=call_model,

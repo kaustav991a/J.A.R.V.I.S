@@ -2592,16 +2592,20 @@ class ActionEngine:
 
     def _play_music(self, target: str) -> str:
         print(f"[ACTION ENGINE] Playing music: {target}")
-        target_lower = target.lower()
         chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-        
-        if "spotify" in target_lower:
-            search_query = target_lower.replace("spotify", "").replace("on", "").strip().replace(" ", "%20")
+
+        # §6.8.2 wave 2: the service words used to be stripped as SUBSTRINGS, so
+        # "on" was removed from the middle of ordinary titles — "Moonlight"
+        # searched for "Molight". `clean_music_query` strips whole words only.
+        from modules.media_query import SPOTIFY, clean_music_query
+        service, search_query = clean_music_query(target)
+
+        if service == SPOTIFY:
+            search_query = search_query.replace(" ", "%20")
             url = f"https://open.spotify.com/search/{search_query}" if search_query else "https://open.spotify.com"
             return {"success": True, "action_type": "play_youtube", "url": url}
         else:
             # Default to YouTube
-            search_query = target_lower.replace("youtube", "").replace("on", "").strip()
             if search_query:
                 # Try to get the direct video link instead of search results
                 try:

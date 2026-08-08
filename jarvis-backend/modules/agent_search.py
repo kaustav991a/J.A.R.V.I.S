@@ -127,6 +127,11 @@ class ToolShelf:
     max_tools: int = 8
     #: Is a human available to approve a CONFIRM-tier action this run?
     allow_confirm: bool = False
+    #: Raw tool definitions that belong to no registry entry — today just the
+    #: sub-agent delegate. They are always resident and count against the cap,
+    #: because a shelf that rebuilt the tool list each turn would otherwise drop
+    #: the delegate the caller had just added to it.
+    extra: list[dict] = field(default_factory=list)
     #: Promoted names, oldest first — the eviction order.
     _promoted: list[str] = field(default_factory=list, init=False)
     #: Every search this run made, for the audit trail and the HUD.
@@ -145,11 +150,13 @@ class ToolShelf:
         list — position carries weight for small models, and the tools the
         intent was wired with should not be pushed down by a meta-tool.
         """
-        return self.registry.defs(self.resident()) + [dict(SEARCH_TOOL)]
+        return (self.registry.defs(self.resident())
+                + [dict(d) for d in self.extra]
+                + [dict(SEARCH_TOOL)])
 
     def room(self) -> int:
         """Free slots, remembering that `search_tools` occupies one of them."""
-        return max(0, self.max_tools - len(self.resident()) - 1)
+        return max(0, self.max_tools - len(self.resident()) - len(self.extra) - 1)
 
     # -- finding ----------------------------------------------------------- #
 
@@ -219,23 +226,41 @@ class ToolShelf:
         deliberate 8-tool ceiling that exists because small models degrade past
         it, and would do so at exactly the moment the model is already
         struggling enough to go looking for a tool.
+
+        **A tool promoted by THIS search is never the victim.** `names` arrives
+        best-first, so evicting from the front of the queue used to throw away
+        the highest-ranked hit to make room for a worse one — and it stayed in
+        the returned `promoted` list, so the model was told "you can call
+        tv_volume now" about a tool that was no longer in its tool list, and got
+        `unknown tool` when it tried. Overflow now drops the WORSE tail of this
+        search instead, which is what "no room" honestly means.
         """
         promoted, evicted = [], []
+        protected: set[str] = set()
         for name in names:
             if name in self.resident() or self.registry.get(name) is None:
                 continue
             self._promoted.append(name)
             promoted.append(name)
-            while len(self.resident()) + 1 > self.max_tools and self._promoted:
-                dropped = self._promoted.pop(0)
-                if dropped == name:
-                    # The shelf is full of base tools: this promotion cannot fit
-                    # at all. Undo it rather than report a tool the model does
-                    # not actually have.
+            protected.add(name)
+            while self._over_cap():
+                victim = next((n for n in self._promoted if n not in protected),
+                              None)
+                if victim is None:
+                    # Nothing older left to drop: this promotion cannot fit.
+                    # Undo it rather than report a tool the model does not have.
+                    self._promoted.remove(name)
                     promoted.remove(name)
+                    protected.discard(name)
                     break
-                evicted.append(dropped)
+                self._promoted.remove(victim)
+                evicted.append(victim)
         return promoted, evicted
+
+    def _over_cap(self) -> bool:
+        """Would this turn's tool list exceed the cap? Counts what `defs()`
+        actually sends: residents, the extras, and `search_tools` itself."""
+        return len(self.resident()) + len(self.extra) + 1 > self.max_tools
 
     def handle(self, arguments: dict) -> str:
         """Run one `search_tools` call and return what the model should read.
@@ -275,7 +300,11 @@ class ToolShelf:
         if evicted:
             lines.append(f"Dropped to make room: {', '.join(evicted)}. "
                          "Search again if you need one back.")
-        skipped = [h.name for h in hits[MAX_RESULTS:]]
+        # Everything that matched and is NOT now callable, in one list: the tail
+        # beyond MAX_RESULTS, plus anything the cap refused room for. A match
+        # dropped silently reads to the model as a tool it has.
+        skipped = ([n for n in chosen if n not in promoted]
+                   + [h.name for h in hits[MAX_RESULTS:]])
         if skipped:
             lines.append(f"Also matched but not loaded: {', '.join(skipped)}.")
         return "\n".join(lines)

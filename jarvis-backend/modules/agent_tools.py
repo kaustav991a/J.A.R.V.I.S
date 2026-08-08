@@ -346,7 +346,9 @@ class ToolRegistry:
         return authorize
 
     def executor(self, engine, *, permission_tier: str = "admin",
-                 governance_bypass: bool = False) -> Callable[[ToolCall], Any]:
+                 governance_bypass: bool = False,
+                 payload_sink: Callable[[dict], Any] | None = None
+                 ) -> Callable[[ToolCall], Any]:
         """Adapter from a `ToolCall` to `ActionEngine.execute_with_retry`.
 
         Async, so `agent_core` awaits it directly — no second event loop, and the
@@ -360,6 +362,10 @@ class ToolRegistry:
           * `state == "FAILED"` raises `ToolFailure` carrying the engine's own
             wording, so the Phase-2 `_is_failure` verdict reaches the model
             instead of being re-derived here.
+
+        `payload_sink` is how a HUD-EFFECT result reaches the screen — see
+        `hud_frame`. Without one, a tool whose whole effect is the frame it
+        returns fails honestly rather than reporting success.
         """
         async def execute(call: ToolCall) -> Any:
             payload = self.to_payload(call)
@@ -375,6 +381,14 @@ class ToolRegistry:
             if state == "FAILED":
                 raise ToolFailure(str(output))
             entry = self._tools.get(call.name)
+            # A HUD-effect result: the frame IS the action. It has to be sent, or
+            # nothing happened. See `hud_frame`.
+            frame = hud_frame(output)
+            if frame is not None:
+                if payload_sink is None:
+                    raise ToolFailure(NO_DISPLAY)
+                await _maybe_await_sink(payload_sink, frame)
+                output = describe_hud_frame(frame)
             if entry is not None and entry.format_output is not None:
                 try:
                     output = entry.format_output(output)
@@ -413,6 +427,62 @@ def interpret_result(text: Any) -> str:
     return text
 
 
+# ── HUD-effect results (§6.8.2 wave 2) ─────────────────────────────────────
+#
+# Most handlers ANSWER: they return text and the answer is the whole result. A
+# few INSTRUCT the screen instead — `play_music` returns
+# `{"action_type": "play_youtube", "url": …}` and the music plays only because
+# main.py's one-shot path forwards that frame to the HUD.
+#
+# The agent loop is not that path. A result handed back to the model is read,
+# not forwarded, so registering such a tool without this bridge would produce
+# the worst possible outcome: a run that reports "playing now" while nothing
+# plays. Everything the model can call must either do the thing or say it
+# didn't.
+#
+# Deliberately a NAMED MAPPING and not "forward any dict". `list_directory`
+# also returns a dict, and its effect is information — already delivered as
+# text by `format_directory_listing`. Broadcasting frames the HUD did not ask
+# for is how a display starts flickering during an agent run.
+
+#: What the model is told when a HUD-effect tool runs with no display attached.
+NO_DISPLAY = ("this tool works by driving the desk display, and this run has no "
+              "display attached — nothing would have happened. Do not report it "
+              "as done; say it needs the desktop HUD.")
+
+
+def hud_frame(result: Any) -> dict | None:
+    """The frame main.py's one-shot path would have sent for this result.
+
+    Returns None for everything else, which is nearly everything.
+    """
+    if not isinstance(result, dict):
+        return None
+    if result.get("action_type") == "play_youtube" and result.get("url"):
+        return {"status": "play_youtube", "url": result["url"]}
+    return None
+
+
+def describe_hud_frame(frame: dict) -> str:
+    """What the MODEL is told once the frame has actually been sent.
+
+    Phrased as what happened — handed to the player on the desk display — rather
+    than "you are now hearing it", which the loop cannot know.
+    """
+    if frame.get("status") == "play_youtube":
+        return (f"Started on the desk display's player: {frame.get('url')} . "
+                f"It is playing on the desktop HUD, not through this "
+                f"conversation.")
+    return "Sent to the desk display."
+
+
+async def _maybe_await_sink(sink: Callable[[dict], Any], frame: dict) -> None:
+    """Send a frame through a sink that may be sync (a test) or async (the WS)."""
+    result = sink(frame)
+    if hasattr(result, "__await__"):
+        await result
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # The default registry — 10 tools over real action_engine handlers
 # ═══════════════════════════════════════════════════════════════════════════
@@ -432,6 +502,56 @@ def _gmail_query_target(args: dict) -> str:
     query = str(args.get("query", "")).strip()
     count = args.get("max_results")
     return f"{query}|{int(count)}" if count else query
+
+# ── wave 2 target composition ───────────────────────────────────────────────
+# Each of these mirrors ONE handler's documented split. They are separate named
+# functions rather than lambdas because that is what a harness can quote the
+# handler's format against, and a wrong separator here does not fail loudly —
+# it plays the wrong thing.
+
+def _tv_volume_target(args: dict) -> str:
+    """`_tv_volume` takes "up" | "down" | "mute", or "up|5" for repeats. It
+    partitions on the FIRST pipe and clamps the count to 1–20 itself. A bare
+    trailing pipe would make it parse "" as the count."""
+    direction = str(args.get("direction", "")).strip()
+    steps = args.get("steps")
+    if not steps or direction == "mute":     # mute ignores a count at the far end
+        return direction
+    return f"{direction}|{int(steps)}"
+
+
+def _tv_media_target(args: dict) -> str:
+    """`tv_play_media` splits on the FIRST colon into (app, query). Without a
+    colon the far end lists the installed apps and asks which to use."""
+    title = str(args.get("title", "")).strip()
+    app = str(args.get("app", "")).strip()
+    return f"{app}: {title}" if app else title
+
+
+def _tv_media_precondition(args: dict) -> str | None:
+    """Rule 3. A colon in the TITLE and no app is a mis-parse waiting to happen:
+    `"Mission: Impossible"` splits into app "mission", which is not an app, and
+    the TV answers "that app isn't wired up yet" — a dead end the model cannot
+    diagnose from the message."""
+    if str(args.get("app", "")).strip():
+        return None
+    if ":" in str(args.get("title", "")):
+        return ("the title contains a colon, which the television reads as the "
+                "app name. Pass the app explicitly (youtube, netflix, prime "
+                "video, hotstar or spotify) so the colon stays part of the "
+                "title.")
+    return None
+
+
+def _music_target(args: dict) -> str:
+    """`_play_music` picks Spotify when the word appears anywhere in the target
+    and treats the rest as the search string (see `modules.media_query`)."""
+    query = str(args.get("query", "")).strip()
+    service = str(args.get("service", "")).strip().lower()
+    if service == "spotify":
+        return f"{query} spotify".strip()
+    return query
+
 
 #: Entries shown to the model per directory. Newest-first, so a truncated tail is
 #: the OLD end of the list — the part a "most recent" question never needs.
@@ -713,6 +833,106 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "would have to re-enter them by hand — only for an explicit "
                "\"clear my day\". To remove one event, do not use this.",
                _obj({}, []))
+
+    # ── Wave 2 (§6.8.2): the television, and music on the desk ───────────────
+    # Every one of these is AUTO in `governance.json` — a keypress on a TV is
+    # undone by another keypress — so unlike wave 1's writing half they ARE
+    # findable in an unattended run. That is governance's ruling, not this
+    # file's; re-tiering belongs in the ruleset.
+    #
+    # `tv_search` is deliberately NOT registered. Its handler is one line —
+    # `tv_agent.tv_play_media(f"youtube:{query}")` — so it is `tv_play_media`
+    # with the app pre-chosen. The same rule that kept `check_email` out of
+    # wave 1 keeps it out of this one.
+    #
+    # The confusion this wave has to prevent is not email-shaped. It is "play
+    # X" meaning the TELEVISION across the room versus the desk display in
+    # front of him, so every description here names its screen.
+
+    r.register("tv_power",
+               "Toggle the television's power. This is a TOGGLE and there is no "
+               "way to read the current state — it wakes a sleeping TV and puts "
+               "an awake one to sleep. Use it when he says to turn the TV on or "
+               "off; do not use it to \"make sure\" it is on, because that is how "
+               "you turn it off.",
+               _obj({}, []))
+
+    r.register("tv_volume",
+               "Change the television's volume. `mute` is a toggle. This is the "
+               "TV across the room, not the desktop's own volume.",
+               _obj({"direction": {"type": "string",
+                                   "enum": ["up", "down", "mute"],
+                                   "description": "Which way, or mute."},
+                     "steps": {"type": "integer", "minimum": 1, "maximum": 20,
+                               "description": "How many notches (default 1). "
+                                              "Ignored for mute."}},
+                    ["direction"]),
+               build_target=_tv_volume_target)
+
+    r.register("tv_control",
+               "Press a navigation key on the television's remote — move the "
+               "highlight around a menu, go back, select what is highlighted, "
+               "pause or resume playback. For power use `tv_power`, for volume "
+               "or mute use `tv_volume`, and to open an app use "
+               "`tv_launch_app`; this tool is only for moving around a screen "
+               "that is already open.",
+               _obj({"key": {"type": "string",
+                             "enum": ["up", "down", "left", "right", "select",
+                                      "back", "home", "play_pause"],
+                             "description": "The remote key to press."}}))
+
+    r.register("tv_launch_app",
+               "Open an app on the television. Known names: youtube, netflix, "
+               "prime video, hotstar, disney+, sonyliv, zee5, spotify, plex, "
+               "vlc, tubi, apple tv, chrome, settings, home. An Android package "
+               "id works too. This only opens the app — to open something AND "
+               "search for a title in one go, use `tv_play_media`.",
+               _obj({"app": {"type": "string",
+                             "description": "App name, e.g. \"netflix\"."}}))
+
+    r.register("tv_play_media",
+               "Put something on the television: opens the app and searches for "
+               "the title inside it. Name the app whenever you know it — without "
+               "one, this cannot choose, and it comes back asking which app to "
+               "use, which costs a step. Disney+ content is under `hotstar`. "
+               "This is the TV, not the desk display; for music at the desk use "
+               "`play_music`.",
+               _obj({"title": {"type": "string",
+                               "description": "What to play, e.g. \"Stranger "
+                                              "Things\"."},
+                     "app": {"type": "string",
+                             "enum": ["youtube", "netflix", "prime video",
+                                      "hotstar", "spotify"],
+                             "description": "Which app to play it in."}},
+                    ["title"]),
+               build_target=_tv_media_target,
+               precondition=_tv_media_precondition)
+
+    r.register("tv_type",
+               "Type text into whatever text box is focused on the television, "
+               "then press Enter. Only useful when a search box is already open "
+               "and focused — it types into the current focus, so check what is "
+               "on screen first. It cannot open the box for you: "
+               "`tv_play_media` searches inside an app in one step and is "
+               "usually the better tool.",
+               _obj({"text": {"type": "string",
+                              "description": "Text to type. Enter is pressed "
+                                             "for you."}}))
+
+    r.register("play_music",
+               "Play music on the DESK DISPLAY — it opens the track in the "
+               "HUD's player on the desktop, not on the television. Give the "
+               "song or artist as plain words; leave it out to just open the "
+               "service. For the TV across the room use `tv_play_media`.",
+               _obj({"query": {"type": "string",
+                               "description": "Song, artist or album. Plain "
+                                              "words, no search syntax."},
+                     "service": {"type": "string",
+                                 "enum": ["youtube", "spotify"],
+                                 "description": "Where to play it "
+                                                "(default youtube)."}},
+                    []),
+               build_target=_music_target)
 
     # Answer a question that needs looking things up. Read-only by construction:
     # nothing in this set can change the machine, so it is the safe first intent

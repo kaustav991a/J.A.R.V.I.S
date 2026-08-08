@@ -43,7 +43,7 @@ pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 | **G5.2** calibration wizard | ✅ DONE, live-gate owed | §3.3 |
 | **Automatic test baseline** | ✅ **876 checks / 39 harnesses, 0 failures** — one command: `run_harnesses.py` (`test_screen_reader.py` is a live VLM script, not counted; the pytest-only tier A3 was closed 2026-07-30) | `TEST_PLAN.md` |
 | **Agentic core** (Tier C #12) | ✅ **ALL 5 PHASES DONE + LIVE-GATED 2026-07-26** (14/14 §23 rows) — pushed | §5 Tier C |
-| **Agent tool-layer hardening** (§6.8) | 🟡 **Phase 1 DONE 2026-08-08** — argument validation, errors-as-instructions, line anchors, paging, read-before-write, edit uniqueness, absolute paths. Phases 2–4 (deferred schemas + skills, MCP, measurement) open. **Sequenced BEFORE the §7 gates** at Kaustav's instruction | §6.8 |
+| **Agent tool-layer hardening** (§6.8) | 🟡 **Phase 1 DONE 2026-08-08** — argument validation, errors-as-instructions, line anchors, paging, read-before-write, edit uniqueness, absolute paths. **Phase 2 catalogue waves 1–2 DONE + the shelf is now WIRED** (registry 11 → 28; it had never been built in production, so the catalogue was unreachable). Waves 3–6, skills, MCP and measurement open. **Sequenced BEFORE the §7 gates** at Kaustav's instruction | §6.8 |
 | **Memory-at-rest encryption** (Tier C #11a) | ✅ **DONE + LIVE 2026-07-30** — DPAPI + scrypt recovery, AES-256-GCM fields; `jarvis_longterm.db` encrypted, `jarvis_memory.db` retired into it | §5 #11a |
 | **G6.2/G6.3/G6.4 + camera unification + frame bus + overlay hardening + stranger debounce** | ✅ DONE + pushed (`90a9bc9`) | §6.3–§6.5 |
 | **G5.7** mic/voice affordance (visible) | ✅ DONE (`3d3063d`); **click-to-talk DONE 2026-07-26** (`POST /api/listen`), live-gate owed | §5 |
@@ -1110,7 +1110,7 @@ lets through. **Nothing here needs hardware.**
   | Wave | Domain | Tools | State |
   |---|---|---|---|
   | 1 | **email + calendar** | 10 | ✅ **DONE 2026-08-08** — `test_agent_wave1.py` (19). Registry 11 → 21 |
-  | 2 | media / TV | ~8 (`tv_*`, `play_music`) | ⬜ |
+  | 2 | **media / TV** | 7 | ✅ **DONE 2026-08-08** — `test_agent_wave2.py` (29). Registry 21 → 28 |
   | 3 | apps + windows | ~8 (`launch_app`, `close_app`, `native_app_launcher`, `hud_*`, `os_macro`) | ⬜ |
   | 4 | git / GitHub | 5 (`github_status/diff/log`, +`commit`/`push` CONFIRM) | ⬜ |
   | 5 | web control | ~7 (`web_click/type/scroll/back/close`, `web_search*`) | ⬜ |
@@ -1131,6 +1131,48 @@ lets through. **Nothing here needs hardware.**
     the real registry against a fake tier map, and `register` refuses an action governance does not
     know — so before this, each new tool broke five harnesses identically. A drift check compares
     the fixture against the shipped `governance.json`.
+
+  **Wave 2 (television + music), and the three things it had to fix underneath itself.**
+  Seven tools: `tv_power`, `tv_volume`, `tv_control`, `tv_launch_app`, `tv_play_media`,
+  `tv_type`, `play_music`. All AUTO — governance's ruling, mirrored in a test so a re-tier
+  shows up as a test change; a keypress on a TV is undone by another keypress. `tv_search`
+  is **deliberately not registered**: its handler is literally
+  `tv_play_media(f"youtube:{query}")`, so it is the same tool with the app pre-chosen (the
+  `check_email` rule from wave 1). The confusion this wave had to design against is not
+  email-shaped — it is *"play X"* meaning the television across the room versus the desk
+  display — so every description names its screen and points at its opposite, pinned by a test.
+
+  1. **THE SHELF WAS NEVER WIRED.** `run_agent_loop` has accepted `shelf=` since the
+     mechanism shipped and **nothing in production ever built one**, so both catalogue waves
+     were registered and *unreachable* — a run only ever saw its intent's fixed set. Fixed in
+     `agent_runner`: base = the wired set, `allow_confirm` = presence, `extra` = the delegate
+     def (a shelf rebuilds the tool list every turn, so a def that belongs to no registry
+     entry would otherwise vanish after turn one). `JARVIS_AGENT_SHELF=0` restores the old
+     fixed list exactly; it defaults **ON**, opposite to `JARVIS_AGENT_LOOP`, because it only
+     decides *which* tools an already-agentic run can reach. Away runs still park a CONFIRM
+     that was in the WIRED set; what stays hidden is one the model went *looking* for, since
+     parking is capped at one per run and belongs to the task he actually asked for.
+  2. **`ToolShelf.promote` threw away the tool it had just found.** Eviction ran
+     oldest-first over a queue the current search had just filled *best-first*, so with room
+     for one and three matches, the top hit was evicted for a worse one — **and was still
+     reported as loaded**, so the model called it and got `unknown tool`. A tool promoted by
+     the current search is now never the victim; overflow drops the worse tail, and anything
+     that matched without fitting is named rather than silently discarded.
+  3. **`_play_music` stripped `"on"` as a SUBSTRING** — *"play Moonlight"* searched for
+     `"Molight"`, *"Only Girl"* for `"ly Girl"*. Quiet, because a search engine returns
+     something for either. Fixed at the root in a new dependency-free `modules/media_query.py`
+     (whole-word stripping), so **the ordinary voice path is fixed too**, and the logic is
+     testable without importing the whole action stack.
+
+  **The HUD-effect bridge (new, and the reason `play_music` could be registered at all).**
+  Most handlers *answer*; a few *instruct the screen* — `play_music` returns
+  `{"action_type": "play_youtube", "url": …}` and music plays only because main.py's one-shot
+  path forwards that frame. The agent loop is not that path: a result goes to the model, not
+  to the screen. Registering it without a bridge would produce a run that says "playing now"
+  while nothing plays. `registry.executor(..., payload_sink=)` now forwards the frame through
+  the same broadcast the one-shot path uses, and **with no sink the tool fails honestly**
+  rather than reporting success. Deliberately a NAMED mapping, not "forward any dict":
+  `list_directory` returns one too, and its effect is information already delivered as text.
 - **Skills — progressive disclosure for instructions (rule 18).** `.md` playbooks with one-line
   descriptions plus a `load_skill(name)` tool, instead of pasting procedures into the system
   prompt. Groq has **no prompt caching**, so a fat system prompt is paid for on *every* request —

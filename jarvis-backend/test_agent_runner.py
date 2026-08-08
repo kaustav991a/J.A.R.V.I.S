@@ -14,11 +14,13 @@ side effects. What matters here is the interactive contract:
 """
 
 import asyncio
+import os
 import sys
 
 from modules import agent_confirm as acf
 from modules import agent_core as ac
 from modules import agent_runner as ar
+from modules import agent_search as ags
 from modules import agent_subagents as sa
 from modules import agent_tools as at
 from modules.tool_calls import ToolCall, ToolTurn
@@ -612,6 +614,111 @@ def test_the_prompt_survives_an_unresolvable_workspace(monkeypatch=None):
 def test_the_system_prompt_forbids_inventing_file_contents():
     assert "Never invent" in ar.SYSTEM_PROMPT
     assert "no tool call" in ar.SYSTEM_PROMPT
+
+
+# ---- the shelf: what makes the catalogue reachable (§6.8.2) --------------- #
+
+def test_the_shelf_is_on_by_default_and_can_be_switched_off():
+    """Opposite default to the loop's own flag, and deliberately: this one only
+    decides WHICH tools an already-agentic run can reach."""
+    assert ar.shelf_enabled({}) is True
+    for off in ("0", "false", "no", "off", "OFF"):
+        assert ar.shelf_enabled({ar.SHELF_ENV: off}) is False, off
+    assert ar.shelf_enabled({ar.SHELF_ENV: "1"}) is True
+
+
+def test_a_run_is_offered_the_search_tool_so_the_catalogue_is_reachable():
+    """The hole this closes: `run_agent_loop` has taken a `shelf=` since the
+    mechanism shipped, and nothing ever built one — so every tool outside the
+    wired intent's set was registered and unreachable."""
+    hud, engine, reg = FakeHud(), FakeEngine("x"), registry()
+    offered = []
+
+    def spy(messages, tools, **k):
+        offered.append([t["name"] for t in tools])
+        return final("Done.")
+
+    run(ar.run_agent_command("read it", engine, registry=reg, tool_set="files",
+                             send=hud, presence="at_desk", call_model=spy))
+    assert ags.SEARCH_TOOL_NAME in offered[0]
+
+
+def test_switching_the_shelf_off_restores_the_fixed_per_intent_list():
+    hud, engine, reg = FakeHud(), FakeEngine("x"), registry()
+    offered = []
+
+    def spy(messages, tools, **k):
+        offered.append([t["name"] for t in tools])
+        return final("Done.")
+
+    os.environ[ar.SHELF_ENV] = "0"
+    try:
+        run(ar.run_agent_command("read it", engine, registry=reg, tool_set="files",
+                                 send=hud, presence="at_desk", call_model=spy))
+    finally:
+        del os.environ[ar.SHELF_ENV]
+    assert offered[0] == reg.set_names("files")
+
+
+def test_a_tool_outside_the_wired_set_can_be_found_and_then_called():
+    """End to end, and the whole point of two catalogue waves: a tool the intent
+    was not wired with is searched for, promoted, and executed in the same run."""
+    hud, reg = FakeHud(), registry()
+    engine = FakeEngine("TV volume up by 3, Sir.")
+    offered = []
+    turns = [tool_turn(ags.SEARCH_TOOL_NAME, query="turn the tv volume up"),
+             tool_turn("tv_volume", "s2", direction="up", steps=3),
+             final("Turned it up, Sir.")]
+
+    def model(messages, tools, **k):
+        offered.append([t["name"] for t in tools])
+        return turns.pop(0)
+
+    res = run(ar.run_agent_command("read it", engine, registry=reg,
+                                   tool_set="files", send=hud,
+                                   presence="at_desk", call_model=model))
+    assert res.ok, res.error
+    assert "tv_volume" not in offered[0], "it must not start resident"
+    assert "tv_volume" in offered[1], "the search did not promote it"
+    assert ("tv_volume", False) in engine.seen
+
+
+def test_the_delegate_survives_the_shelf_rebuilding_the_tool_list():
+    """With a shelf the list is rebuilt before every model turn, and the
+    delegate belongs to no registry entry — without `extra` it would vanish
+    after the first turn."""
+    hud, reg = FakeHud(), registry()
+    engine = FakeEngine("listing")
+    offered = []
+    turns = [tool_turn("list_directory", "s1", path=r"F:\work"), final("Done.")]
+
+    def model(messages, tools, **k):
+        offered.append([t["name"] for t in tools])
+        return turns.pop(0)
+
+    run(ar.run_agent_command("read it", engine, registry=reg, tool_set="files",
+                             send=hud, presence="at_desk", delegate=True,
+                             delegate_set="research", call_model=model))
+    assert sa.DELEGATE_TOOL in offered[0]
+    assert sa.DELEGATE_TOOL in offered[1], "the shelf dropped the delegate"
+
+
+def test_an_away_run_is_not_offered_a_confirm_tool_it_went_looking_for():
+    """A CONFIRM in the WIRED set still parks away, as it always did. What stays
+    hidden is one the model searched for: parking is capped at one per run and
+    belongs to the task he actually asked for."""
+    hud, reg = FakeHud(), registry()
+    engine = FakeEngine("x")
+    turns = [tool_turn(ags.SEARCH_TOOL_NAME, query="send an email"), final("No, Sir.")]
+
+    def model(messages, tools, **k):
+        return turns.pop(0)
+
+    res = run(ar.run_agent_command("read it", engine, registry=reg,
+                                   tool_set="files", send=hud,
+                                   presence="unknown", call_model=model))
+    results = [m for m in res.messages if m.get("role") == "tool"]
+    assert "gmail_send" not in results[0]["content"]
 
 
 if __name__ == "__main__":
