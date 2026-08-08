@@ -17,7 +17,7 @@
 | ❌ Failed | **1** |
 | ⏸ Blocked | **1** |
 | Not yet attempted | **176** |
-| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **4 FIXED** (F-08, F-11, F-13, F-06) |
+| **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) · **5 FIXED** (F-08, F-09, F-11, F-13, F-06) — **all 3 high-severity closed** |
 
 **The session was worth it before it got far.** 16 rows surfaced 3 high-severity bugs, all of
 the same family: **a failure the user cannot distinguish from normal operation.** A dropped
@@ -67,7 +67,14 @@ answer, an invented action, and an alert that cannot fire.
 
 ## 🔴 HIGH
 
-### F-09 — the briefing claimed it deleted calendar items
+### F-09 — ✅ **FIXED 2026-08-09** — the briefing claimed it deleted calendar items
+
+> **Fix shipped, in code not prompt.** `_strip_unfounded_action_claims` removes sentences claiming
+> first-person completion of a world-changing verb, the bare "taken care of", or an invented
+> mandate ("as per your request"). Narrow by design — "I have compiled your briefing" stays.
+> **Known limit, pinned by its own test:** passive voice ("your schedule was cleared") is out of
+> scope. New harness `test_briefing_truthfulness.py` (29), driving the exact sentences that
+> shipped. Suite **62/62, 1481 checks**.
 
 **What happened.** Unprompted, inside the wake briefing:
 
@@ -334,8 +341,8 @@ gate proving something once is not the same as a property being pinned.
 
 - [x] **F-13** ✅ **DONE** — override ported to `brain.py`, both message-building paths
       → `test_romanise_nudge.py` (15)
-- [ ] **F-09** constrain the briefing composer so it cannot claim completed actions
-      → new harness: empty action results ⇒ no completed-action claim in the text
+- [x] **F-09** ✅ **DONE** — code-level guard on the briefing output + prompt truthfulness clause
+      → `test_briefing_truthfulness.py` (29)
 - [ ] **F-03** stop swallowing a missing `dotenv` in `watchdog.py:65–69`
       → `test_watchdog_policy.py`
 
