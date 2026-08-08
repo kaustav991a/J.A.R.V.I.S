@@ -12,14 +12,14 @@
 | | |
 |---|---|
 | Owed rows (total) | **192** |
-| Attempted | **15** |
-| ✅ Passed | **12** |
+| Attempted | **16** |
+| ✅ Passed | **13** |
 | ❌ Failed | **1** |
 | ⏸ Blocked | **1** |
-| Not yet attempted | **177** |
+| Not yet attempted | **176** |
 | **Findings** | **13** — 3 high, 4 medium, 6 low (+1 withdrawn) |
 
-**The session was worth it before it got far.** 15 rows surfaced 3 high-severity bugs, all of
+**The session was worth it before it got far.** 16 rows surfaced 3 high-severity bugs, all of
 the same family: **a failure the user cannot distinguish from normal operation.** A dropped
 answer, an invented action, and an alert that cannot fire.
 
@@ -27,7 +27,7 @@ answer, an invented action, and an alert that cannot fire.
 
 # 1 · ROW RESULTS
 
-## ✅ Passed — 12
+## ✅ Passed — 13
 
 | Row | What it proves | Evidence |
 |---|---|---|
@@ -43,6 +43,7 @@ answer, an invented action, and an alert that cannot fire.
 | `2.4` | STT accuracy | transcribed correctly (2 empty VAD triggers first — normal) |
 | `16.1` | **Guided re-enroll, 12 samples** | 3rd attempt clean: `min=0.77 avg=0.85 max=0.95`, no outlier warning. The quality gate rejected two sets and passed one — it works |
 | `17.6` 🛑 | **Backdoor refuses while locked, flag OFF** | `403 Forbidden` + `{"status":"refused","reason":"locked","message":"Biometric authorisation required, Sir…","flag":"JARVIS_ALLOW_BACKDOOR"}` |
+| `17.7` | **Backdoor opens after a real face scan, flag still OFF** | `{"status":"success"}`. Same endpoint, same flag state as `17.6` — the ONLY difference is the completed biometric scan. Together the pair proves the gate opens on the scan and nothing else |
 
 > `2.3`'s **reject half** (unknown face → not admin) is untested — it needs a second person and
 > belongs to Group C.
@@ -59,11 +60,6 @@ answer, an invented action, and an alert that cannot fire.
 |---|---|
 | `21.3` shared camera | **F-08** — the gesture daemon dies every ~2 min *without* a scan running, so the row's premise ("does the scan kill it?") can't be isolated |
 
-## ↩ Not run — 1
-
-| Row | Why |
-|---|---|
-| `17.7` backdoor after real auth | Was believed blocked by F-12; **F-12 is withdrawn** (assistant tooling, not JARVIS). Not blocked — needs a plain re-run in an authenticated session |
 
 ---
 
