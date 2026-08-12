@@ -172,6 +172,29 @@ async def _handle_cmd(ws, send_lock: asyncio.Lock, frame: dict) -> None:
                 pass
 
 
+async def _handle_hud_req(ws, send_lock: asyncio.Lock, frame: dict) -> None:
+    """Answer the cloud's request for a vitals snapshot.
+
+    Asked for only while a phone is attached to the cloud front door, and only
+    while this desk is linked — the cloud has no CPU or disk figures of its own
+    and must never invent any, so a phone on the cloud path sees real numbers or
+    none at all. Read off the event loop: psutil samples CPU with a blocking
+    interval.
+    """
+    req_id = frame.get("req_id")
+    try:
+        import sensors
+        data = await asyncio.to_thread(sensors.get_system_telemetry)
+    except Exception as e:  # noqa: BLE001
+        print(f"[BRIDGE] telemetry snapshot failed: {e}", flush=True)
+        return
+    try:
+        async with send_lock:
+            await ws.send(json.dumps({"type": "hud", "req_id": req_id, "data": data}))
+    except Exception as e:  # noqa: BLE001
+        print(f"[BRIDGE] telemetry send failed: {e}", flush=True)
+
+
 async def _handle_facts(ws, send_lock: asyncio.Lock, frame: dict) -> None:
     """Drain one sealed-fact batch and ack what was handled.
 
@@ -240,6 +263,10 @@ async def _session(url: str, secret: str) -> None:
                     # Fire-and-forget so long-running commands don't block the reader
                     # and multiple chats can be served concurrently.
                     asyncio.create_task(_handle_cmd(ws, send_lock, frame))
+                elif ftype == "hud_req":
+                    # Off the reader too: a blocking psutil sample must not stall
+                    # a command frame queued behind it.
+                    asyncio.create_task(_handle_hud_req(ws, send_lock, frame))
                 elif ftype == "facts":
                     # Off the reader so a long drain cannot stall command frames.
                     asyncio.create_task(_handle_facts(ws, send_lock, frame))

@@ -101,6 +101,46 @@ to revert to the desk polling directly.
 - **Level 2 — shared memory** (not needed once the bridge is on): point both at one hosted
   DB. The bridge supersedes this by keeping memory on the desk.
 
+## The phone: `WS /app-link` (DONE — 2026-08-12)
+
+The mobile app ([J.A.R.V.I.S-Mobile](https://github.com/kaustav991a/J.A.R.V.I.S-Mobile),
+branch `feat/mobile-hud`) dials the gateway here. Same brain, same routing as
+Telegram: **desk linked → the real desk answers; desk off → the cloud brain
+answers**, and the phone never has to know which.
+
+**Turn it on:** set **`APP_TOKEN`** in the Render dashboard (any long random
+string) and redeploy. Leave it unset and it falls back to `BRIDGE_SECRET`; with
+both unset the route refuses every connection and `/health` reports
+`"app_link": false`, which is the flag the app reads before it will fall back to
+the cloud at all. Put the same value into the app's Connection screen.
+
+| | |
+|---|---|
+| URL | `wss://<service>.onrender.com/app-link?token=<APP_TOKEN>` |
+| Auth | query parameter — React Native's `WebSocket` cannot set handshake headers |
+| Phone sends | a bare command string, raw audio **bytes** for a voice note, or `{"type":"voice","format":"m4a","audio":"<base64>"}` |
+| Phone reads | the desk's own frame shapes: `{"status":…,"message":…,"user":…}`, `{"status":"sync","type":"telemetry","data":{…}}`, and `{"type":"transcript","text":…}` |
+
+Notes worth knowing:
+
+- **Voice works from day one.** A clip is transcribed by the same Groq Whisper
+  path Telegram voice notes use (multilingual — Bengali and Benglish included),
+  and the transcript comes back as its own frame so the phone logs it as *him*
+  speaking rather than as J.A.R.V.I.S.
+- **Telemetry is real or absent.** While a desk is linked the gateway asks it for
+  a vitals snapshot every `APP_TELEMETRY_SECS` (default 15) and forwards it. With
+  no desk there are no numbers — the cloud never invents them.
+- **A keepalive every `APP_KEEPALIVE_SECS`** (default 20) stops the phone's 30s
+  frame watchdog from tearing down an idle socket. It carries no message, so it
+  cannot write a line into the chat log.
+- **Telegram is untouched.** The one shared code path is the `/desk-link` reader,
+  where a frame is handed to a phone only if its `req_id` was registered by a
+  phone request. `APP_CHAT_ID` (default `-90001`) is never a real chat, and the
+  relay refuses it outright as a second line of defence.
+
+Harness: `test_app_link.py` (29 checks) — auth refusals, the health flag, desk
+routing, silent-desk fallback, voice in both encodings, and the parser.
+
 > ⚠️ When running `cloud_gateway.py` **locally** for a test, NEVER start it in **polling**
 > mode against your real bot token — polling first calls `delete_webhook`, which knocks the
 > live production gateway off its webhook. Use webhook mode without `PUBLIC_URL` (no network),

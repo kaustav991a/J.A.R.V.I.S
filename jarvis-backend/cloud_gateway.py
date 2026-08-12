@@ -118,6 +118,33 @@ if not WEBHOOK_SECRET_TOKEN and BOT_TOKEN:
 # both sides, so the desk-link endpoint can't be opened by accident.
 BRIDGE_SECRET = (os.getenv("BRIDGE_SECRET") or "").strip()
 
+# Mobile app front door — the pairing token the phone presents on /app-link.
+# React Native's WebSocket cannot set handshake headers, so this one travels as
+# a query parameter rather than a header like the bridge secret does. Defaults to
+# BRIDGE_SECRET so a working bridge needs no second secret; set APP_TOKEN to give
+# phones a credential you can rotate without dropping the desk link. Unset and
+# empty on both means /app-link refuses every connection — a socket that reaches
+# a brain able to answer as you is never opened ungated.
+APP_TOKEN = (os.getenv("APP_TOKEN") or BRIDGE_SECRET or "").strip()
+
+# The chat id stamped on commands the PHONE sends through a linked desk. The desk
+# keys its per-conversation working memory off this, so the phone gets a session
+# of its own rather than sharing Telegram's. It is never a real Telegram chat:
+# app replies are intercepted by req_id before the relay, and the relay refuses
+# this id outright as a second line of defence.
+APP_CHAT_ID = int(os.getenv("APP_CHAT_ID", "-90001"))
+
+# The phone re-probes when no frame has arrived for 30s (LinkMachine.tick), which
+# on an idle socket would mean a teardown-and-reconnect every half minute. A
+# status frame with no message refreshes that clock without writing to the HUD's
+# chat log, so the keepalive is invisible.
+APP_KEEPALIVE_SECS = float(os.getenv("APP_KEEPALIVE_SECS", "20"))
+
+# How often a phone gets fresh desk vitals while a desk is linked. Cheap (one
+# psutil read on the desk) but not free, so it only runs while a phone is
+# actually attached.
+APP_TELEMETRY_SECS = float(os.getenv("APP_TELEMETRY_SECS", "15"))
+
 # The cloud host's clock is UTC (Render), but "akhon kota baje?" means the
 # OPERATOR's wall clock. Default to IST; override with OPERATOR_TZ if needed.
 def _operator_tz():
@@ -654,8 +681,10 @@ def _build_dispatcher():
 # ════════════════════════════════════════════════════════════════════════════
 # FastAPI app — /health for UptimeRobot, /webhook for Telegram (webhook mode)
 # ════════════════════════════════════════════════════════════════════════════
+import base64  # noqa: E402
 import hmac  # noqa: E402
 import itertools  # noqa: E402
+import json  # noqa: E402
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect  # noqa: E402
 
@@ -676,6 +705,16 @@ _req_seq = itertools.count(1)
 # locally when a connected-but-wedged desk produces nothing within the window.
 _pending_reqs: dict[int, dict] = {}
 _DESK_REPLY_TIMEOUT = float(os.getenv("DESK_REPLY_TIMEOUT_SECS", "45"))
+
+
+# Phone sessions waiting on a desk reply, keyed by the same req_id the desk
+# echoes on every frame. A req_id in here means "this answer belongs to a phone,
+# not to Telegram" — the desk-link reader checks it before the Telegram relay.
+_app_sinks: dict[int, "asyncio.Queue"] = {}
+
+# Live phone sockets. Only used to decide whether the desk is worth polling for
+# telemetry; frames are written by each session's own writer, never from here.
+_app_clients: set = set()
 
 
 def _desk_connected() -> bool:
@@ -722,7 +761,14 @@ async def health():
             "mode": MODE, "identities": roster,
             "search": "tavily" if _TAVILY_KEY else "duckduckgo",
             "bridge": bool(BRIDGE_SECRET),
+            # The phone refuses a gateway that does not declare this, because a
+            # bare 200 would flip it to CLOUD and strand it on a dead socket —
+            # worse than staying dark. So it is a claim about the ROUTE being
+            # usable, not about the process being up: false when no APP_TOKEN is
+            # configured, since every connection would then be refused.
+            "app_link": bool(APP_TOKEN),
             "desk_linked": _desk_connected(),
+            "apps_linked": len(_app_clients),
             # Counts only — how deep the sealed backlog is and whether anything
             # was lost. No fact, sealed or otherwise, is exposed here.
             "fact_outbox": fact_outbox.stats() if fact_outbox is not None else None}
@@ -872,6 +918,16 @@ async def desk_link(websocket: WebSocket):
             # extends its window — a long-running command that shows signs of
             # life is never double-answered by the cloud fallback.
             rid = frame.get("req_id")
+            # A phone is waiting on this one. Hand the frame to that session and
+            # stop — nothing about it belongs in Telegram.
+            sink = _app_sinks.get(rid) if rid is not None else None
+            if sink is not None:
+                sink.put_nowait(frame)
+                continue
+            # Belt and braces: a frame that lost its req_id must still never be
+            # relayed to a chat id that was never a Telegram chat.
+            if chat_id == APP_CHAT_ID:
+                continue
             if rid is not None and rid in _pending_reqs:
                 if ftype in ("reply", "done"):
                     _pending_reqs[rid]["evt"].set()
@@ -917,6 +973,290 @@ async def desk_link(websocket: WebSocket):
     finally:
         if _desk_ws is websocket:
             _desk_ws = None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Mobile app front door — /app-link
+# ════════════════════════════════════════════════════════════════════════════
+# The phone dials in here. Same brain as Telegram, same desk routing: when a desk
+# is linked the command runs on the real machine, and when it is not the cloud
+# answers on its own. The phone never has to know which — it asks, and the front
+# door decides, which is the whole point of there being one door.
+#
+# Wire format is the DESK's, not a third one: status frames are
+# {"status": …, "message": …, "user": …} and sync frames are
+# {"status": "sync", "type": "telemetry", "data": {…}}, exactly what the desk's
+# own /ws emits, so `parseFrame` on the phone has a single contract to satisfy
+# whichever transport it is on.
+
+def _app_identity() -> dict:
+    """Who the phone speaks as.
+
+    The pairing token IS the credential and it is issued to the owner, so a
+    phone that presents it is the admin. Falls back to a sane owner identity when
+    TELEGRAM_USER_ID was never set — the app must still work on a gateway wired
+    for nothing but this socket.
+    """
+    for ident in _IDENTITIES.values():
+        if ident.get("tier") == _ADMIN_TIER:
+            return ident
+    return {"who": "Kaustav", "honorific": "Sir", "tier": _ADMIN_TIER}
+
+
+def _decode_app_message(raw: str) -> tuple[str, Optional[bytes], str]:
+    """Split one text frame from the phone into (command, audio, filename).
+
+    Bare text is the contract `LinkMachine.send` writes and stays the default:
+    anything that is not a JSON object carrying a `type` we recognise is treated
+    as a command, so asking J.A.R.V.I.S. about a JSON snippet still asks rather
+    than parses.
+    """
+    text = raw.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return text, None, ""
+    try:
+        env = json.loads(text)
+    except Exception:  # noqa: BLE001
+        return text, None, ""
+    if not isinstance(env, dict):
+        return text, None, ""
+    kind = str(env.get("type") or "").strip().lower()
+    if kind == "voice":
+        fmt = str(env.get("format") or "m4a").strip().lstrip(".") or "m4a"
+        try:
+            return "", base64.b64decode(env.get("audio") or "", validate=False), f"voice.{fmt}"
+        except Exception:  # noqa: BLE001
+            return "", None, ""
+    if kind in ("cmd", "command", "text"):
+        return str(env.get("text") or "").strip(), None, ""
+    return text, None, ""
+
+
+async def _ask_desk(text: str, ident: dict, on_notify) -> Optional[str]:
+    """Run one phone command through the linked desk brain.
+
+    Returns the desk's answer, `""` when it finished with nothing to say, or
+    `None` when there is no desk or it never answered — the caller then falls
+    back to the cloud brain, exactly as the Telegram path does. A partial answer
+    that stopped arriving beats no answer, so accumulated text is returned rather
+    than discarded on timeout.
+    """
+    ws = _desk_ws
+    if ws is None:
+        return None
+    req_id = next(_req_seq)
+    q: asyncio.Queue = asyncio.Queue()
+    _app_sinks[req_id] = q
+    try:
+        await ws.send_json({
+            "type": "cmd",
+            "req_id": req_id,
+            "chat_id": APP_CHAT_ID,
+            # The desk brain keys persona and memory off an UPPERCASE user string.
+            "user": (ident.get("who") or "KAUSTAV").upper(),
+            "tier": ident.get("tier"),
+            "honorific": ident.get("honorific") or "Sir",
+            "text": text,
+        })
+    except Exception as e:  # noqa: BLE001
+        _app_sinks.pop(req_id, None)
+        print(f"[CLOUD] app→desk forward failed ({e}); the cloud brain answers.", flush=True)
+        return None
+
+    chunks: list[str] = []
+    last = time.monotonic()
+    try:
+        while True:
+            remaining = _DESK_REPLY_TIMEOUT - (time.monotonic() - last)
+            if remaining <= 0:
+                if chunks:
+                    break
+                print(f"[CLOUD] WARN desk silent on app req {req_id} for "
+                      f"{_DESK_REPLY_TIMEOUT:.0f}s — the cloud brain answers.", flush=True)
+                return None
+            try:
+                frame = await asyncio.wait_for(q.get(), remaining)
+            except asyncio.TimeoutError:
+                continue  # a notify heartbeat may have moved `last`
+            last = time.monotonic()
+            ftype = frame.get("type")
+            if ftype == "reply":
+                piece = (frame.get("text") or "").strip()
+                if piece:
+                    chunks.append(piece)
+            elif ftype == "notify":
+                await on_notify()
+            elif ftype == "done":
+                break
+    finally:
+        _app_sinks.pop(req_id, None)
+    return "\n".join(chunks)
+
+
+async def _desk_telemetry(timeout: float = 12.0) -> Optional[dict]:
+    """One vitals snapshot from the linked desk, or None if it did not answer.
+
+    The cloud has no CPU or disk figures for his machine and must never invent
+    any — an empty Reports tab is the honest reading when the desk is off.
+    """
+    ws = _desk_ws
+    if ws is None:
+        return None
+    req_id = next(_req_seq)
+    q: asyncio.Queue = asyncio.Queue()
+    _app_sinks[req_id] = q
+    try:
+        await ws.send_json({"type": "hud_req", "req_id": req_id})
+        frame = await asyncio.wait_for(q.get(), timeout)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        _app_sinks.pop(req_id, None)
+    data = frame.get("data")
+    return data if isinstance(data, dict) else None
+
+
+@app.websocket("/app-link")
+async def app_link(websocket: WebSocket):
+    """The phone's socket. Bare text is a command; bytes are a voice clip."""
+    if not APP_TOKEN:
+        # Refused before accept: an ungated door onto a brain that answers as him
+        # is worse than no door.
+        await websocket.close(code=1008)
+        return
+    presented = websocket.query_params.get("token", "")
+    if not hmac.compare_digest(presented, APP_TOKEN):
+        peer = websocket.client.host if websocket.client else "?"
+        print(f"[CLOUD] REFUSED app-link token mismatch from {peer}", flush=True)
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    ident = _app_identity()
+    who = (ident.get("who") or "KAUSTAV").upper()
+    send_lock = asyncio.Lock()
+    alive = True
+    busy = False
+    _app_clients.add(websocket)
+    # ASCII only: a harness run outside run_harnesses.py picks cp1252 for stdout
+    # on Windows, and an emoji here kills the handler mid-connect.
+    print(f"[CLOUD] App linked (desk {'up' if _desk_connected() else 'down'}) - "
+          f"{len(_app_clients)} phone(s) attached.", flush=True)
+
+    async def emit(payload: dict) -> None:
+        nonlocal alive
+        if not alive:
+            return
+        async with send_lock:
+            try:
+                await websocket.send_json(payload)
+            except Exception:  # noqa: BLE001
+                alive = False
+
+    async def say(status: str, message: str = "") -> None:
+        await emit({"status": status, "message": message, "user": who})
+
+    async def keepalive() -> None:
+        """Keep the phone's 30s frame watchdog from tearing down an idle socket.
+
+        A status frame with no message refreshes that clock without writing a
+        line into the HUD's chat log. It reports the state the session is
+        actually in, so a long-running desk command still reads as `thinking`
+        rather than being flipped back to `online` under itself.
+        """
+        while alive:
+            await asyncio.sleep(APP_KEEPALIVE_SECS)
+            if not alive:
+                return
+            await say("thinking" if busy else "online")
+
+    async def vitals() -> None:
+        """Real desk numbers while a desk is linked; nothing at all when it is not."""
+        while alive:
+            if _desk_connected():
+                data = await _desk_telemetry()
+                if data:
+                    await emit({"status": "sync", "type": "telemetry", "data": data})
+            await asyncio.sleep(APP_TELEMETRY_SECS)
+
+    helpers = [asyncio.create_task(keepalive()), asyncio.create_task(vitals())]
+
+    await say("online",
+              "Desk is online — full control through the cloud."
+              if _desk_connected() else
+              "Cloud brain only, so PC control is off until the desk wakes.")
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+
+            audio: Optional[bytes] = msg.get("bytes")
+            filename = "voice.m4a"
+            text = ""
+            if audio is None and msg.get("text") is not None:
+                text, audio, name = _decode_app_message(msg["text"])
+                if name:
+                    filename = name
+
+            busy = True
+            try:
+                if audio:
+                    await say("thinking", "")
+                    try:
+                        # Stripped: Whisper returns whitespace for a silent clip,
+                        # and " " is truthy — un-stripped it would be asked as a
+                        # command and answered as if he had said something.
+                        text = (await asyncio.to_thread(
+                            _groq_transcribe, audio, filename) or "").strip()
+                    except Exception as e:  # noqa: BLE001
+                        await say("error", f"I couldn't make out that recording: {e}")
+                        await say("online")
+                        continue
+                    if not text:
+                        await say("error", "I couldn't hear anything in that.")
+                        await say("online")
+                        continue
+                    # Attributed to HIM in the phone's chat log. A transcript sent
+                    # as a status message would be logged as J.A.R.V.I.S. saying
+                    # it, which is a lie about who spoke.
+                    await emit({"type": "transcript", "text": text, "user": who})
+
+                if not text:
+                    continue
+
+                await say("thinking")
+                answer: Optional[str] = None
+                if _desk_connected():
+                    answer = await _ask_desk(text, ident, lambda: say("thinking"))
+                if answer is None:
+                    try:
+                        # APP_CHAT_ID keys `think`'s rolling memory, so the phone
+                        # gets its own thread rather than replaying Telegram's.
+                        answer = await think(APP_CHAT_ID, text,
+                                             ident["who"], ident["honorific"])
+                    except Exception as e:  # noqa: BLE001
+                        await say("error", f"I couldn't answer that: {e}")
+                        await say("online")
+                        continue
+                    # The desk never saw this turn, so it is sealed and queued for
+                    # the next handshake exactly like a PC-off Telegram turn.
+                    _queue_offline_fact(ident, text, answer)
+                if answer:
+                    await say("speaking", answer)
+                await say("online")
+            finally:
+                busy = False
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] app-link fault: {e}", flush=True)
+    finally:
+        alive = False
+        _app_clients.discard(websocket)
+        for t in helpers:
+            t.cancel()
+        print(f"[CLOUD] App link closed - {len(_app_clients)} phone(s) attached.", flush=True)
 
 
 @app.on_event("startup")

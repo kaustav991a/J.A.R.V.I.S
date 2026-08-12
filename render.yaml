@@ -23,6 +23,13 @@ services:
       # e.g. https://jarvis-cloud-gateway.onrender.com  (set after first deploy).
       - key: PUBLIC_URL
         sync: false
+      # The phone's pairing token for WS /app-link. Defaults to BRIDGE_SECRET when
+      # unset; set it to give phones a credential you can rotate without dropping
+      # the desk link. With BOTH unset, /app-link refuses every connection and
+      # /health reports "app_link": false — which is what the app reads before it
+      # will fall back to the cloud.
+      - key: APP_TOKEN
+        sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_USER_ID
