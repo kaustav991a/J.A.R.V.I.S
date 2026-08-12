@@ -1,0 +1,153 @@
+# Connecting the phone app to J.A.R.V.I.S.
+
+Written 2026-08-12, when `WS /app-link` landed. Everything below is a setting to
+type, not code to write — the code is done on both sides.
+
+Repos: this one (`kaustav991a/J.A.R.V.I.S`, branch `feat/cloud-gateway`) and
+`kaustav991a/J.A.R.V.I.S-Mobile`, branch `feat/mobile-hud`.
+
+---
+
+## What you are connecting
+
+```
+          phone on office wifi
+                   │
+                   │  wss://…onrender.com/app-link?token=APP_TOKEN
+                   ▼
+      ┌────────────────────────────┐
+      │  Render — cloud gateway    │   always on, $0
+      │  (the same brain Telegram  │
+      │   already talks to)        │
+      └─────┬──────────────────────┘
+            │  /desk-link, only when the PC is on
+            ▼
+      ┌────────────────────────────┐
+      │  desk J.A.R.V.I.S. (PC)    │   full PC control, real memory
+      └────────────────────────────┘
+```
+
+The phone tries the **desk on the LAN first**, falls back to the **cloud**, and
+goes dark only when neither answers. It re-checks every 5s while dark, whenever
+the app comes to the foreground, and on any network change — so when you get
+home and the desk is on the same wifi, it moves to the desk on its own.
+
+And when the desk is **on but you are not on its network**, the cloud forwards
+your command down the existing desk bridge and the real machine answers. PC
+control from the office, over the same socket.
+
+---
+
+## Step 1 — Render (2 minutes, one new setting)
+
+Dashboard → `jarvis-cloud-gateway` → **Environment** → add:
+
+| Key | Value |
+| --- | --- |
+| `APP_TOKEN` | a long random string — this is the phone's password |
+
+Save. Render redeploys. Nothing else changes, and **Telegram is unaffected** —
+the bot, the webhook and the desk bridge all keep working exactly as they do now.
+
+> If you skip this, `APP_TOKEN` falls back to `BRIDGE_SECRET`, which also works.
+> With **both** unset the gateway refuses every phone and `/health` says
+> `"app_link": false`, which is the app's signal not to bother trying.
+
+Check it took:
+
+```
+https://jarvis-cloud-gateway.onrender.com/health
+```
+
+must show `"app_link": true`.
+
+## Step 2 — the desk (nothing, if the bridge is already on)
+
+Already in `jarvis-backend/.env` from the Telegram bridge work:
+
+```dotenv
+JARVIS_CLOUD_BRIDGE=1
+JARVIS_BRIDGE_URL=wss://jarvis-cloud-gateway.onrender.com/desk-link
+BRIDGE_SECRET=<same as the cloud>
+```
+
+That is all the phone needs too. On boot the desk logs
+`[BRIDGE] ✅ Linked to cloud front door`, and from then on `/health` reports
+`"desk_linked": true` and the phone's commands run on the real machine.
+
+Desk off → the cloud brain answers instead, and the turn is queued for the desk
+to absorb next time it connects.
+
+## Step 3 — build the APK (~15 min on EAS's free queue)
+
+The pairing screen is new, so the APK from 2026-08-11 does not have it.
+
+```bash
+cd J.A.R.V.I.S-Mobile
+git pull
+eas build -p android --profile preview
+```
+
+Install the result on the phone.
+
+## Step 4 — pair the phone (30 seconds)
+
+App → **Connection** tab. Three fields:
+
+| Field | What to type |
+| --- | --- |
+| DESK ADDRESS | `192.168.1.x:8000` — your PC's LAN address. Used only at home |
+| CLOUD GATEWAY | `https://jarvis-cloud-gateway.onrender.com` |
+| PAIRING TOKEN | the exact `APP_TOKEN` you set in step 1 |
+
+**SAVE & RECONNECT**. Then turn **demo mode off** in the Home menu — it is on by
+default, and a stand-in desk will otherwise sit in front of the real one.
+
+The transport pill tells you which link you are on: **LAN** for the desk direct,
+**CLOUD in gold** for the gateway. Gold is deliberate — on a cloud session with
+the desk off, there is no PC control.
+
+---
+
+## What you get
+
+| | desk on LAN | cloud, desk on | cloud, desk off |
+| --- | --- | --- | --- |
+| Chat, questions, lookups | ✅ | ✅ | ✅ |
+| PC control, files, terminal | ✅ | ✅ | ❌ (says so plainly) |
+| Real memory | ✅ | ✅ | queued for the desk |
+| Vitals in Reports | ✅ | ✅ (polled every 15s) | empty — the cloud has no numbers and will not invent any |
+| Voice notes | ✅ | ✅ | ✅ |
+
+## Voice
+
+The gateway accepts a recorded clip today — raw bytes on the socket, or
+`{"type":"voice","format":"m4a","audio":"<base64>"}` — transcribes it with Groq
+Whisper (Bengali and Benglish included, same path as Telegram voice notes), and
+sends the transcript back as its own frame so the chat log shows **you** said it.
+
+**The phone cannot record yet.** `expo-audio` is not a dependency, so the mic
+button on the command bar is still inert. Wiring it is one screen plus a
+permission string plus another dev build — the server side is finished and
+tested, so nothing about it is blocked.
+
+## If it does not connect
+
+1. `/health` → `"app_link": true`? If false, `APP_TOKEN` did not save.
+2. Token in the app **exactly** equal to `APP_TOKEN`? A mismatch closes the
+   socket immediately; the Render log prints
+   `[CLOUD] REFUSED app-link token mismatch from …`.
+3. Demo mode off?
+4. First try after a quiet spell can miss — Render's free tier sleeps and takes
+   tens of seconds to wake. The app re-probes every 5s and will catch it.
+5. `"desk_linked": false` while the PC is on → the desk bridge is down, not the
+   app. Check the desk's `[BRIDGE]` log lines.
+
+## What is still owed
+
+- The **§7 hardware live gate** — this weekend, per your plan. Nothing here has
+  been run against a real phone yet: it is proved by 29 backend checks and 335
+  app tests, not by a device.
+- The **recorder** on the phone (above).
+- Script CRUD, run history and push notifications — the app's Reports and
+  Scripts tabs still read fixtures for those. Unrelated to the link.

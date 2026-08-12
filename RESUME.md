@@ -6,6 +6,24 @@
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
 > bookmark, not a plan.
 
+## ▶ 2026-08-12 — the mobile app now has a front door. Read `MOBILE_CONNECT.md`.
+
+Built out of sequence, ahead of the gate, because the phone is being connected at the
+office tomorrow. `WS /app-link` on the cloud gateway: the app dials the Render brain
+with a pairing token, and when the desk is linked the command runs on the **real
+machine** through the existing `/desk-link` bridge instead of on the cloud brain.
+Voice clips are accepted and transcribed. Telemetry is polled from the desk while it
+is up and is simply absent when it is not. **Telegram is unaffected** — the only shared
+line of code is the desk-link reader, which hands a frame to a phone only when a phone
+registered its `req_id`.
+
+Owed: `APP_TOKEN` in the Render dashboard, an EAS rebuild of the APK (the pairing
+screen is new), and a live gate on a real phone — nothing below has touched a device.
+The phone's own recorder is also still owed; the server side of voice is finished.
+
+- Harness: `jarvis-backend/test_app_link.py`, 29 checks. App: 335 tests, typecheck clean.
+- Mobile repo: `kaustav991a/J.A.R.V.I.S-Mobile`, branch `feat/mobile-hud`.
+
 ## ▶▶ RESUME POINT — 2026-08-09, 02:00. READ THIS, THEN `LIVE_GATE_CHECKLIST.md`.
 
 **The §7 live gate has STARTED. It runs in sessions, not one desk day.** Everything below this
