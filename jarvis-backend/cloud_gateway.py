@@ -895,6 +895,9 @@ _WMO = {
 # conversation cost one request, and the answer is still current
 _weather_cache: dict = {}
 WEATHER_TTL_SECS = 600
+# how long to stop asking after a 429, since a shared IP does not recover in seconds
+WEATHER_BACKOFF_SECS = 900
+_weather_blocked_until: float = 0.0
 
 
 def _get_json_blocking(url: str, timeout: float = 8.0) -> dict:
@@ -910,10 +913,24 @@ def _get_json_blocking(url: str, timeout: float = 8.0) -> dict:
 
 
 def _weather_blocking(lat: float, lon: float) -> Optional[str]:
+    """Fallback only. The phone normally sends this.
+
+    Open-Meteo rate-limits per IP, and Render's outbound address is shared with
+    every other service on the host — so this was answered `429 Too Many Requests`
+    in production while the same URL returned 200 from a laptop. The phone fetches
+    it now, from its own address; this remains for a client that sends none.
+
+    A 429 therefore backs off rather than being retried per turn, and a stale
+    reading is served in preference to nothing: an hour-old temperature is still
+    worth more than "I could not check".
+    """
+    global _weather_blocked_until
     key = (round(lat, 2), round(lon, 2))
     hit = _weather_cache.get(key)
     if hit and time.time() - hit[0] < WEATHER_TTL_SECS:
         return hit[1]
+    if time.time() < _weather_blocked_until:
+        return hit[1] if hit else None
     url = (f"{OPEN_METEO_URL}?latitude={lat:.4f}&longitude={lon:.4f}"
            "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
            "precipitation,weather_code,wind_speed_10m"
@@ -941,8 +958,15 @@ def _weather_blocking(lat: float, lon: float) -> Optional[str]:
         _weather_cache[key] = (time.time(), line)
         return line
     except Exception as e:  # noqa: BLE001
-        print(f"[CLOUD] weather lookup failed: {e}", flush=True)
-        return None
+        # 429 is not a transient blip on a shared IP, it is the state of the world
+        # for a while: stop asking, and keep answering from what is already known.
+        if "429" in str(e):
+            _weather_blocked_until = time.time() + WEATHER_BACKOFF_SECS
+            print(f"[CLOUD] weather rate-limited; backing off "
+                  f"{WEATHER_BACKOFF_SECS}s (the phone should be sending this)", flush=True)
+        else:
+            print(f"[CLOUD] weather lookup failed: {e}", flush=True)
+        return hit[1] if hit else None
 
 
 # Places and routes, also key-free. Nominatim for "what is near me", OSRM for
@@ -1050,8 +1074,13 @@ async def _where_context(where: dict, text: str) -> str:
     fixed. One cached HTTP call is cheaper than that risk.
     """
     place = where.get("place") or f"{where['lat']:.3f},{where['lon']:.3f}"
+    # The phone's own reading is preferred: it comes from an address that is not
+    # rate-limited, and it costs this process no request at all. Only when a client
+    # sends none does the gateway try for itself.
+    given = where.get("weather")
     weather, extra = await asyncio.gather(
-        asyncio.to_thread(_weather_blocking, where["lat"], where["lon"]),
+        asyncio.sleep(0, result=given) if given
+        else asyncio.to_thread(_weather_blocking, where["lat"], where["lon"]),
         _local_lookups(where, text),
     )
     lines = [f"He is at {place} (lat {where['lat']:.4f}, lon {where['lon']:.4f})."]
@@ -1473,6 +1502,13 @@ def _decode_where(raw: str) -> Optional[dict]:
         return None
     place = str(where.get("place") or "").strip()[:120]
     out = {"lat": lat, "lon": lon, "place": place}
+
+    # Conditions the phone measured for these coordinates. Taken as given: it is
+    # his own phone, it fetched them from an IP that is not rate-limited, and the
+    # alternative is this process being told 429 and saying it could not check.
+    given_weather = str(where.get("weather") or "").strip()[:300]
+    if given_weather:
+        out["weather"] = given_weather
 
     # The trail, if the phone chose to send one.
     #
