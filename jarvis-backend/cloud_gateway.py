@@ -698,6 +698,7 @@ import itertools  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
 import re  # noqa: E402
+import urllib.parse  # noqa: E402
 import urllib.request  # noqa: E402
 
 
@@ -871,6 +872,200 @@ async def _announce_desk(linked: bool) -> None:
             "J.A.R.V.I.S. is on full power",
             "The desk is online. PC control, files and terminal are available again.",
             {"kind": "desk_link"})
+
+
+# ── Real answers about where the phone is ────────────────────────────────────
+# Open-Meteo takes coordinates and needs no key, which is why it is here rather
+# than a provider that would put billing between him and "is it raining".
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+# WMO weather codes, collapsed to what a person would say. Enough to be honest
+# about rain, which is the thing the model kept getting wrong from memory.
+_WMO = {
+    0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+    45: "fog", 48: "freezing fog", 51: "light drizzle", 53: "drizzle",
+    55: "heavy drizzle", 56: "freezing drizzle", 57: "freezing drizzle",
+    61: "light rain", 63: "rain", 65: "heavy rain",
+    66: "freezing rain", 67: "heavy freezing rain",
+    71: "light snow", 73: "snow", 75: "heavy snow", 77: "snow grains",
+    80: "light showers", 81: "showers", 82: "violent showers",
+    85: "snow showers", 86: "heavy snow showers",
+    95: "thunderstorm", 96: "thunderstorm with hail", 99: "severe thunderstorm with hail",
+}
+# lat/lon rounded to ~1km, held for ten minutes: repeated questions in one
+# conversation cost one request, and the answer is still current
+_weather_cache: dict = {}
+WEATHER_TTL_SECS = 600
+
+
+def _get_json_blocking(url: str, timeout: float = 8.0) -> dict:
+    """One GET, decoded. Blocking; every caller threads it."""
+    req = urllib.request.Request(url, headers={
+        # Nominatim's usage policy requires an identifying agent, and the others
+        # are happier with one too
+        "User-Agent": "jarvis-cloud-gateway/1.0 (personal assistant)",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def _weather_blocking(lat: float, lon: float) -> Optional[str]:
+    key = (round(lat, 2), round(lon, 2))
+    hit = _weather_cache.get(key)
+    if hit and time.time() - hit[0] < WEATHER_TTL_SECS:
+        return hit[1]
+    url = (f"{OPEN_METEO_URL}?latitude={lat:.4f}&longitude={lon:.4f}"
+           "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+           "precipitation,weather_code,wind_speed_10m"
+           "&daily=precipitation_probability_max&forecast_days=1&timezone=auto")
+    try:
+        data = _get_json_blocking(url)
+        now = data.get("current") or {}
+        code = int(now.get("weather_code", -1))
+        said = _WMO.get(code, "unclear conditions")
+        mm = now.get("precipitation")
+        chance = ((data.get("daily") or {}).get("precipitation_probability_max") or [None])[0]
+        parts = [
+            f"{said}",
+            f"{now.get('temperature_2m')}°C (feels {now.get('apparent_temperature')}°C)",
+            f"humidity {now.get('relative_humidity_2m')}%",
+            f"wind {now.get('wind_speed_10m')} km/h",
+        ]
+        # the figure that settles "is it raining": actual precipitation now, not a
+        # forecast, and not the model's recollection
+        if isinstance(mm, (int, float)):
+            parts.append(f"precipitation {mm} mm in the last hour")
+        if isinstance(chance, (int, float)):
+            parts.append(f"rain chance today {chance}%")
+        line = ", ".join(str(p) for p in parts)
+        _weather_cache[key] = (time.time(), line)
+        return line
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] weather lookup failed: {e}", flush=True)
+        return None
+
+
+# Places and routes, also key-free. Nominatim for "what is near me", OSRM for
+# "how far" — both public, both rate-limited, neither offering live traffic.
+# Traffic needs a paid provider; when there is a key for one, `_route_blocking` is
+# the single place that would change.
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
+
+# Deliberately narrow, and English only. A pattern that half-works in three
+# languages is worse than one that admits its scope: an unmatched question simply
+# reaches the brain as it always did.
+_NEAR_RE = re.compile(r"\b(?:nearest|nearby|closest|near me)\b[:,]?\s*(?P<what>[\w\s'&-]{2,40})?", re.I)
+_FAR_RE = re.compile(r"\b(?:how far|distance|how long)\b.{0,20}?\b(?:to|from|until)\s+(?P<dest>[\w\s',.&-]{2,60})", re.I)
+
+
+def _places_blocking(what: str, lat: float, lon: float, limit: int = 4) -> Optional[str]:
+    """Whatever is closest, by straight-line distance from him."""
+    q = urllib.parse.quote(what.strip())
+    # a ~12km box keeps "nearest chemist" local instead of national
+    d = 0.11
+    url = (f"{NOMINATIM_URL}?q={q}&format=json&limit={limit}&addressdetails=0"
+           f"&viewbox={lon - d:.4f},{lat + d:.4f},{lon + d:.4f},{lat - d:.4f}&bounded=1")
+    try:
+        rows = _get_json_blocking(url)
+        if not isinstance(rows, list) or not rows:
+            return None
+        out = []
+        for r in rows[:limit]:
+            try:
+                km = _haversine_km(lat, lon, float(r["lat"]), float(r["lon"]))
+            except Exception:  # noqa: BLE001
+                continue
+            name = str(r.get("display_name") or "").split(",")[0]
+            area = ", ".join(str(r.get("display_name") or "").split(",")[1:3]).strip()
+            out.append(f"{name} ({area}) about {km:.1f} km away")
+        return "; ".join(out) or None
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] place lookup failed: {e}", flush=True)
+        return None
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    from math import asin, cos, radians, sin, sqrt
+    dlat, dlon = radians(lat2 - lat1), radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    return 2 * 6371.0 * asin(sqrt(a))
+
+
+def _route_blocking(dest: str, lat: float, lon: float) -> Optional[str]:
+    """Driving distance and duration to a named place.
+
+    **No traffic.** OSRM's public server routes on the road graph alone, so the
+    duration is free-flowing time — right for "how far", optimistic for "when will
+    I get there" at 6pm. Said plainly in the context rather than quietly implied.
+    """
+    try:
+        q = urllib.parse.quote(dest.strip())
+        found = _get_json_blocking(f"{NOMINATIM_URL}?q={q}&format=json&limit=1")
+        if not isinstance(found, list) or not found:
+            return None
+        dlat, dlon = float(found[0]["lat"]), float(found[0]["lon"])
+        name = str(found[0].get("display_name") or dest).split(",")[0]
+        route = _get_json_blocking(
+            f"{OSRM_URL}/{lon:.5f},{lat:.5f};{dlon:.5f},{dlat:.5f}?overview=false")
+        legs = (route.get("routes") or [{}])[0]
+        metres, seconds = legs.get("distance"), legs.get("duration")
+        if not isinstance(metres, (int, float)) or not isinstance(seconds, (int, float)):
+            return None
+        straight = _haversine_km(lat, lon, dlat, dlon)
+        return (f"{name}: {metres / 1000:.1f} km by road ({straight:.1f} km straight line), "
+                f"about {int(seconds // 60)} min driving with no traffic accounted for")
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] route lookup failed: {e}", flush=True)
+        return None
+
+
+async def _local_lookups(where: dict, text: str) -> list:
+    """Anything the question asks about *this* place, fetched rather than recalled."""
+    facts = []
+    near = _NEAR_RE.search(text)
+    if near and (near.group("what") or "").strip():
+        found = await asyncio.to_thread(
+            _places_blocking, near.group("what"), where["lat"], where["lon"])
+        if found:
+            facts.append(f"Closest matches for '{near.group('what').strip()}': {found}.")
+    far = _FAR_RE.search(text)
+    if far:
+        route = await asyncio.to_thread(_route_blocking, far.group("dest"), where["lat"], where["lon"])
+        if route:
+            facts.append(f"Route from him: {route}.")
+    return facts
+
+
+async def _where_context(where: dict, text: str) -> str:
+    """A factual preamble for a question asked from a known place.
+
+    The model was answering "is it raining" out of its own weights — confidently,
+    and wrong, while it was raining outside. Giving it the actual current
+    conditions is the fix; telling it not to guess is the other half.
+
+    Weather is fetched for every located turn rather than when the text looks
+    weather-shaped. Intent matching would have to work in English, Bengali and
+    Benglish to be worth anything, and a missed match is exactly the failure being
+    fixed. One cached HTTP call is cheaper than that risk.
+    """
+    place = where.get("place") or f"{where['lat']:.3f},{where['lon']:.3f}"
+    weather, extra = await asyncio.gather(
+        asyncio.to_thread(_weather_blocking, where["lat"], where["lon"]),
+        _local_lookups(where, text),
+    )
+    lines = [f"He is at {place} (lat {where['lat']:.4f}, lon {where['lon']:.4f})."]
+    if weather:
+        lines.append(f"Measured conditions there right now: {weather}.")
+    else:
+        lines.append("No live weather could be fetched; say so rather than guessing.")
+    lines.extend(extra)
+    trail = where.get("trail")
+    if trail:
+        lines.append(f"Where he has been recently, oldest first: {trail}.")
+    lines.append("Use these figures for anything about weather, distances or his "
+                 "whereabouts. Do not contradict them and do not answer from memory.")
+    return "[" + " ".join(lines) + "]\n\n" + text
 
 
 async def _relay_watch(frame: dict) -> None:
@@ -1247,9 +1442,57 @@ def _decode_app_message(raw: str) -> tuple[str, Optional[bytes], str]:
             return "", base64.b64decode(env.get("audio") or "", validate=False), f"voice.{fmt}"
         except Exception:  # noqa: BLE001
             return "", None, ""
-    if kind in ("cmd", "command", "text"):
+    if kind in ("cmd", "command", "text", "ask"):
         return str(env.get("text") or "").strip(), None, ""
     return text, None, ""
+
+
+def _decode_where(raw: str) -> Optional[dict]:
+    """The phone's location, if this frame carried one.
+
+    Read separately from the command so bare text keeps working untouched, and so
+    a malformed `where` costs the location rather than the question.
+
+    Coordinates only, no history: they are used to answer *this* turn and are not
+    stored anywhere. The place name is resolved on the phone, where the reverse
+    geocoder is free and offline-ish, rather than spending a lookup here.
+    """
+    text = raw.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    try:
+        env = json.loads(text)
+        where = env.get("where") if isinstance(env, dict) else None
+        if not isinstance(where, dict):
+            return None
+        lat, lon = float(where["lat"]), float(where["lon"])
+    except Exception:  # noqa: BLE001
+        return None
+    # a phone that reports the null island is a phone with no fix
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+        return None
+    place = str(where.get("place") or "").strip()[:120]
+    out = {"lat": lat, "lon": lon, "place": place}
+
+    # The trail, if the phone chose to send one.
+    #
+    # Held on the phone, not here: this gateway keeps no location history of its
+    # own, so what arrives is only ever what was needed to answer this question and
+    # it is gone when the turn ends. Capped on arrival as well as on the phone,
+    # because a cap that only exists on the client is not a cap.
+    trail = where.get("trail")
+    if isinstance(trail, list) and trail:
+        steps = []
+        for step in trail[-12:]:
+            if not isinstance(step, dict):
+                continue
+            label = str(step.get("place") or "").strip()[:60]
+            when = str(step.get("when") or "").strip()[:32]
+            if label:
+                steps.append(f"{label}{f' ({when})' if when else ''}")
+        if steps:
+            out["trail"] = "; ".join(steps)
+    return out
 
 
 async def _ask_desk(text: str, ident: dict, on_notify) -> Optional[str]:
@@ -1450,8 +1693,10 @@ async def app_link(websocket: WebSocket):
             audio: Optional[bytes] = msg.get("bytes")
             filename = "voice.m4a"
             text = ""
+            where: Optional[dict] = None
             if audio is None and msg.get("text") is not None:
                 text, audio, name = _decode_app_message(msg["text"])
+                where = _decode_where(msg["text"])
                 if name:
                     filename = name
 
@@ -1484,12 +1729,18 @@ async def app_link(websocket: WebSocket):
                 await say("thinking")
                 answer: Optional[str] = None
                 if _desk_connected():
+                    # the desk gets the question as asked: it has its own senses,
+                    # and a preamble about the phone's surroundings is not its brief
                     answer = await _ask_desk(text, ident, lambda: say("thinking"))
                 if answer is None:
                     try:
+                        # A located question is answered from measured figures rather
+                        # than the model's recollection — it said "no rain" while it
+                        # was raining, which is the whole reason this exists.
+                        asked = await _where_context(where, text) if where else text
                         # APP_CHAT_ID keys `think`'s rolling memory, so the phone
                         # gets its own thread rather than replaying Telegram's.
-                        answer = await think(APP_CHAT_ID, text,
+                        answer = await think(APP_CHAT_ID, asked,
                                              ident["who"], ident["honorific"])
                     except Exception as e:  # noqa: BLE001
                         await say("error", f"I couldn't answer that: {e}")
