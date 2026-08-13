@@ -588,6 +588,54 @@ def test_a_dead_phone_socket_is_dropped_rather_than_raised_through():
     assert live.got == [{"type": "desk", "linked": True}]
 
 
+def test_a_desk_watch_alert_reaches_a_phone_that_is_asleep():
+    """The one alert that must not depend on the app being open.
+
+    It travelled only down the phone's socket, so it could reach a running app
+    and nothing else — and the phone is in a pocket exactly when someone is at
+    the desk. The desk locks itself when its own countdown expires whether or not
+    anyone answered, so an unseen alert is the desk's silence deciding.
+    """
+    pushes: list = []
+    original = cg._push_all
+
+    async def _spy(title, body, data=None, channel="general", force=False):
+        pushes.append({"title": title, "body": body, "data": data,
+                       "channel": channel, "force": force})
+
+    cg._push_all = _spy
+    try:
+        cg._push_targets["ExponentPushToken[x]"] = "android"
+        alert = {"type": "intruder", "id": "a1", "expires_in": 30,
+                 "user": "KAUSTAV", "trigger": "unlock", "image": "/shot.jpg"}
+
+        # nobody attached — it goes out as a push
+        asyncio.run(cg._relay_watch(alert))
+        assert len(pushes) == 1
+        # the interrupting channel, and not rate-limited: refusing a lock warning
+        # because a status notification fired four minutes ago is the wrong trade
+        assert pushes[0]["channel"] == "desk-watch"
+        assert pushes[0]["force"] is True
+        assert pushes[0]["data"]["id"] == "a1"
+
+        # a phone holding a socket gets the frame verbatim and is NOT pushed:
+        # `parseFrame` reads this shape already, and one event must not arrive twice
+        pushes.clear()
+        phone = _Phone()
+        cg._app_clients.add(phone)
+        asyncio.run(cg._relay_watch(alert))
+        assert phone.got == [alert]
+        assert pushes == []
+
+        # a resolution closes the window, so there is nothing left to answer
+        cg._app_clients.clear()
+        asyncio.run(cg._relay_watch({"type": "intruder_resolved", "id": "a1",
+                                     "outcome": "locked"}))
+        assert pushes == []
+    finally:
+        cg._push_all = original
+
+
 def test_push_registration_is_gated_by_the_pairing_token():
     """The push address is what gets told the desk is up. Same credential as the
     socket, because it reaches the same phone."""

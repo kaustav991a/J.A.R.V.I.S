@@ -801,13 +801,16 @@ def _save_push_targets() -> None:
         pass
 
 
-def _expo_push_blocking(tokens: list, title: str, body: str, data: dict) -> str:
+def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
+                        channel: str = "general") -> str:
     """POST one batch to Expo. Blocking on purpose — the caller threads it."""
     payload = json.dumps([
+        # The channel must be one the app created at startup (`general` or
+        # `desk-watch`); Android drops a notification addressed to a channel that
+        # does not exist. `desk-watch` is the MAX-importance one, so a lock
+        # countdown can interrupt where a status change should not.
         {"to": t, "title": title, "body": body, "data": data,
-         # `general` is the channel the app creates at startup; Android drops a
-         # notification addressed to a channel that does not exist
-         "priority": "high", "channelId": "general"}
+         "priority": "high", "channelId": channel}
         for t in tokens
     ]).encode("utf-8")
     req = urllib.request.Request(
@@ -817,18 +820,26 @@ def _expo_push_blocking(tokens: list, title: str, body: str, data: dict) -> str:
         return resp.read().decode("utf-8", "replace")[:400]
 
 
-async def _push_all(title: str, body: str, data: Optional[dict] = None) -> None:
+async def _push_all(title: str, body: str, data: Optional[dict] = None,
+                    channel: str = "general", force: bool = False) -> None:
+    """Push to every registered phone.
+
+    `force` skips the quiet gap, and exactly one caller uses it: the desk watch.
+    That alert is a 30-second window on whether a machine stays unlocked, so
+    rate-limiting it would mean choosing to drop a security event because a
+    status notification happened to go out four minutes earlier.
+    """
     global _last_push_at
     if not _push_targets:
         return
     now = time.monotonic()
-    if _last_push_at and now - _last_push_at < APP_PUSH_MIN_GAP_SECS:
+    if not force and _last_push_at and now - _last_push_at < APP_PUSH_MIN_GAP_SECS:
         print("[CLOUD] push suppressed - inside the quiet gap", flush=True)
         return
     _last_push_at = now
     try:
         out = await asyncio.to_thread(
-            _expo_push_blocking, list(_push_targets), title, body, data or {})
+            _expo_push_blocking, list(_push_targets), title, body, data or {}, channel)
         print(f"[CLOUD] push -> {len(_push_targets)} target(s): {out}", flush=True)
     except Exception as e:  # noqa: BLE001
         # a push that cannot be delivered must never take the desk link down
@@ -860,6 +871,35 @@ async def _announce_desk(linked: bool) -> None:
             "J.A.R.V.I.S. is on full power",
             "The desk is online. PC control, files and terminal are available again.",
             {"kind": "desk_link"})
+
+
+async def _relay_watch(frame: dict) -> None:
+    """Carry a desk-watch alert from the desk to the phones, socket or not.
+
+    The alert used to travel only down the phone's WebSocket, which means it
+    could only reach an app that was already running — and the phone is in a
+    pocket precisely when this matters. The desk locks itself when its own
+    countdown expires whether or not anyone answered, so an alert nobody sees is
+    the desk's silence deciding.
+
+    The frame is forwarded verbatim: `parseFrame` already reads `intruder` and
+    `intruder_resolved`, so there is one contract here rather than a cloud dialect.
+    """
+    await _broadcast_app(frame)
+    if frame.get("type") != "intruder" or _app_clients:
+        # a resolution needs no push — the window is shut, there is nothing left
+        # to answer — and an attached phone raises its own notification
+        return
+    who = str(frame.get("user") or "").strip()
+    trigger = str(frame.get("trigger") or "unlock").strip()
+    seconds = frame.get("expires_in")
+    when = f" It locks itself in {int(seconds)}s." if isinstance(seconds, (int, float)) else ""
+    await _push_all(
+        "Someone is at the desk",
+        f"{trigger} as {who or 'an unknown user'}. Was that you?{when}",
+        {"kind": "intruder", "id": frame.get("id") or frame.get("action_id") or ""},
+        channel="desk-watch",
+        force=True)
 
 
 _load_push_targets()
@@ -1060,6 +1100,13 @@ async def desk_link(websocket: WebSocket):
             # accepting the key is what triggers the flush of the sealed backlog.
             if fact_outbox is not None and await fact_outbox.handle_desk_frame(
                     frame, websocket.send_json):
+                continue
+            # Desk-watch alerts belong to the phones, never to Telegram: this is a
+            # webcam capture of whoever is at the machine, and the answer decides
+            # whether it locks. Handled before the relay so it cannot fall through
+            # to a chat, and scheduled so a push cannot stall the desk's reader.
+            if ftype in ("intruder", "intruder_resolved"):
+                asyncio.create_task(_relay_watch(frame))
                 continue
             chat_id = frame.get("chat_id")
             # Phase 4 item 7: reply correlation. A reply/done frame resolves the
