@@ -145,6 +145,17 @@ APP_KEEPALIVE_SECS = float(os.getenv("APP_KEEPALIVE_SECS", "20"))
 # actually attached.
 APP_TELEMETRY_SECS = float(os.getenv("APP_TELEMETRY_SECS", "15"))
 
+# ── Reaching a phone that holds no socket ────────────────────────────────────
+# Android suspends a backgrounded app and the WebSocket dies with it, which is
+# exactly the state the phone is in when the desk wakes at 2am. Push is the only
+# way that news arrives. Expo's relay is used rather than FCM directly: the phone
+# already resolves an ExponentPushToken, and Expo holds the FCM credentials, so
+# nothing here needs a service account or a new dependency.
+EXPO_PUSH_URL = os.getenv("EXPO_PUSH_URL", "https://exp.host/--/api/v2/push/send")
+_PUSH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_push_tokens.json")
+# A desk that flaps must not become a burst of identical notifications.
+APP_PUSH_MIN_GAP_SECS = float(os.getenv("APP_PUSH_MIN_GAP_SECS", "300"))
+
 # The cloud host's clock is UTC (Render), but "akhon kota baje?" means the
 # OPERATOR's wall clock. Default to IST; override with OPERATOR_TZ if needed.
 def _operator_tz():
@@ -685,6 +696,7 @@ import base64  # noqa: E402
 import hmac  # noqa: E402
 import itertools  # noqa: E402
 import json  # noqa: E402
+import urllib.request  # noqa: E402
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect  # noqa: E402
 
@@ -712,13 +724,109 @@ _DESK_REPLY_TIMEOUT = float(os.getenv("DESK_REPLY_TIMEOUT_SECS", "45"))
 # not to Telegram" — the desk-link reader checks it before the Telegram relay.
 _app_sinks: dict[int, "asyncio.Queue"] = {}
 
-# Live phone sockets. Only used to decide whether the desk is worth polling for
-# telemetry; frames are written by each session's own writer, never from here.
+# Live phone sockets. Used to decide whether the desk is worth polling for
+# telemetry, and to announce the desk arriving; per-session replies are still
+# written by each session's own writer, never from here.
 _app_clients: set = set()
+
+# push_token -> platform, for phones that are not holding a socket right now.
+_push_targets: dict = {}
+_last_push_at: float = 0.0
 
 
 def _desk_connected() -> bool:
     return _desk_ws is not None
+
+
+# ── Push, and the desk announcement that uses it ─────────────────────────────
+
+def _load_push_targets() -> None:
+    """Read the saved addresses, if the disk still has them.
+
+    Render's free tier wipes this on redeploy, which is survivable: the phone
+    re-registers on every cloud connect, so a lost file costs one reconnect
+    rather than a re-pairing.
+    """
+    global _push_targets
+    try:
+        with open(_PUSH_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        _push_targets = {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        _push_targets = {}
+
+
+def _save_push_targets() -> None:
+    try:
+        with open(_PUSH_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_push_targets, fh)
+    except Exception:  # noqa: BLE001
+        # an unwritable file costs a re-registration, not a feature
+        pass
+
+
+def _expo_push_blocking(tokens: list, title: str, body: str, data: dict) -> str:
+    """POST one batch to Expo. Blocking on purpose — the caller threads it."""
+    payload = json.dumps([
+        {"to": t, "title": title, "body": body, "data": data,
+         # `general` is the channel the app creates at startup; Android drops a
+         # notification addressed to a channel that does not exist
+         "priority": "high", "channelId": "general"}
+        for t in tokens
+    ]).encode("utf-8")
+    req = urllib.request.Request(
+        EXPO_PUSH_URL, data=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
+        return resp.read().decode("utf-8", "replace")[:400]
+
+
+async def _push_all(title: str, body: str, data: Optional[dict] = None) -> None:
+    global _last_push_at
+    if not _push_targets:
+        return
+    now = time.monotonic()
+    if _last_push_at and now - _last_push_at < APP_PUSH_MIN_GAP_SECS:
+        print("[CLOUD] push suppressed - inside the quiet gap", flush=True)
+        return
+    _last_push_at = now
+    try:
+        out = await asyncio.to_thread(
+            _expo_push_blocking, list(_push_targets), title, body, data or {})
+        print(f"[CLOUD] push -> {len(_push_targets)} target(s): {out}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        # a push that cannot be delivered must never take the desk link down
+        print(f"[CLOUD] push failed: {e}", flush=True)
+
+
+async def _broadcast_app(payload: dict) -> None:
+    """One frame to every attached phone, dropping the ones that have gone."""
+    for ws in list(_app_clients):
+        try:
+            await ws.send_json(payload)
+        except Exception:  # noqa: BLE001
+            _app_clients.discard(ws)
+
+
+async def _announce_desk(linked: bool) -> None:
+    """Tell the phones the desk arrived, or left.
+
+    A phone holding a socket gets the frame and raises its own notification.
+    Push therefore goes out only when NO phone is attached — a listening phone
+    would otherwise be told twice for one event, which you feel in your pocket.
+
+    Only the arrival is pushed. Losing the desk is a quiet downgrade, and waking
+    someone to report that a machine went to sleep is noise.
+    """
+    await _broadcast_app({"type": "desk", "linked": bool(linked)})
+    if linked and not _app_clients:
+        await _push_all(
+            "J.A.R.V.I.S. is on full power",
+            "The desk is online. PC control, files and terminal are available again.",
+            {"kind": "desk_link"})
+
+
+_load_push_targets()
 
 
 def _queue_offline_fact(ident: dict, text: str, reply: str) -> None:
@@ -769,6 +877,8 @@ async def health():
             "app_link": bool(APP_TOKEN),
             "desk_linked": _desk_connected(),
             "apps_linked": len(_app_clients),
+            # how many phones can be reached while holding no socket
+            "push_targets": len(_push_targets),
             # Counts only — how deep the sealed backlog is and whether anything
             # was lost. No fact, sealed or otherwise, is exposed here.
             "fact_outbox": fact_outbox.stats() if fact_outbox is not None else None}
@@ -900,6 +1010,9 @@ async def desk_link(websocket: WebSocket):
             pass
     roster = ", ".join(f"{i['who']} [{i['tier']}]" for i in _IDENTITIES.values()) or "none"
     print("[CLOUD] ✅ Desk linked — remote commands now route to the desk brain.", flush=True)
+    # Scheduled, not awaited: announcing can involve an HTTP round trip to Expo,
+    # and the desk's welcome must not wait behind a phone notification.
+    asyncio.create_task(_announce_desk(True))
     bot, _ = _ensure_bot()
     try:
         await websocket.send_json({"type": "welcome", "identities": roster})
@@ -973,6 +1086,12 @@ async def desk_link(websocket: WebSocket):
     finally:
         if _desk_ws is websocket:
             _desk_ws = None
+            try:
+                asyncio.create_task(_announce_desk(False))
+            except RuntimeError:
+                # no running loop, i.e. the process is going down. The phones
+                # lose their socket at the same moment anyway
+                pass
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1114,6 +1233,42 @@ async def _desk_telemetry(timeout: float = 12.0) -> Optional[dict]:
         _app_sinks.pop(req_id, None)
     data = frame.get("data")
     return data if isinstance(data, dict) else None
+
+
+@app.post("/app-push/register")
+async def app_push_register(request: Request):
+    """The phone hands over the address it can be reached at while asleep.
+
+    Gated by the same credential as the socket, and for the same reason: this
+    address is what gets told the desk is up, and it belongs to one install.
+    Presented as a bearer header rather than a query parameter — REST can set
+    headers, and only the WebSocket handshake could not.
+    """
+    if not APP_TOKEN:
+        return Response(status_code=503)
+    auth = request.headers.get("authorization", "")
+    presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    if not hmac.compare_digest(presented, APP_TOKEN):
+        peer = request.client.host if request.client else "?"
+        print(f"[CLOUD] REFUSED push register from {peer}", flush=True)
+        return Response(status_code=401)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return Response(status_code=400)
+    token = str((body or {}).get("push_token") or "").strip()
+    platform = str((body or {}).get("platform") or "?").strip()[:16]
+    if not token:
+        return Response(status_code=400)
+    fresh = token not in _push_targets
+    _push_targets[token] = platform
+    _save_push_targets()
+    if fresh:
+        # never the token itself: it is the address of one install, and these
+        # logs are readable by anyone with the Render dashboard
+        print(f"[CLOUD] push target registered ({platform}) - "
+              f"{len(_push_targets)} total.", flush=True)
+    return {"ok": True, "targets": len(_push_targets)}
 
 
 @app.websocket("/app-link")

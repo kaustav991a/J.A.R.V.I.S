@@ -63,6 +63,12 @@ def _neuter() -> None:
     cg._app_clients.clear()
     cg._IDENTITIES.clear()
     cg._IDENTITIES[1] = {"who": "Kaustav", "honorific": "Sir", "tier": cg._ADMIN_TIER}
+    # Push addresses are persisted, so point the harness at its own file: a test
+    # run must never write a phone into the set the live gateway would push to.
+    cg._PUSH_FILE = os.path.join(os.path.dirname(os.path.abspath(cg.__file__)),
+                                 "app_push_tokens.test.json")
+    cg._push_targets.clear()
+    cg._last_push_at = 0.0
 
 
 _neuter()
@@ -510,6 +516,97 @@ def test_the_desk_bridge_answers_a_vitals_request():
     asyncio.run(cloud_bridge._handle_hud_req(WS(), asyncio.Lock(), {"type": "hud_req", "req_id": 7}))
     assert sent and sent[0]["type"] == "hud" and sent[0]["req_id"] == 7
     assert isinstance(sent[0]["data"], dict) and "cpu_percent" in sent[0]["data"]
+
+
+class _Phone:
+    """A phone socket, for the announcement tests. `_announce_desk` only ever
+    calls `send_json` on the members of `_app_clients`."""
+
+    def __init__(self, dead: bool = False):
+        self.dead = dead
+        self.got: list = []
+
+    async def send_json(self, payload: dict) -> None:
+        if self.dead:
+            raise RuntimeError("socket is gone")
+        self.got.append(payload)
+
+
+def test_desk_arrival_is_announced_as_a_frame_the_app_parses():
+    """`{"type":"desk","linked":true}` — the shape `parseFrame` reads.
+
+    Without this the phone learns the desk is up only by re-dialling, so a
+    session that began as cloud-only stayed labelled cloud-only while quietly
+    having gained PC control.
+    """
+    phone = _Phone()
+    cg._app_clients.add(phone)
+    asyncio.run(cg._announce_desk(True))
+    assert phone.got == [{"type": "desk", "linked": True}]
+
+    phone.got.clear()
+    asyncio.run(cg._announce_desk(False))
+    assert phone.got == [{"type": "desk", "linked": False}]
+
+
+def test_a_phone_holding_a_socket_is_never_also_pushed():
+    """One event, one notification.
+
+    The app raises its own local notification from the frame. A push on top of
+    that is the same news twice, which you feel in your pocket.
+    """
+    pushes: list = []
+    original = cg._push_all
+
+    async def _spy(title, body, data=None):
+        pushes.append(title)
+
+    cg._push_all = _spy
+    try:
+        cg._push_targets["ExponentPushToken[seed]"] = "android"
+        phone = _Phone()
+        cg._app_clients.add(phone)
+        asyncio.run(cg._announce_desk(True))
+        assert pushes == []
+        # ...and with nobody listening, the same event does push
+        cg._app_clients.clear()
+        asyncio.run(cg._announce_desk(True))
+        assert pushes == ["J.A.R.V.I.S. is on full power"]
+        # losing the desk is a quiet downgrade, never a notification
+        asyncio.run(cg._announce_desk(False))
+        assert len(pushes) == 1
+    finally:
+        cg._push_all = original
+
+
+def test_a_dead_phone_socket_is_dropped_rather_than_raised_through():
+    """One phone that has gone away must not stop the others being told."""
+    dead, live = _Phone(dead=True), _Phone()
+    cg._app_clients.update({dead, live})
+    asyncio.run(cg._announce_desk(True))
+    assert dead not in cg._app_clients
+    assert live.got == [{"type": "desk", "linked": True}]
+
+
+def test_push_registration_is_gated_by_the_pairing_token():
+    """The push address is what gets told the desk is up. Same credential as the
+    socket, because it reaches the same phone."""
+    body = {"push_token": "ExponentPushToken[abc]", "platform": "android"}
+    assert client.post("/app-push/register", json=body).status_code == 401
+    assert client.post("/app-push/register", json=body,
+                       headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+    good = {"Authorization": f"Bearer {TOKEN}"}
+    res = client.post("/app-push/register", json=body, headers=good)
+    assert res.status_code == 200 and res.json()["targets"] == 1
+    # the same install registering again is not a second phone
+    assert client.post("/app-push/register", json=body,
+                       headers=good).json()["targets"] == 1
+    assert client.get("/health").json()["push_targets"] == 1
+
+    # an address that is not an address is refused rather than stored
+    assert client.post("/app-push/register", json={"push_token": "  "},
+                       headers=good).status_code == 400
 
 
 if __name__ == "__main__":

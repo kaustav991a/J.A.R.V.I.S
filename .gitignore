@@ -71,3 +71,8 @@ jarvis-frontend/dist/
 .DS_Store
 .env
 KEys.txt
+
+# Push addresses registered by the phone app. Runtime state, per install, and
+# the .test.json one is written by test_app_link.py.
+jarvis-backend/app_push_tokens.json
+jarvis-backend/app_push_tokens.test.json

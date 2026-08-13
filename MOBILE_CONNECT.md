@@ -119,6 +119,39 @@ the desk off, there is no PC control.
 | Vitals in Reports | ✅ | ✅ (polled every 15s) | empty — the cloud has no numbers and will not invent any |
 | Voice notes | ✅ | ✅ | ✅ |
 
+## Full power — when the desk wakes up
+
+A cloud session starts on the light brain. The moment the desk attaches to
+`/desk-link`, the same socket reaches the real machine, and the phone is told so
+rather than having to re-dial:
+
+```json
+{"type": "desk", "linked": true}
+```
+
+The app reads that into `hud.deskLinked`, flips its transport readout from CLOUD
+to **FULL POWER**, and raises *"J.A.R.V.I.S. is on full power"*. The reverse flip
+is silent on purpose — losing the desk is a quiet downgrade, not something worth
+buzzing a pocket for.
+
+**A phone with no socket still gets told.** Android suspends a backgrounded app
+and the WebSocket dies with it, which is exactly the state the phone is in when
+the desk wakes at 2am. So the phone registers a push address:
+
+```
+POST /app-push/register
+Authorization: Bearer <the same APP_TOKEN>
+{"push_token": "ExponentPushToken[…]", "platform": "android"}
+```
+
+The gateway pushes through Expo's relay (no Firebase service account needed —
+Expo holds the FCM credentials), and **only when no phone is holding a socket**:
+a listening phone raises its own notification from the frame, and two
+notifications for one event is a bug you feel rather than read. `APP_PUSH_MIN_GAP_SECS`
+(default 300) stops a flapping desk becoming a burst.
+
+`/health` gained `push_targets` — how many phones can be reached while asleep.
+
 ## Voice
 
 The gateway accepts a recorded clip today — raw bytes on the socket, or
