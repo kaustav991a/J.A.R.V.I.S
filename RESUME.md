@@ -6,6 +6,57 @@
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
 > bookmark, not a plan.
 
+## ▶ 2026-08-13 — the phone is connected, and the gateway grew four things
+
+All deployed on `feat/cloud-gateway` (`9c37b4d`). The phone half is in
+`kaustav991a/J.A.R.V.I.S-Mobile@feat/mobile-hud` (`666a4b1`); that repo's `RESUME.md`
+carries the resume point for the app side, including what is still untested.
+
+**Rotate `BRIDGE_SECRET` when this machine is next up.** The old value was printed
+into Render's access log before the redaction below landed, and it still opens
+`/desk-link` — a stand-in desk was connected with it repeatedly during testing. Both
+ends change together: Render env and `jarvis-backend/.env` here. `APP_TOKEN` is
+already rotated and separate, so the phone is unaffected by that change.
+
+What landed:
+
+1. **The desk arriving is announced.** `{"type":"desk","linked":true}` to every
+   attached phone, so a cloud session that silently gained PC control now says so.
+   With it, `POST /app-push/register` and push through Expo's relay, because Android
+   suspends a backgrounded app and the socket dies with it. Push goes out **only when
+   no phone is attached** — a listening one raises its own notification, and one event
+   must not arrive twice.
+2. **Desk-watch alerts reach a closed app.** `intruder` / `intruder_resolved` are
+   relayed to phones and pushed when none is attached, on the MAX-importance channel
+   and skipping the quiet gap: rate-limiting a 30-second lock warning is the wrong
+   trade. Verified end to end — a closed phone was woken and the tap opened the alert
+   screen.
+3. **The pairing token was being written to the access log.** uvicorn logs the whole
+   request line and the token travels as a query parameter, because React Native
+   cannot set headers on a WebSocket handshake. `_RedactQuerySecrets` filters it;
+   confirmed live as `?token=<redacted>`.
+4. **Located questions are answered from measurements.** He asked whether it was
+   raining and was told it was not, while it was raining — the model answering out of
+   its own weights. The phone now sends coordinates, place name, current conditions
+   and the places he has named ("the office" resolves against a label rather than a
+   geocoder), and the context tells the model not to contradict the figures.
+
+Two things learned the hard way, both worth keeping:
+
+**Open-Meteo rate-limits per IP, and Render's outbound address is shared.** The
+gateway's own weather lookup was answered `429 Too Many Requests` in production while
+the identical URL returned 200 from a laptop. The lookup moved to the phone; the
+gateway's copy survives as a fallback with a 15-minute backoff, and serves a stale
+reading in preference to nothing.
+
+**A pre-push check that stubs the network does not test the network.** The one line
+that failed in production was the one line the check had mocked out.
+
+Still absent: live traffic. OSRM's public router knows the road graph, not the road,
+so durations are free-flowing and the context says so rather than implying an ETA.
+`_route_blocking` / `_route_to_blocking` are the only functions that change when
+there is a Mapbox or TomTom key.
+
 ## ▶ 2026-08-12 — the mobile app now has a front door. Read `MOBILE_CONNECT.md`.
 
 Built out of sequence, ahead of the gate, because the phone is being connected at the
