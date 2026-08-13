@@ -696,7 +696,43 @@ import base64  # noqa: E402
 import hmac  # noqa: E402
 import itertools  # noqa: E402
 import json  # noqa: E402
+import logging  # noqa: E402
+import re  # noqa: E402
 import urllib.request  # noqa: E402
+
+
+class _RedactQuerySecrets(logging.Filter):
+    """Keep the phone's pairing token out of the access log.
+
+    uvicorn logs the whole request line, and the phone has to present its token
+    as a query parameter — React Native cannot set headers on a WebSocket
+    handshake. So every phone connection was printing
+
+        "WebSocket /app-link?token=<the actual secret>" [accepted]
+
+    into the log, readable by anyone with dashboard access, and that token reaches
+    a brain that answers as him. Redacted at the logging layer rather than by
+    turning access logs off, because those logs are how the desk bridge and the
+    phone were debugged in the first place.
+    """
+
+    _PATTERN = re.compile(r"(token=)[^\s\"&]+", re.IGNORECASE)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001
+            return True
+        if "token=" in message.lower():
+            # collapse to an already-formatted message: the args have been
+            # consumed by getMessage() and must not be applied a second time
+            record.msg = self._PATTERN.sub(r"\1<redacted>", message)
+            record.args = ()
+        return True
+
+
+for _log_name in ("uvicorn.access", "uvicorn.error", "uvicorn"):
+    logging.getLogger(_log_name).addFilter(_RedactQuerySecrets())
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect  # noqa: E402
 

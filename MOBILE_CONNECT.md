@@ -152,6 +152,41 @@ notifications for one event is a bug you feel rather than read. `APP_PUSH_MIN_GA
 
 `/health` gained `push_targets` — how many phones can be reached while asleep.
 
+### Push needs one thing from Expo, once
+
+Registration working is not the same as delivery working. With no FCM key uploaded
+to the Expo project, the relay refuses the send and the gateway logs it plainly:
+
+```
+[CLOUD] push -> 1 target(s): {"data":[{"status":"error",
+  "message":"Unable to retrieve the FCM server key for the recipient's app...",
+  "details":{"error":"InvalidCredentials","fault":"developer"}}]}
+```
+
+Fix, in the mobile repo, no code: `eas credentials -p android` → *Google Service
+Account Key for Push Notifications (FCM V1)* → upload the service-account JSON
+from the same Firebase project as `google-services.json`.
+
+### Why the token no longer appears in the log
+
+`APP_TOKEN` travels as a query parameter because React Native cannot set headers
+on a WebSocket handshake — and uvicorn logs the whole request line, so every
+phone connection used to print
+
+```
+"WebSocket /app-link?token=<the actual secret>" [accepted]
+```
+
+into Render's log, where anyone with dashboard access could read it. Worse when
+`APP_TOKEN` is left to fall back to `BRIDGE_SECRET`, since one leaked string then
+opens both doors. `_RedactQuerySecrets` now filters `uvicorn.access` and rewrites
+any `token=` value to `<redacted>`; the logs are otherwise untouched, because they
+are how this bridge gets debugged.
+
+**Set `APP_TOKEN` to its own value rather than relying on the fallback.** Then the
+phone's credential can be rotated without dropping the desk link, and a leak of
+one is not a leak of both.
+
 ## Voice
 
 The gateway accepts a recorded clip today — raw bytes on the socket, or
