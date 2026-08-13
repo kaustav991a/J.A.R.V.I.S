@@ -894,10 +894,28 @@ async def _relay_watch(frame: dict) -> None:
     trigger = str(frame.get("trigger") or "unlock").strip()
     seconds = frame.get("expires_in")
     when = f" It locks itself in {int(seconds)}s." if isinstance(seconds, (int, float)) else ""
+    # The whole alert rides in the payload, not just its id.
+    #
+    # A phone woken by this push holds no socket, so it never saw the frame — and
+    # tapping the notification would open an app with nothing to show. Carrying
+    # the fields lets it rebuild the alert and raise the answer screen.
+    #
+    # `expires_at_ms` is the one place this design puts a wall clock on the wire.
+    # The desk deliberately sends `expires_in` seconds so the two machines never
+    # have to agree on the time, but a notification can sit unread for minutes, so
+    # a duration is meaningless by the time it is tapped. Skew only shifts a
+    # readout: the desk still owns the countdown that decides, and locks on its own
+    # clock whatever the phone displays.
     await _push_all(
         "Someone is at the desk",
         f"{trigger} as {who or 'an unknown user'}. Was that you?{when}",
-        {"kind": "intruder", "id": frame.get("id") or frame.get("action_id") or ""},
+        {"kind": "intruder",
+         "id": frame.get("id") or frame.get("action_id") or "",
+         "expires_at_ms": int((time.time() + float(seconds)) * 1000)
+                          if isinstance(seconds, (int, float)) else None,
+         "image": frame.get("image"),
+         "user": frame.get("user"),
+         "trigger": trigger},
         channel="desk-watch",
         force=True)
 
