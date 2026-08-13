@@ -1016,6 +1016,43 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * 6371.0 * asin(sqrt(a))
 
 
+def _match_known(dest: str, known: list) -> Optional[dict]:
+    """Resolve a destination against the places he has named.
+
+    Checked before any geocoder, because "the office" is not a place Nominatim can
+    find — it is a word that means something only to him, and searching for it
+    would return somebody else's office in another city.
+    """
+    want = dest.strip().lower()
+    if not want:
+        return None
+    for place in known:
+        label = str(place.get("label") or "").strip().lower()
+        if not label:
+            continue
+        # "office", "the office", "my office" all mean the one he named
+        if label == want or label in want:
+            return place
+    return None
+
+
+def _route_to_blocking(name: str, dlat: float, dlon: float, lat: float, lon: float) -> Optional[str]:
+    """Distance and time to coordinates already known — no geocoding needed."""
+    try:
+        route = _get_json_blocking(
+            f"{OSRM_URL}/{lon:.5f},{lat:.5f};{dlon:.5f},{dlat:.5f}?overview=false")
+        legs = (route.get("routes") or [{}])[0]
+        metres, seconds = legs.get("distance"), legs.get("duration")
+        if not isinstance(metres, (int, float)) or not isinstance(seconds, (int, float)):
+            return None
+        straight = _haversine_km(lat, lon, dlat, dlon)
+        return (f"{name}: {metres / 1000:.1f} km by road ({straight:.1f} km straight line), "
+                f"about {int(seconds // 60)} min driving with no traffic accounted for")
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] route lookup failed: {e}", flush=True)
+        return None
+
+
 def _route_blocking(dest: str, lat: float, lon: float) -> Optional[str]:
     """Driving distance and duration to a named place.
 
@@ -1055,10 +1092,32 @@ async def _local_lookups(where: dict, text: str) -> list:
             facts.append(f"Closest matches for '{near.group('what').strip()}': {found}.")
     far = _FAR_RE.search(text)
     if far:
-        route = await asyncio.to_thread(_route_blocking, far.group("dest"), where["lat"], where["lon"])
+        dest = far.group("dest")
+        # a place he named beats a geocoder that has never heard of it
+        named = _match_known(dest, where.get("known") or [])
+        route = await asyncio.to_thread(
+            _route_to_blocking, named["label"], named["lat"], named["lon"], where["lat"], where["lon"]
+        ) if named else await asyncio.to_thread(_route_blocking, dest, where["lat"], where["lon"])
         if route:
             facts.append(f"Route from him: {route}.")
+
+    # where he is standing, if it is somewhere he named. Answers "am I at the
+    # office" and stops the model guessing from a district name.
+    here = _match_here(where)
+    if here:
+        facts.append(f"He is currently at {here}.")
     return facts
+
+
+def _match_here(where: dict) -> Optional[str]:
+    """The name of wherever he is, if he has named it. 250m counts as being there."""
+    for place in where.get("known") or []:
+        try:
+            if _haversine_km(where["lat"], where["lon"], float(place["lat"]), float(place["lon"])) <= 0.25:
+                return str(place.get("label") or "").strip() or None
+        except Exception:  # noqa: BLE001
+            continue
+    return None
 
 
 async def _where_context(where: dict, text: str) -> str:
@@ -1092,6 +1151,12 @@ async def _where_context(where: dict, text: str) -> str:
     trail = where.get("trail")
     if trail:
         lines.append(f"Where he has been recently, oldest first: {trail}.")
+    known = where.get("known")
+    if known:
+        # so "how long to the office" and "is that near home" are answerable at all
+        lines.append("Places he has named: "
+                     + "; ".join(f"{p['label']} at {p['lat']:.4f},{p['lon']:.4f}" for p in known)
+                     + ".")
     lines.append("Use these figures for anything about weather, distances or his "
                  "whereabouts. Do not contradict them and do not answer from memory.")
     return "[" + " ".join(lines) + "]\n\n" + text
@@ -1509,6 +1574,25 @@ def _decode_where(raw: str) -> Optional[dict]:
     given_weather = str(where.get("weather") or "").strip()[:300]
     if given_weather:
         out["weather"] = given_weather
+
+    # Places he has named — home, the office, anywhere else worth a word.
+    #
+    # Only this phone knows what "the office" means, so they arrive with the
+    # question rather than being stored here. That also means "how far to the
+    # office" is answered without geocoding a word no geocoder could resolve.
+    known = where.get("known")
+    if isinstance(known, list):
+        named = []
+        for item in known[:12]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                label = str(item["label"]).strip()[:40]
+                named.append({"label": label, "lat": float(item["lat"]), "lon": float(item["lon"])})
+            except Exception:  # noqa: BLE001
+                continue
+        if named:
+            out["known"] = named
 
     # The trail, if the phone chose to send one.
     #
