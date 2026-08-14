@@ -308,6 +308,17 @@ already. READ WHAT IS IN FRONT OF YOU before answering: earlier turns in this th
 are facts he has given you, and failing to use one while confidently inventing an
 alternative is worse than admitting you are unsure.
 
+REMEMBER WHAT HE TELLS YOU ABOUT HIMSELF: when he states something lasting — a
+pet, a name, a place, a job, a preference, a loss — record it by ending your reply
+with a marker on its own:
+
+    [[REMEMBER: he has a nine-month-old black Indie]]
+
+Write it as a short third-person sentence. Only lasting things: not what he asked
+just now, not the weather, not anything already in the list of what you know. If he
+corrects something you were told before, record the correction the same way. He
+never sees the marker, so do not refer to it or explain it.
+
 ASK FOR A SEARCH INSTEAD OF PROMISING ONE: if you need current or specific
 information you do not have, end your reply with a marker on its own:
 
@@ -882,7 +893,7 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     import datetime as _dt
     now = _dt.datetime.now(_OPERATOR_TZ)
     date_ctx = f"\n\nCURRENT DATE/TIME (operator's local clock): {now:%A, %d %B %Y, %I:%M %p} IST."
-    system = _PERSONA.format(who=who, honorific=honorific) + date_ctx + grounding
+    system = _PERSONA.format(who=who, honorific=honorific) + date_ctx + await _facts_block() + grounding
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
     if context:
@@ -919,9 +930,19 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
         })
         reply = await asyncio.to_thread(_complete, second, "", "text")
 
-    # Stripped whether or not it was acted on. A marker that reaches the operator is
-    # worse than no marker at all: it is punctuation from the machinery, in a chat
+    # ── Anything it was told to remember ────────────────────────────────────
+    #
+    # Stored before the marker is stripped, and stored even if the write fails, so a
+    # fact he stated is at least true for this process. A turn history cannot carry
+    # this: it scrolls off in twelve messages, which is how his dog fell out of the
+    # conversation while still being the subject of it.
+    for fact in _REMEMBER_MARKER.findall(reply or ""):
+        await remember_fact(fact)
+
+    # Stripped whether or not they were acted on. A marker that reaches the operator
+    # is worse than no marker at all: it is punctuation from the machinery, in a chat
     # that is supposed to read like someone talking.
+    reply = _REMEMBER_MARKER.sub("", reply or "")
     reply = _LOOKUP_MARKER.sub("", reply or "").strip()
 
     # what he actually said, not what he said plus a page of coordinates
@@ -938,7 +959,7 @@ async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: s
     import datetime as _dt
     now = _dt.datetime.now(_OPERATOR_TZ)
     date_ctx = f"\n\nCURRENT DATE/TIME (operator's local clock): {now:%A, %d %B %Y, %I:%M %p} IST."
-    system = _PERSONA.format(who=who, honorific=honorific) + date_ctx
+    system = _PERSONA.format(who=who, honorific=honorific) + date_ctx + await _facts_block()
     question = caption.strip() or "The operator sent this photo without a caption — react to it helpfully."
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
@@ -1013,6 +1034,38 @@ def _db_init_blocking() -> None:
         conn.commit()
 
 
+def _db_init_facts_blocking() -> None:
+    with _db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS facts (
+                   id      BIGSERIAL PRIMARY KEY,
+                   fact    TEXT        NOT NULL UNIQUE,
+                   at      TIMESTAMPTZ NOT NULL DEFAULT now())"""
+        )
+        conn.commit()
+
+
+def _db_facts_blocking(limit: int) -> list[str]:
+    with _db_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT fact FROM facts ORDER BY id LIMIT %s", (limit,))
+        return [row[0] for row in cur.fetchall()]
+
+
+def _db_add_fact_blocking(fact: str) -> None:
+    with _db_conn() as conn, conn.cursor() as cur:
+        # the same thing told twice is one fact; UNIQUE and DO NOTHING mean saying
+        # it again is free rather than filling the block with duplicates
+        cur.execute("INSERT INTO facts (fact) VALUES (%s) ON CONFLICT (fact) DO NOTHING", (fact,))
+        conn.commit()
+
+
+def _db_forget_fact_blocking(fact: str) -> int:
+    with _db_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM facts WHERE fact = %s", (fact,))
+        conn.commit()
+        return cur.rowcount
+
+
 def _db_load_blocking(chat_id: int, limit: int) -> list[dict]:
     with _db_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -1047,6 +1100,7 @@ async def _memory_ready() -> bool:
         return True
     try:
         await asyncio.to_thread(_db_init_blocking)
+        await asyncio.to_thread(_db_init_facts_blocking)
         _db_ready = True
         print("[CLOUD] persistent memory ready", flush=True)
         return True
@@ -1054,6 +1108,88 @@ async def _memory_ready() -> bool:
         _db_broken = True
         print(f"[CLOUD] persistent memory unavailable ({e}); memory is this process only.", flush=True)
         return False
+
+
+# ── Things worth knowing, as opposed to things that were said ────────────────
+#
+# A turn history answers "what were we just talking about". It does not answer "what
+# is true about him", because anything said more than `_MAX_TURNS` ago is gone —
+# which is how a question about his dog got answered with infant growth charts while
+# the dog sat four turns up the transcript.
+#
+# Facts are separate, few, and permanent. They go in every system prompt, so this
+# stays deliberately small: it is a page about a person, not a log.
+_FACTS_CAP = 60
+_facts_cache: Optional[list[str]] = None
+
+_REMEMBER_MARKER = re.compile(r"\[\[\s*REMEMBER\s*:\s*(.+?)\]\]", re.I | re.S)
+
+
+async def _facts() -> list[str]:
+    """Every stored fact. Cached, because this is read on every single turn."""
+    global _facts_cache
+    if _facts_cache is not None:
+        return _facts_cache
+    if not await _memory_ready():
+        _facts_cache = []
+        return _facts_cache
+    try:
+        _facts_cache = await asyncio.to_thread(_db_facts_blocking, _FACTS_CAP)
+        print(f"[CLOUD] {len(_facts_cache)} fact(s) loaded", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] facts unavailable ({e}); answering without them.", flush=True)
+        _facts_cache = []
+    return _facts_cache
+
+
+async def remember_fact(fact: str) -> bool:
+    """Store one fact. False when there was nowhere to put it.
+
+    False matters and is not swallowed: without `DATABASE_URL` a fact lives until the
+    next restart, and telling someone their assistant will remember something when it
+    will not is worse than admitting it cannot.
+    """
+    said = " ".join((fact or "").split())[:300]
+    if not said:
+        return False
+    global _facts_cache
+    if _facts_cache is None:
+        await _facts()
+    if said not in (_facts_cache or []):
+        (_facts_cache if _facts_cache is not None else []).append(said)
+    if not await _memory_ready():
+        print(f"[CLOUD] fact held in memory only (no DATABASE_URL): {said!r}", flush=True)
+        return False
+    try:
+        await asyncio.to_thread(_db_add_fact_blocking, said)
+        print(f"[CLOUD] remembered: {said!r}", flush=True)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] could not store fact ({e}): {said!r}", flush=True)
+        return False
+
+
+async def forget_fact(fact: str) -> bool:
+    said = " ".join((fact or "").split())[:300]
+    global _facts_cache
+    if _facts_cache is not None and said in _facts_cache:
+        _facts_cache.remove(said)
+    if not await _memory_ready():
+        return False
+    try:
+        return await asyncio.to_thread(_db_forget_fact_blocking, said) > 0
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] could not forget fact ({e}): {said!r}", flush=True)
+        return False
+
+
+async def _facts_block() -> str:
+    """The facts, as a system-prompt section. Empty string when there are none."""
+    known = await _facts()
+    if not known:
+        return ""
+    return ("\n\nWHAT YOU KNOW ABOUT HIM (established, and true unless he corrects it — "
+            "use it, and never contradict it):\n" + "\n".join(f"- {f}" for f in known))
 
 
 async def _history_for(chat_id: int) -> list[dict]:
@@ -1873,6 +2009,10 @@ async def health():
                 "broken": _db_broken,
                 "prompt_messages": _MAX_TURNS * 2,
                 "chats_cached": len(_HISTORY),
+                # facts are separate from turns on purpose — see the comment above
+                # `_FACTS_CAP`. A turn history says what was just said; these say
+                # what is true, and they go into every prompt.
+                "facts_known": len(_facts_cache or []),
             },
             "bridge": bool(BRIDGE_SECRET),
             # The phone refuses a gateway that does not declare this, because a
@@ -2415,6 +2555,46 @@ async def _deliver_unprompted(message: str, title: str = "J.A.R.V.I.S.") -> dict
         pushed = True
     print(f"[CLOUD] unprompted -> {len(_app_clients)} socket(s), pushed={pushed}", flush=True)
     return {"delivered": True, "sockets": len(_app_clients), "pushed": pushed}
+
+
+@app.post("/app-fact")
+async def app_fact(request: Request):
+    """Add, remove or list what J.A.R.V.I.S. knows about him.
+
+    Gated by `APP_TOKEN`, because these go into every system prompt: an open version
+    would let anyone tell the assistant what is true about its operator, which is a
+    more durable kind of lie than a single injected message.
+
+        {"fact": "his dog Indie died on 5 August 2025"}
+        {"forget": "his dog Indie died on 5 August 2025"}
+        {}                                    -> lists what is stored
+
+    `stored: false` means there is no DATABASE_URL and the fact lives only until the
+    next restart. Reported rather than hidden: telling someone their assistant will
+    remember something when it will not is worse than saying it cannot.
+    """
+    if not APP_TOKEN:
+        return Response(status_code=503)
+    auth = request.headers.get("authorization", "")
+    presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    if not hmac.compare_digest(presented, APP_TOKEN):
+        peer = request.client.host if request.client else "?"
+        print(f"[CLOUD] REFUSED app-fact from {peer}", flush=True)
+        return Response(status_code=401)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    body = body if isinstance(body, dict) else {}
+
+    drop = str(body.get("forget") or "").strip()
+    if drop:
+        return {"forgotten": await forget_fact(drop), "facts": await _facts()}
+    fact = str(body.get("fact") or "").strip()
+    if fact:
+        stored = await remember_fact(fact)
+        return {"stored": stored, "persistent": bool(DATABASE_URL), "facts": await _facts()}
+    return {"facts": await _facts(), "persistent": bool(DATABASE_URL)}
 
 
 @app.post("/app-say")
