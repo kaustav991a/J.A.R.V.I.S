@@ -92,6 +92,12 @@ MODE = (os.getenv("CLOUD_GATEWAY_MODE") or "webhook").strip().lower()
 PUBLIC_URL = (os.getenv("PUBLIC_URL") or "").strip().rstrip("/")
 PORT = int(os.getenv("PORT", "8080"))
 GROQ_MODEL = (os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
+# This default is DEAD. On 2026-08-14 a photo came back
+# `404 model_not_found: meta-llama/llama-4-scout-17b-16e-instruct does not exist or
+# you do not have access to it` — Groq retires model ids, and a hardcoded one ages
+# into a 404 with no warning. Left in place rather than replaced with a guess that
+# would age the same way: set GROQ_VISION_MODEL to something current, or point
+# LLM_PROVIDER_VISION at gemini, which is what was actually done.
 GROQ_VISION_MODEL = (os.getenv("GROQ_VISION_MODEL")
                      or "meta-llama/llama-4-scout-17b-16e-instruct").strip()
 GROQ_WHISPER_MODEL = (os.getenv("GROQ_WHISPER_MODEL") or "whisper-large-v3").strip()
@@ -2308,6 +2314,33 @@ async def _desk_telemetry(timeout: float = 12.0) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _excuse(what: str, exc: BaseException) -> str:
+    """A sentence for the chat, and the whole truth in the log.
+
+    A provider's error object was being interpolated straight into a chat bubble, so
+    a retired model id produced this, in the middle of a conversation:
+
+        I couldn't make sense of that picture: Error code: 404 - {'error':
+        {'message': 'The model `meta-llama/llama-4-scout-17b-16e-instruct` does not
+        exist or you do not have access to it.', 'type': 'invalid_request_error',
+        'code': 'model_not_found'}}
+
+    That is the right information for whoever runs this and the wrong information
+    for whoever is talking to it — and it is printed in a chat log that persists,
+    next to a persona built on not sounding like machinery. The detail goes to the
+    log, where it is actually actionable; the operator gets a sentence.
+
+    A model id that has been retired is worth naming as its own case: it is the one
+    failure here that is fixed by changing a setting rather than by waiting.
+    """
+    detail = str(exc)
+    print(f"[CLOUD] {what} failed: {detail}", flush=True)
+    if "model_not_found" in detail or "does not exist or you do not have access" in detail:
+        return (f"I can't {what} at the moment — the model configured for it is no longer "
+                f"available. Worth checking the gateway's settings.")
+    return f"I couldn't {what} just then. Try me again in a moment."
+
+
 async def _deliver_unprompted(message: str, title: str = "J.A.R.V.I.S.") -> dict:
     """Say something nobody asked for, down whichever route is open.
 
@@ -2514,7 +2547,7 @@ async def app_link(websocket: WebSocket):
                         text = (await asyncio.to_thread(
                             _transcribe, audio, filename) or "").strip()
                     except Exception as e:  # noqa: BLE001
-                        await say("error", f"I couldn't make out that recording: {e}")
+                        await say("error", _excuse("make out that recording", e))
                         await say("online")
                         continue
                     if not text:
@@ -2541,7 +2574,7 @@ async def app_link(websocket: WebSocket):
                         answer = await see(APP_CHAT_ID, photo, text,
                                            ident["who"], ident["honorific"])
                     except Exception as e:  # noqa: BLE001
-                        await say("error", f"I couldn't make sense of that picture: {e}")
+                        await say("error", _excuse("look at that picture", e))
                         await say("online")
                         continue
                     if answer:
@@ -2573,7 +2606,7 @@ async def app_link(websocket: WebSocket):
                                              ident["who"], ident["honorific"],
                                              context=ctx)
                     except Exception as e:  # noqa: BLE001
-                        await say("error", f"I couldn't answer that: {e}")
+                        await say("error", _excuse("answer that", e))
                         await say("online")
                         continue
                     # The desk never saw this turn, so it is sealed and queued for
