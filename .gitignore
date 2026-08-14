@@ -26,6 +26,21 @@ jarvis-backend/memory/vector_db/
 jarvis-backend/personal_chroma_db/
 jarvis-backend/action_chroma_db/
 
+# --- The same stores, WHEREVER they land ---
+# Every pattern above is anchored to jarvis-backend/, which is right for the real
+# stores and useless the moment one is created somewhere else. Chroma paths used
+# to be taken relative to the process's CWD, so launching from the repo root
+# produced an UNIGNORED jarvis_chroma_db/ at the top level — holding the
+# plaintext vector mirror of facts that are ciphertext in jarvis_longterm.db, one
+# `git add -A` away from being published. memory.py is anchored now; these
+# unanchored patterns are the belt to that braces, because the next stray store
+# will be created by something nobody has thought of yet.
+jarvis_chroma_db/
+personal_chroma_db/
+action_chroma_db/
+rag_chroma_db/
+vector_db/
+
 # --- Agent measurement (§6.8.4) — counters, per machine, never shared ---
 # It stores no argument values and no goal text by construction, but it is still
 # a record of how this particular desk is used, and it is per-machine noise in a

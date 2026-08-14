@@ -349,7 +349,16 @@ init_db()
 # ==========================================
 # TIER 3: CHROMA VECTOR MEMORY (SEMANTIC)
 # ==========================================
-CHROMA_PATH = "jarvis_chroma_db"
+# Anchored on THIS FILE, never on the process's working directory. A bare
+# relative path made the store follow whoever launched the process: start JARVIS
+# from the repo root instead of jarvis-backend/ and this quietly opened a SECOND,
+# empty jarvis_chroma_db up there — while modules/episodic_memory.py, which
+# anchors on __file__ and names the same folder, kept using the real one. Two
+# halves of Tier 3 writing to different directories, no error either side, and
+# the symptom is memory that has "forgotten" with nothing in the log to say so.
+# Every other Chroma call site in this tree was already anchored; this was the
+# one that was not.
+CHROMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis_chroma_db")
 try:
     chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
     semantic_collection = chroma_client.get_or_create_collection(name="jarvis_memory")
