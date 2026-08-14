@@ -479,6 +479,41 @@ def _run_gemini(call_fn):
     raise last_exc or RuntimeError("Gemini key rotation exhausted.")
 
 
+# `data:image/jpeg;base64,<payload>` — the shape `see()` builds for Groq.
+_DATA_URI = re.compile(r"^data:([^;,]+);base64,(.*)$", re.S)
+
+
+def _gemini_part(part: dict) -> Optional[dict]:
+    """One OpenAI-shaped content part, translated.
+
+    The parts are not a dialect of each other. Groq takes an image as
+    `{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}`;
+    Gemini takes `{"type": "image", "data": "<base64>", "mime_type": "image/jpeg"}`.
+    Passing the first straight through earned a 400 naming the exact field:
+
+        The value 'image_url' is not supported for 'type' at 'input[0].content[1]'.
+        Supported values: ... 'image' ...
+
+    A part this cannot translate is dropped rather than sent. A remote http image
+    URL is the real case — Gemini's inline shape carries bytes, not links, and a
+    rejected request costs the whole turn where a missing image costs one detail.
+    """
+    kind = str(part.get("type") or "")
+    if kind == "text":
+        return {"type": "text", "text": str(part.get("text") or "")}
+    if kind == "image_url":
+        url = str((part.get("image_url") or {}).get("url") or "")
+        found = _DATA_URI.match(url)
+        if not found:
+            print("[CLOUD] dropping a non-inline image; Gemini's shape takes bytes.", flush=True)
+            return None
+        return {"type": "image", "mime_type": found.group(1), "data": found.group(2)}
+    # already Gemini-shaped — the transcription path builds these itself
+    if kind in ("image", "audio"):
+        return part
+    return None
+
+
 def _to_gemini(messages: list[dict]) -> tuple[str, list[dict]]:
     """Translate OpenAI-shaped messages into (system_instruction, input).
 
@@ -509,8 +544,10 @@ def _to_gemini(messages: list[dict]) -> tuple[str, list[dict]]:
             text = content if role == "user" else f"J.A.R.V.I.S. replied: {content}"
             parts.append({"type": "text", "text": text})
         elif isinstance(content, list):
-            # already-multimodal content, built by the callers below
-            parts.extend(content)
+            # multimodal content, built by the callers in Groq's shape — every part
+            # is translated, and anything untranslatable is dropped rather than
+            # sent, since one bad part fails the whole request
+            parts.extend(p for p in (_gemini_part(x) for x in content if isinstance(x, dict)) if p)
         if parts:
             history.append({"type": "user_input", "content": parts})
     return "\n\n".join(system_parts), history
