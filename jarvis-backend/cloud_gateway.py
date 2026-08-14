@@ -2513,18 +2513,46 @@ async def app_link(websocket: WebSocket):
     print(f"[CLOUD] App linked (desk {'up' if _desk_connected() else 'down'}) - "
           f"{len(_app_clients)} phone(s) attached.", flush=True)
 
-    async def emit(payload: dict) -> None:
+    async def emit(payload: dict) -> bool:
+        """True if the frame actually left. False was previously indistinguishable
+        from success, which is how a finished answer came to vanish silently."""
         nonlocal alive
         if not alive:
-            return
+            return False
         async with send_lock:
             try:
                 await websocket.send_json(payload)
+                return True
             except Exception:  # noqa: BLE001
                 alive = False
+                # Pruned here rather than only in `finally`. A socket dies without
+                # raising until something is written to it, so `_app_clients` was
+                # collecting phantoms — and `if not _app_clients` is what decides
+                # whether to push, so phantoms actively suppressed the push that
+                # would have delivered this. `apps_linked: 3` for one phone was the
+                # visible symptom.
+                _app_clients.discard(websocket)
+                return False
 
-    async def say(status: str, message: str = "") -> None:
-        await emit({"status": status, "message": message, "user": who})
+    async def say(status: str, message: str = "") -> bool:
+        return await emit({"status": status, "message": message, "user": who})
+
+    async def deliver(answer: str) -> None:
+        """The answer reaches him whether or not the socket survived the thinking.
+
+        A vision call takes the better part of a minute, which is long enough for a
+        screen to lock and Android to take the WebSocket with it. The answer was
+        computed, paid for, and written into memory — and then dropped into a closed
+        socket, so the chat showed a photo with nothing under it.
+
+        Forced past the push quiet gap on purpose: this is an answer to something he
+        asked a moment ago, not a status notification, and rate-limiting it would
+        mean choosing to lose a reply because an unrelated push went out earlier.
+        """
+        if await say("speaking", answer):
+            return
+        print("[CLOUD] reply outlived the socket; pushing instead", flush=True)
+        await _push_all("J.A.R.V.I.S.", answer, {"kind": "reply"}, force=True)
 
     async def keepalive() -> None:
         """Keep the phone's 30s frame watchdog from tearing down an idle socket.
@@ -2615,7 +2643,7 @@ async def app_link(websocket: WebSocket):
                         await say("online")
                         continue
                     if answer:
-                        await say("speaking", answer)
+                        await deliver(answer)
                     await say("online")
                     continue
 
@@ -2650,7 +2678,7 @@ async def app_link(websocket: WebSocket):
                     # the next handshake exactly like a PC-off Telegram turn.
                     _queue_offline_fact(ident, text, answer)
                 if answer:
-                    await say("speaking", answer)
+                    await deliver(answer)
                 await say("online")
             finally:
                 busy = False
