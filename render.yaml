@@ -17,6 +17,21 @@ services:
         value: webhook
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
+      # Which brain answers what. `groq` everywhere is the configuration that has
+      # been in production; set any of these to `gemini` to switch that capability
+      # alone. A switch needs no deploy, and every Gemini failure falls back to
+      # Groq — check /health "brains" to see what is actually live.
+      #   LLM_PROVIDER          default for all three
+      #   LLM_PROVIDER_TEXT     chat and reasoning
+      #   LLM_PROVIDER_VISION   photos
+      #   LLM_PROVIDER_AUDIO    voice transcription
+      - key: LLM_PROVIDER
+        value: groq
+      # Gemini is inert until a key is set, whatever the switches say.
+      - key: GEMINI_API_KEYS
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash
       - key: CLOUD_WEB_LOOKUP
         value: "1"
       # PUBLIC_URL must equal this service's own https URL once Render assigns it,

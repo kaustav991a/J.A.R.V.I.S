@@ -11,3 +11,7 @@ ddgs==9.14.4
 # it. Sealing needs the public key only, so the cloud can never re-open its own
 # queue. Vendored libsodium in a prebuilt wheel; pulls only cffi/pycparser.
 pynacl==1.6.2
+# Optional second brain, selected per capability by LLM_PROVIDER_* — see
+# _provider_for in cloud_gateway.py. Import is guarded and every call falls back
+# to Groq, so removing this line degrades the gateway rather than breaking it.
+google-genai==1.56.0

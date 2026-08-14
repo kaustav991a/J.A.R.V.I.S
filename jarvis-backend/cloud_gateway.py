@@ -67,7 +67,7 @@ import hashlib
 import threading
 import time
 import traceback
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from dotenv import load_dotenv
 
@@ -95,6 +95,36 @@ GROQ_VISION_MODEL = (os.getenv("GROQ_VISION_MODEL")
                      or "meta-llama/llama-4-scout-17b-16e-instruct").strip()
 GROQ_WHISPER_MODEL = (os.getenv("GROQ_WHISPER_MODEL") or "whisper-large-v3").strip()
 WEB_LOOKUP = (os.getenv("CLOUD_WEB_LOOKUP", "1").strip() == "1")
+
+# ── Which brain answers what ─────────────────────────────────────────────────
+#
+# Chosen per capability, not once for everything, because the two providers are
+# not better at the same things. Groq is markedly faster; Gemini follows a long
+# system prompt more closely and is natively multimodal — and it can be *told*
+# that a clip is code-switched Bengali/English, which a fixed ASR model like
+# Whisper can only guess at. Guessing wrong is the reported transcription bug.
+#
+#   LLM_PROVIDER        default for all three   (groq | gemini)
+#   LLM_PROVIDER_TEXT   chat and reasoning
+#   LLM_PROVIDER_VISION photos
+#   LLM_PROVIDER_AUDIO  voice transcription
+#
+# Groq stays the default everywhere: it is the configuration that has been in
+# production, and a provider switch should be a decision rather than a surprise
+# arriving with a deploy.
+_PROVIDER_DEFAULT = (os.getenv("LLM_PROVIDER") or "groq").strip().lower()
+
+
+def _provider_for(capability: str) -> str:
+    chosen = (os.getenv(f"LLM_PROVIDER_{capability.upper()}") or _PROVIDER_DEFAULT).strip().lower()
+    return chosen if chosen in ("groq", "gemini") else "groq"
+
+
+# Model ids are read from the environment so a switch does not need a deploy.
+# Defaults are the ids Google documents for these roles as of 2026-08-14.
+GEMINI_MODEL = (os.getenv("GEMINI_MODEL") or "gemini-3.5-flash").strip()
+GEMINI_VISION_MODEL = (os.getenv("GEMINI_VISION_MODEL") or GEMINI_MODEL).strip()
+GEMINI_AUDIO_MODEL = (os.getenv("GEMINI_AUDIO_MODEL") or GEMINI_MODEL).strip()
 
 # Webhook path secret — a stable, non-guessable slug derived from the token so we
 # never expose the token in the URL and don't require the operator to invent one.
@@ -191,7 +221,12 @@ You are speaking to {who} over Telegram while the desk system may be offline.
 VOICE RULES (override everything):
 1. ADDRESS the operator as "{honorific}". Never over-formalise the name.
 2. BREVITY: 1-2 sentences by default. Never ramble.
-3. PREEMPT: volunteer the next useful fact without being asked.
+3. PREEMPT: volunteer the next useful fact without being asked — but only when it
+   follows from what he asked. A greeting, a thank-you or small talk gets a human
+   reply and nothing else: no location, no temperature, no forecast, no status
+   report. "Thanks" answered with the weather is the single worst failure in this
+   system, and having background facts in front of you is not a reason to recite
+   them.
 4. NEVER say "Certainly", "Of course", "Sure", "Happy to", "Got it", "Absolutely", "Noted".
 5. NO SYCOPHANCY: don't praise ideas or thank for compliments; deflect with dry competence.
 6. CONTRACTIONS always ("I'll", "you've"). Occasional dry British inversion.
@@ -231,7 +266,25 @@ You must NEVER tell the operator to "go to the web", "search", "Google it",
 "check online", or "find out" for themselves — you are the one with web access,
 and redirecting them is a failure. If a lookup returns nothing this turn, say
 plainly that you couldn't reach live results at the moment and offer to try
-again — never punt the task back to them, and never guess a score or number."""
+again — never punt the task back to them, and never guess a score or number.
+A web result is someone else's page, not something you know: if it does not clearly
+answer what he asked, say you could not find it. Never stretch a near-miss into an
+answer. A search for what his wife would eat returned a hospital catering programme
+and it was reported to him as her meal plan — that is the failure to avoid.
+
+ASK WHEN THE QUESTION IS AMBIGUOUS: if a word could mean two things and the answer
+changes completely, ask which — once, in one short line. Do not pick the likelier
+reading and answer confidently. He asked the ideal weight of "an india, 9 months
+old", meaning his Indie dog, and was given WHO infant growth charts for a human
+boy — three different figures across three turns. His dog was in this conversation
+already. READ WHAT IS IN FRONT OF YOU before answering: earlier turns in this thread
+are facts he has given you, and failing to use one while confidently inventing an
+alternative is worse than admitting you are unsure.
+
+NEVER CONTRADICT YOURSELF ABOUT A MEASUREMENT: the background block gives air
+temperature and feels-like temperature as two named figures of the same reading.
+They are not competing readings and neither is "from earlier". If you have a
+measurement, it is current unless the block says otherwise."""
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -312,6 +365,193 @@ _WHISPER_PROMPT = (
     "Play some music. PC ta ki obostha e ache?"
 )
 GROQ_WHISPER_LANGUAGE = (os.getenv("GROQ_WHISPER_LANGUAGE") or "").strip()  # e.g. "bn" to force
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Gemini brain (optional second provider — see _provider_for)
+# ════════════════════════════════════════════════════════════════════════════
+#
+# Same key-pool idea as Groq: the free tier is rate-limited per key, so several
+# keys in `GEMINI_API_KEYS` are rotated on a 429 rather than failing the turn.
+#
+# The message shape is genuinely different, not a dialect of the OpenAI one:
+# system text is its own `system_instruction=` argument, turns are
+# `{"type": "user_input", "content": [parts]}`, and every part names itself
+# (`{"type": "text" | "audio" | "image", ...}`). `_to_gemini` does that
+# translation in one place so the rest of this file keeps speaking one language.
+def _parse_gemini_keys() -> list[str]:
+    multi = (os.getenv("GEMINI_API_KEYS") or "").strip()
+    single = (os.getenv("GEMINI_API_KEY") or "").strip()
+    keys: list[str] = []
+    if multi:
+        keys.extend(k.strip() for k in multi.split(",") if k.strip())
+    if single and single not in keys:
+        keys.insert(0, single)
+    return keys
+
+
+_GEMINI_KEYS = _parse_gemini_keys()
+_gemini_idx = 0
+_gemini_lock = threading.Lock()
+
+
+def gemini_ready() -> bool:
+    """Whether Gemini can be called at all. Checked before every switch."""
+    if not _GEMINI_KEYS:
+        return False
+    try:
+        from google import genai  # noqa: F401
+        return True
+    except Exception:  # noqa: BLE001
+        # requirements-cloud.txt predates google-genai on this deploy
+        return False
+
+
+def _run_gemini(call_fn):
+    """Run call_fn(client), rotating keys on a recoverable error."""
+    from google import genai
+
+    global _gemini_idx
+    if not _GEMINI_KEYS:
+        raise RuntimeError("No GEMINI_API_KEYS / GEMINI_API_KEY configured.")
+    with _gemini_lock:
+        start = _gemini_idx
+    n = len(_GEMINI_KEYS)
+    last_exc: Optional[BaseException] = None
+    for attempt in range(n):
+        idx = (start + attempt) % n
+        try:
+            out = call_fn(genai.Client(api_key=_GEMINI_KEYS[idx]))
+            with _gemini_lock:
+                _gemini_idx = idx
+            return out
+        except BaseException as e:  # noqa: BLE001
+            if _looks_recoverable(e):
+                last_exc = e
+                print(f"[CLOUD] Gemini key {idx} failed ({e}); rotating.", flush=True)
+                continue
+            raise
+    raise last_exc or RuntimeError("Gemini key rotation exhausted.")
+
+
+def _to_gemini(messages: list[dict]) -> tuple[str, list[dict]]:
+    """Translate OpenAI-shaped messages into (system_instruction, input).
+
+    Every system message is folded into one instruction, in order — this file
+    deliberately sends several (persona, then the romanise nudge, then the
+    location background), and their recency is what makes the model obey them, so
+    the order is preserved rather than sorted.
+
+    Assistant turns are replayed as user turns labelled with who spoke. The
+    documented way to put a model turn into a stateless history is to append the
+    `model_dump()` of a step returned by a previous call, and this history is our
+    own store of plain strings rather than Gemini's objects — so there is no step
+    to dump. Labelling keeps the content, which is what the model needs, and
+    loses the role, which it can infer. Revisit if Google documents a synthetic
+    model-turn shape.
+    """
+    system_parts: list[str] = []
+    history: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if role == "system":
+            if isinstance(content, str) and content.strip():
+                system_parts.append(content)
+            continue
+        parts: list[dict] = []
+        if isinstance(content, str):
+            text = content if role == "user" else f"J.A.R.V.I.S. replied: {content}"
+            parts.append({"type": "text", "text": text})
+        elif isinstance(content, list):
+            # already-multimodal content, built by the callers below
+            parts.extend(content)
+        if parts:
+            history.append({"type": "user_input", "content": parts})
+    return "\n\n".join(system_parts), history
+
+
+def _gemini_complete(messages: list[dict], model: str = "") -> str:
+    """Blocking Gemini text/vision completion. Call via asyncio.to_thread."""
+    system_instruction, history = _to_gemini(messages)
+
+    def _call(client):
+        kwargs = {"model": model or GEMINI_MODEL, "input": history, "store": False}
+        if system_instruction:
+            kwargs["system_instruction"] = system_instruction
+        interaction = client.interactions.create(**kwargs)
+        return (getattr(interaction, "output_text", "") or "").strip()
+
+    return _run_gemini(_call)
+
+
+# The phone records m4a, which is AAC in an MP4 container. Gemini documents
+# audio/aac but not audio/mp4, so that is what an m4a is declared as.
+_AUDIO_MIME = {
+    "m4a": "audio/aac", "aac": "audio/aac", "mp3": "audio/mp3", "ogg": "audio/ogg",
+    "oga": "audio/ogg", "opus": "audio/ogg", "wav": "audio/wav", "flac": "audio/flac",
+    "aiff": "audio/aiff",
+}
+
+# What Whisper cannot be told and Gemini can. The reported failure is a clip
+# transcribed against the wrong language, in a house that speaks two at once —
+# and loudness never fixed it, because volume was never the problem.
+_GEMINI_TRANSCRIBE_PROMPT = (
+    "Generate a transcript of the speech in this clip. The speaker mixes Bengali "
+    "and English in the same sentence, and often speaks Bengali with English words "
+    "in it. Write the transcript using ONLY English/Latin letters — romanise any "
+    "Bengali phonetically rather than writing Bengali script, and keep English "
+    "words as English. The speaker never speaks Hindi; anything that sounds like "
+    "Hindi is Bengali. Return the transcript alone, with no commentary, no "
+    "translation and no quotation marks."
+)
+
+
+def _gemini_transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
+    """Blocking Gemini transcription. Call via asyncio.to_thread."""
+    ext = (filename.rsplit(".", 1)[-1] if "." in filename else "m4a").lower()
+    mime = _AUDIO_MIME.get(ext, "audio/aac")
+    payload = base64.b64encode(audio).decode("utf-8")
+
+    def _call(client):
+        interaction = client.interactions.create(
+            model=GEMINI_AUDIO_MODEL,
+            input=[
+                {"type": "text", "text": _GEMINI_TRANSCRIBE_PROMPT},
+                {"type": "audio", "data": payload, "mime_type": mime},
+            ],
+            store=False,
+        )
+        return (getattr(interaction, "output_text", "") or "").strip()
+
+    return _run_gemini(_call)
+
+
+# ── The dispatchers every caller uses ────────────────────────────────────────
+#
+# Gemini failing falls back to Groq rather than failing the turn. A provider
+# switch must never be able to take the assistant off the air: the worst a bad
+# `LLM_PROVIDER_*` value or an exhausted free tier can do is put the old brain
+# back, loudly, in the log.
+def _complete(messages: list[dict], model: str = "", capability: str = "text") -> str:
+    groq_model = model or (GROQ_VISION_MODEL if capability == "vision" else GROQ_MODEL)
+    if _provider_for(capability) == "gemini" and gemini_ready():
+        try:
+            return _gemini_complete(
+                messages, GEMINI_VISION_MODEL if capability == "vision" else GEMINI_MODEL
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[CLOUD] Gemini {capability} failed ({e}); falling back to Groq.", flush=True)
+    return _groq_complete(messages, groq_model)
+
+
+def _transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
+    if _provider_for("audio") == "gemini" and gemini_ready():
+        try:
+            return _gemini_transcribe(audio, filename)
+        except Exception as e:  # noqa: BLE001
+            print(f"[CLOUD] Gemini transcription failed ({e}); falling back to Whisper.", flush=True)
+    return _groq_transcribe(audio, filename)
 
 
 def _groq_transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
@@ -446,8 +686,17 @@ _LOOKUP_FAILED_NUDGE = (
 )
 
 
-async def think(chat_id: int, text: str, who: str, honorific: str) -> str:
-    """Run one turn through the cloud brain, with rolling per-chat memory."""
+async def think(chat_id: int, text: str, who: str, honorific: str,
+                context: str = "") -> str:
+    """Run one turn through the cloud brain, with rolling per-chat memory.
+
+    `context` is per-turn background — the phone's location and measured weather.
+    It arrives as its own system turn immediately before the user message, for the
+    same recency reason `_ROMANISE_NUDGE` does, and it is deliberately **not**
+    written to `history`: the caller used to prepend it to `text`, which meant every
+    remembered turn carried a stale copy of his coordinates and the model spent the
+    conversation comparing them ("still overcast", "still in Presidency Division").
+    """
     history = _HISTORY.setdefault(chat_id, [])
 
     grounding = ""
@@ -477,14 +726,17 @@ async def think(chat_id: int, text: str, who: str, honorific: str) -> str:
     system = _PERSONA.format(who=who, honorific=honorific) + date_ctx + grounding
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
+    if context:
+        messages.append({"role": "system", "content": context})
     if _has_indic_script(text):
         messages.append({"role": "system", "content": _ROMANISE_NUDGE})
     if lookup_failed:
         messages.append({"role": "system", "content": _LOOKUP_FAILED_NUDGE.format(honorific=honorific)})
     messages.append({"role": "user", "content": text})
 
-    reply = await asyncio.to_thread(_groq_complete, messages)
+    reply = await asyncio.to_thread(_complete, messages, "", "text")
 
+    # what he actually said, not what he said plus a page of coordinates
     history.append({"role": "user", "content": text})
     history.append({"role": "assistant", "content": reply})
     if len(history) > _MAX_TURNS * 2:
@@ -515,7 +767,7 @@ async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: s
         ],
     })
 
-    reply = await asyncio.to_thread(_groq_complete, messages, GROQ_VISION_MODEL)
+    reply = await asyncio.to_thread(_complete, messages, "", "vision")
 
     # Store a text stand-in for the image so follow-up turns keep context
     # without re-sending base64 through the chat model.
@@ -645,7 +897,7 @@ def _build_dispatcher():
             buf = io.BytesIO()
             await message.bot.download(media, destination=buf)
             fname = getattr(media, "file_name", None) or "voice.ogg"
-            transcript = await asyncio.to_thread(_groq_transcribe, buf.getvalue(), fname)
+            transcript = await asyncio.to_thread(_transcribe, buf.getvalue(), fname)
         except Exception as e:  # noqa: BLE001
             print(f"[CLOUD] voice transcription fault: {e}\n{traceback.format_exc()}", flush=True)
             return await message.answer(
@@ -1121,7 +1373,7 @@ def _match_here(where: dict) -> Optional[str]:
 
 
 async def _where_context(where: dict, text: str) -> str:
-    """A factual preamble for a question asked from a known place.
+    """Background facts for a question asked from a known place.
 
     The model was answering "is it raining" out of its own weights — confidently,
     and wrong, while it was raining outside. Giving it the actual current
@@ -1131,8 +1383,20 @@ async def _where_context(where: dict, text: str) -> str:
     weather-shaped. Intent matching would have to work in English, Bengali and
     Benglish to be worth anything, and a missed match is exactly the failure being
     fixed. One cached HTTP call is cheaper than that risk.
+
+    **This returns the block alone.** It used to return the block glued to the front
+    of the operator's own message, and that did two kinds of damage. A user turn
+    opening with a wall of facts reads as the operator having asked about them, so
+    "thanks" was answered with the temperature — six times out of six on greetings
+    in one log. And because `think()` stores what it is given, every one of those
+    blocks was written into rolling memory, so by the tenth turn the conversation
+    was mostly stale copies of his coordinates, which is where "still overcast" and
+    "still in Presidency Division" came from. The caller now passes this as an
+    ephemeral system turn that is never remembered.
     """
-    place = where.get("place") or f"{where['lat']:.3f},{where['lon']:.3f}"
+    # a name he set by standing there beats a reverse geocode, which returned four
+    # different names for one desk across four consecutive turns
+    place = where.get("label") or where.get("place") or f"{where['lat']:.3f},{where['lon']:.3f}"
     # The phone's own reading is preferred: it comes from an address that is not
     # rate-limited, and it costs this process no request at all. Only when a client
     # sends none does the gateway try for itself.
@@ -1159,7 +1423,18 @@ async def _where_context(where: dict, text: str) -> str:
                      + ".")
     lines.append("Use these figures for anything about weather, distances or his "
                  "whereabouts. Do not contradict them and do not answer from memory.")
-    return "[" + " ".join(lines) + "]\n\n" + text
+    # The rule that stops the facts becoming the reply. Without it a greeting was
+    # answered with the temperature, because a block of facts next to "volunteer
+    # the next useful fact" reads as an instruction to recite them.
+    lines.append(
+        "THIS IS BACKGROUND, NOT THE SUBJECT. It is here in case the question needs "
+        "it. Answer only what he actually asked. If he said hello, thanked you, or "
+        "said nothing that turns on where he is or what the weather is doing, do NOT "
+        "mention his location, the temperature, or the forecast at all — a greeting "
+        "answered with a weather report is a failure. Never open a reply by telling "
+        "him where he is unless he asked."
+    )
+    return "[BACKGROUND CONTEXT — " + " ".join(lines) + "]"
 
 
 async def _relay_watch(frame: dict) -> None:
@@ -1251,6 +1526,17 @@ async def health():
     return {"status": "ok", "service": "jarvis-cloud-gateway",
             "mode": MODE, "identities": roster,
             "search": "tavily" if _TAVILY_KEY else "duckduckgo",
+            # Which brain is actually answering, per capability. Reported because
+            # a provider switch is an env change with no deploy behind it, so
+            # there is otherwise no way to tell from outside what is live — and
+            # "gemini" here with `gemini_ready` false is the whole diagnosis when
+            # a switch silently kept using Groq.
+            "brains": {
+                "text": _provider_for("text"),
+                "vision": _provider_for("vision"),
+                "audio": _provider_for("audio"),
+                "gemini_ready": gemini_ready(),
+            },
             "bridge": bool(BRIDGE_SECRET),
             # The phone refuses a gateway that does not declare this, because a
             # bare 200 would flip it to CLOUD and strand it on a dead socket —
@@ -1512,8 +1798,21 @@ def _app_identity() -> dict:
     return {"who": "Kaustav", "honorific": "Sir", "tier": _ADMIN_TIER}
 
 
-def _decode_app_message(raw: str) -> tuple[str, Optional[bytes], str]:
-    """Split one text frame from the phone into (command, audio, filename).
+class AppMessage(NamedTuple):
+    """One decoded frame from the phone.
+
+    `photo` is the base64 JPEG as sent, not decoded bytes: `see()` hands it
+    straight to the vision model as a data URI, so decoding it here would only be
+    to encode it again.
+    """
+    command: str
+    audio: Optional[bytes]
+    filename: str
+    photo: str = ""
+
+
+def _decode_app_message(raw: str) -> AppMessage:
+    """Split one text frame from the phone into its parts.
 
     Bare text is the contract `LinkMachine.send` writes and stays the default:
     anything that is not a JSON object carrying a `type` we recognise is treated
@@ -1522,23 +1821,29 @@ def _decode_app_message(raw: str) -> tuple[str, Optional[bytes], str]:
     """
     text = raw.strip()
     if not (text.startswith("{") and text.endswith("}")):
-        return text, None, ""
+        return AppMessage(text, None, "")
     try:
         env = json.loads(text)
     except Exception:  # noqa: BLE001
-        return text, None, ""
+        return AppMessage(text, None, "")
     if not isinstance(env, dict):
-        return text, None, ""
+        return AppMessage(text, None, "")
     kind = str(env.get("type") or "").strip().lower()
     if kind == "voice":
         fmt = str(env.get("format") or "m4a").strip().lstrip(".") or "m4a"
         try:
-            return "", base64.b64decode(env.get("audio") or "", validate=False), f"voice.{fmt}"
+            return AppMessage("", base64.b64decode(env.get("audio") or "", validate=False),
+                              f"voice.{fmt}")
         except Exception:  # noqa: BLE001
-            return "", None, ""
+            return AppMessage("", None, "")
+    if kind == "photo":
+        # Carried as the base64 string rather than bytes — see AppMessage. The
+        # caption is optional; `see()` supplies its own prompt when there is none.
+        image = str(env.get("image") or "").strip()
+        return AppMessage(str(env.get("text") or "").strip(), None, "", image)
     if kind in ("cmd", "command", "text", "ask"):
-        return str(env.get("text") or "").strip(), None, ""
-    return text, None, ""
+        return AppMessage(str(env.get("text") or "").strip(), None, "")
+    return AppMessage(text, None, "")
 
 
 def _decode_where(raw: str) -> Optional[dict]:
@@ -1567,6 +1872,16 @@ def _decode_where(raw: str) -> Optional[dict]:
         return None
     place = str(where.get("place") or "").strip()[:120]
     out = {"lat": lat, "lon": lon, "place": place}
+
+    # The name he gave this spot by standing in it, when the phone recognised one.
+    #
+    # Preferred over `place` in the context block. The reverse geocoder answered for
+    # a single desk as Bidhannagar, then Kankurgachi, then twice as "Presidency
+    # Division" — an administrative division of millions — across four consecutive
+    # turns, and each was stated to him as fact. A label he set does not drift.
+    label = str(where.get("label") or "").strip()[:40]
+    if label:
+        out["label"] = label
 
     # Conditions the phone measured for these coordinates. Taken as given: it is
     # his own phone, it fetched them from an IP that is not rate-limited, and the
@@ -1813,12 +2128,14 @@ async def app_link(websocket: WebSocket):
             audio: Optional[bytes] = msg.get("bytes")
             filename = "voice.m4a"
             text = ""
+            photo = ""
             where: Optional[dict] = None
             if audio is None and msg.get("text") is not None:
-                text, audio, name = _decode_app_message(msg["text"])
+                decoded = _decode_app_message(msg["text"])
+                text, audio, photo = decoded.command, decoded.audio, decoded.photo
                 where = _decode_where(msg["text"])
-                if name:
-                    filename = name
+                if decoded.filename:
+                    filename = decoded.filename
 
             busy = True
             try:
@@ -1829,7 +2146,7 @@ async def app_link(websocket: WebSocket):
                         # and " " is truthy — un-stripped it would be asked as a
                         # command and answered as if he had said something.
                         text = (await asyncio.to_thread(
-                            _groq_transcribe, audio, filename) or "").strip()
+                            _transcribe, audio, filename) or "").strip()
                     except Exception as e:  # noqa: BLE001
                         await say("error", f"I couldn't make out that recording: {e}")
                         await say("online")
@@ -1843,11 +2160,33 @@ async def app_link(websocket: WebSocket):
                     # it, which is a lie about who spoke.
                     await emit({"type": "transcript", "text": text, "user": who})
 
+                answer: Optional[str] = None
+
+                # A photo, with or without a caption.
+                #
+                # Answered here rather than forwarded to the desk even when the desk
+                # is up: the vision model lives on this side, and the desk has no
+                # route that takes an image. `see()` keeps the same rolling memory as
+                # `think()`, so "what is this" about the photo and the turn after it
+                # are one conversation.
+                if photo:
+                    await say("thinking")
+                    try:
+                        answer = await see(APP_CHAT_ID, photo, text,
+                                           ident["who"], ident["honorific"])
+                    except Exception as e:  # noqa: BLE001
+                        await say("error", f"I couldn't make sense of that picture: {e}")
+                        await say("online")
+                        continue
+                    if answer:
+                        await say("speaking", answer)
+                    await say("online")
+                    continue
+
                 if not text:
                     continue
 
                 await say("thinking")
-                answer: Optional[str] = None
                 if _desk_connected():
                     # the desk gets the question as asked: it has its own senses,
                     # and a preamble about the phone's surroundings is not its brief
@@ -1857,11 +2196,16 @@ async def app_link(websocket: WebSocket):
                         # A located question is answered from measured figures rather
                         # than the model's recollection — it said "no rain" while it
                         # was raining, which is the whole reason this exists.
-                        asked = await _where_context(where, text) if where else text
+                        # Background, passed separately from what he said. Gluing it
+                        # onto his message made a greeting look like a question about
+                        # the weather, and put a copy of his coordinates in memory
+                        # on every turn.
+                        ctx = await _where_context(where, text) if where else ""
                         # APP_CHAT_ID keys `think`'s rolling memory, so the phone
                         # gets its own thread rather than replaying Telegram's.
-                        answer = await think(APP_CHAT_ID, asked,
-                                             ident["who"], ident["honorific"])
+                        answer = await think(APP_CHAT_ID, text,
+                                             ident["who"], ident["honorific"],
+                                             context=ctx)
                     except Exception as e:  # noqa: BLE001
                         await say("error", f"I couldn't answer that: {e}")
                         await say("online")
