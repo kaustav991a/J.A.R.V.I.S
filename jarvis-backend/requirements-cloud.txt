@@ -14,7 +14,11 @@ pynacl==1.6.2
 # Optional second brain, selected per capability by LLM_PROVIDER_* — see
 # _provider_for in cloud_gateway.py. Import is guarded and every call falls back
 # to Groq, so removing this line degrades the gateway rather than breaking it.
-google-genai==1.56.0
+# 2.x is not optional. Pinned at 1.56.0 first, and every call came back
+# `400 The legacy Interactions API schema is no longer supported. Please upgrade
+# your google-genai Python SDK to version >= 2.0.0` — the server rejects the older
+# wire format outright, so this is a floor rather than a preference.
+google-genai==2.18.1
 # Persistent rolling memory, used only when DATABASE_URL is set — see
 # _memory_ready in cloud_gateway.py. Free Postgres (Neon, Supabase) is what exists;
 # Render's own filesystem is ephemeral, so SQLite on the instance would die with the
