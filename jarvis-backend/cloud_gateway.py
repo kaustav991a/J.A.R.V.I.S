@@ -1014,9 +1014,28 @@ def _db_conn():
     Free-tier Postgres counts connections and reaps idle ones, so holding a pool
     open across a mostly-idle gateway is how you arrive to find it unusable. The
     cost of connecting is paid on turns a human is already waiting through.
+
+    **Use a pooler URL, not the direct one.** Supabase's direct host resolves to
+    IPv6 only and Render's free tier has no IPv6 route, so `db.<ref>.supabase.co`
+    cannot be reached from here at all; `aws-0-<region>.pooler.supabase.com` is
+    IPv4. Checked with a DNS lookup rather than assumed — the dashboard labels both
+    as IPv6-by-default, and for the pooler that is not what DNS returns.
+
+    Prepared statements are switched off because a transaction-mode pooler hands the
+    next query to whichever backend is free, and a statement prepared on one is not
+    there on another. psycopg3 starts preparing automatically after five identical
+    queries — which is a handful of turns, so this would not fail until it had
+    already looked like it worked.
     """
     import psycopg
-    return psycopg.connect(DATABASE_URL, connect_timeout=10)
+    conn = psycopg.connect(DATABASE_URL, connect_timeout=10)
+    try:
+        conn.prepare_threshold = None
+    except Exception:  # noqa: BLE001
+        # older psycopg exposes this differently; a session-mode pooler is fine
+        # without it, and this must not be the thing that stops memory working
+        pass
+    return conn
 
 
 def _db_init_blocking() -> None:
