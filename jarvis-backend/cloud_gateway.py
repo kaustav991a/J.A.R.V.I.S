@@ -64,6 +64,7 @@ from __future__ import annotations
 import os
 import asyncio
 import hashlib
+import re
 import threading
 import time
 import traceback
@@ -281,14 +282,23 @@ already. READ WHAT IS IN FRONT OF YOU before answering: earlier turns in this th
 are facts he has given you, and failing to use one while confidently inventing an
 alternative is worse than admitting you are unsure.
 
-THERE IS NO LATER: you answer in this turn or not at all. You cannot go away and
-come back — nothing runs between turns, and a reply that promises one is a promise
-nobody will keep. Never say you will look something up, check, find out, get back
-to them, or have it shortly. Either the answer is in this reply, or you say plainly
-that you could not find it and offer to try again if they ask. Asked the ideal
-weight of a 9-month-old Indie, the answer was "the ideal weight can vary, Sir. I'll
-look up the breed standards for you" — and nothing ever arrived. Give the figure
-you have, with its range and its caveat, or say you do not have it.
+ASK FOR A SEARCH INSTEAD OF PROMISING ONE: if you need current or specific
+information you do not have, end your reply with a marker on its own:
+
+    [[LOOKUP: the search query]]
+
+The search runs immediately and you are asked again with the results, so the
+answer reaches him in this same reply. Use it for facts you would otherwise guess
+at — breed weights, prices, opening hours, scores, anything specific.
+
+NEVER PROMISE A FOLLOW-UP. You cannot go away and come back: nothing of yours runs
+between turns, so "I'll look it up", "I'll check", "I'll get back to you" and
+"shortly" are promises nobody will keep. Asked the ideal weight of a 9-month-old
+Indie, the answer was "the ideal weight can vary, Sir. I'll look up the breed
+standards for you" — and nothing ever arrived. The marker above is what that
+sentence should have been. Either the answer is in this reply, or you say plainly
+that you could not find it. The marker itself is machinery: he never sees it, so
+never refer to it or explain it.
 
 NEVER CONTRADICT YOURSELF ABOUT A MEASUREMENT: the background block gives air
 temperature and feels-like temperature as two named figures of the same reading.
@@ -707,6 +717,40 @@ _LOOKUP_HINTS = (
 )
 
 
+def _expand_contractions(text: str) -> str:
+    """`what's` -> `what is`, so the hint list actually matches speech.
+
+    "what's the ideal weight of a 9 month indie" triggered no lookup at all, because
+    the list holds "what is" and a substring test does not know they are the same
+    word. The model was left with nothing to answer from and improvised a promise to
+    look it up later, which is the one thing it cannot do.
+
+    Normalising is better than adding every contraction to the list: there is one
+    rule here and there would be a dozen entries there, and the next contraction
+    would be missed again.
+    """
+    return re.sub(r"\b(what|who|where|when|how|that|there|here|it)'s\b", r"\1 is", text, flags=re.I)
+
+
+# What the model writes when it needs a search before it can answer.
+#
+# The keyword gate above is a guess made before the model has seen the question,
+# and no list of substrings will ever cover English, let alone Benglish. This is
+# the model asking for itself — one round trip more, and the answer arrives in the
+# same reply instead of being promised for a later that does not exist.
+#
+# Stripped from every reply whether or not it was acted on, so it can never be
+# shown to the operator.
+_LOOKUP_MARKER = re.compile(r"\[\[\s*LOOKUP\s*:\s*(.+?)\]\]", re.I | re.S)
+
+_SECOND_PASS_NUDGE = (
+    "LOOKUP RESULTS (highest priority): you asked for a search and here is what came "
+    "back. Answer the question now, in persona, grounded in these results. Do NOT ask "
+    "for another lookup, do NOT mention searching, and do NOT promise anything for "
+    "later. If these results do not answer it, say plainly that you could not find it."
+)
+
+
 def _has_indic_script(text: str) -> bool:
     """True if the text contains Bengali (U+0980–09FF) or Devanagari
     (U+0900–097F) characters — i.e. the operator wrote/spoke in Indic script and
@@ -753,7 +797,7 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
 
     grounding = ""
     lookup_failed = False
-    lowered = text.lower()
+    lowered = _expand_contractions(text).lower()
     if WEB_LOOKUP and any(h in lowered for h in _LOOKUP_HINTS):
         snippets = await asyncio.to_thread(_web_lookup, text)
         if snippets:
@@ -787,6 +831,35 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     messages.append({"role": "user", "content": text})
 
     reply = await asyncio.to_thread(_complete, messages, "", "text")
+
+    # ── The model asked for a search: run it and let it answer properly ──────
+    #
+    # One extra round trip, and the operator sees one grounded reply. This is what
+    # replaces "I'll look up the breed standards for you" — a sentence that was
+    # never followed by anything, because nothing runs between turns.
+    #
+    # Once only. A model that can ask twice can ask forever, and a loop that bills
+    # a free tier per iteration is not a loop worth having.
+    asked = _LOOKUP_MARKER.search(reply or "")
+    if asked and WEB_LOOKUP:
+        query = asked.group(1).strip()[:200]
+        print(f"[CLOUD] model asked for a lookup: {query!r}", flush=True)
+        snippets = await asyncio.to_thread(_web_lookup, query)
+        second = list(messages)
+        # its own request belongs in the transcript, or the second pass reads as
+        # though the results arrived from nowhere
+        second.append({"role": "assistant", "content": reply})
+        second.append({
+            "role": "system",
+            "content": (_SECOND_PASS_NUDGE + "\n\n" + snippets) if snippets else
+                       _LOOKUP_FAILED_NUDGE.format(honorific=honorific),
+        })
+        reply = await asyncio.to_thread(_complete, second, "", "text")
+
+    # Stripped whether or not it was acted on. A marker that reaches the operator is
+    # worse than no marker at all: it is punctuation from the machinery, in a chat
+    # that is supposed to read like someone talking.
+    reply = _LOOKUP_MARKER.sub("", reply or "").strip()
 
     # what he actually said, not what he said plus a page of coordinates
     history.append({"role": "user", "content": text})
@@ -2071,6 +2144,81 @@ async def _desk_telemetry(timeout: float = 12.0) -> Optional[dict]:
         _app_sinks.pop(req_id, None)
     data = frame.get("data")
     return data if isinstance(data, dict) else None
+
+
+async def _deliver_unprompted(message: str, title: str = "J.A.R.V.I.S.") -> dict:
+    """Say something nobody asked for, down whichever route is open.
+
+    The one path for anything that speaks first — a finished background job, a
+    reminder, the desk reporting in. Everything it needs already existed; what did
+    not exist was a single place that does it correctly, so each new feature was
+    about to reinvent the socket-or-push decision and get it subtly different.
+
+    Three things happen, in this order and for these reasons:
+
+    1. It is written into the same rolling history as a normal turn. An unprompted
+       message the model cannot remember saying makes the next turn incoherent —
+       "what did you mean by that" would be answered by a brain that never said it.
+    2. Attached phones get a `speaking` frame, which their reducer logs as a
+       J.A.R.V.I.S. turn and which raises a local notification unless the chat is
+       already on screen.
+    3. Push goes out ONLY when no phone is attached. A listening phone would
+       otherwise be told twice for one event, and you feel that in your pocket.
+       This mirrors `_announce_desk`, deliberately.
+    """
+    said = (message or "").strip()
+    if not said:
+        return {"delivered": False, "reason": "empty"}
+
+    ident = next(iter(_IDENTITIES.values()),
+                 {"who": "KAUSTAV", "honorific": "Sir", "tier": "admin"})
+    who = (ident.get("who") or "KAUSTAV").upper()
+
+    history = _HISTORY.setdefault(APP_CHAT_ID, [])
+    history.append({"role": "assistant", "content": said})
+    if len(history) > _MAX_TURNS * 2:
+        del history[: len(history) - _MAX_TURNS * 2]
+
+    await _broadcast_app({"status": "speaking", "message": said, "user": who})
+    pushed = False
+    if not _app_clients:
+        await _push_all(title, said, {"kind": "unprompted"})
+        pushed = True
+    print(f"[CLOUD] unprompted -> {len(_app_clients)} socket(s), pushed={pushed}", flush=True)
+    return {"delivered": True, "sockets": len(_app_clients), "pushed": pushed}
+
+
+@app.post("/app-say")
+async def app_say(request: Request):
+    """Make J.A.R.V.I.S. say something to the phone, unprompted.
+
+    The primitive behind "can it message me first". Gated by the same credential as
+    the socket, because it writes into his conversation as though the assistant had
+    spoken — an open version of this route would let anyone put words in its mouth,
+    which is worse than letting them read.
+
+    Deliberately dumb: it delivers the text it is given and does not think about it.
+    A caller that wants a considered message asks `think()` first and posts the
+    answer. Keeping the two apart means a scheduled reminder cannot cost an LLM call
+    and cannot fail because a free tier ran out.
+    """
+    if not APP_TOKEN:
+        return Response(status_code=503)
+    auth = request.headers.get("authorization", "")
+    presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    if not hmac.compare_digest(presented, APP_TOKEN):
+        peer = request.client.host if request.client else "?"
+        print(f"[CLOUD] REFUSED app-say from {peer}", flush=True)
+        return Response(status_code=401)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return Response(status_code=400)
+    message = str((body or {}).get("message") or "").strip()[:2000]
+    title = str((body or {}).get("title") or "J.A.R.V.I.S.").strip()[:64]
+    if not message:
+        return Response(status_code=400)
+    return await _deliver_unprompted(message, title)
 
 
 @app.post("/app-push/register")
