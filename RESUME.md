@@ -6,6 +6,157 @@
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
 > bookmark, not a plan.
 
+## ▶▶ 2026-08-15 — START HERE. Four commits pushed, and the suite runs again.
+
+**HEAD `d275127` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **64/64 harnesses,
+1562 checks, 0 failed** — and that number matters, because *the suite had been
+unrunnable since the office-PC push and nobody knew*.
+
+### The suite was not failing. It was hanging.
+
+`test_app_link.py` blocked forever inside a TestClient `receive_json()`, so
+`run_harnesses.py` waited on it indefinitely: no summary, no failure, no name. The
+cause was one stale stub — `think()` gained `context=` (the fix that stopped the
+model reciting his coordinates) and the harness's `_fake_think` still took four
+arguments, so the call raised and the frame the fake phone waited for was never
+sent. Behind the hang sat **six real failures**, all of this harness lagging the
+gateway rather than gateway defects: four compared `_decode_app_message` against
+3-tuples when it returns the 4-field `AppMessage` (`photo`, added for the camera),
+and two asserted that a provider's raw error reached the chat bubble, which
+`_excuse` deliberately stopped doing. Both now pin the stronger property — the
+fault is reported **and** the provider's words do not leak.
+
+**`run_harnesses.py` now has a per-harness timeout** (600s, `JARVIS_HARNESS_TIMEOUT_S`).
+`subprocess.run` had none. This file already warned that a zero-failure report is a
+trap; no output at all is worse, because a wedged run looks like a working one.
+Proven by forcing it, not by trusting it.
+
+### Gemini is the text brain now, on both sides
+
+Kaustav's call: it handles code-switched romanised Bengali far better than
+llama-3.1-8b, which is the register this thing is actually spoken to in. Desk's
+cloud cascade is env-driven — `JARVIS_CLOUD_ORDER`, default `gemini,groq,openrouter`
+— and Render has `LLM_PROVIDER_TEXT=gemini` (confirmed live: `/health` reports
+`brains.text: gemini`). **The cost is real: Groq's latency is why it was primary, so
+the spoken path pays for this.** One line in `.env` reverts it. `TOOL_PROVIDERS` was
+deliberately left alone — tool-turn ordering is about tool-call reliability, and a
+40/40 eval gates it.
+
+### The store followed whoever launched the process
+
+`memory.py` held `CHROMA_PATH = "jarvis_chroma_db"`, resolved against the CWD, while
+every sibling anchors on `__file__`. Launching from the repo root split Tier 3 in
+half — a new empty store beside the repo, `episodic_memory` still on the real one,
+neither raising. Reproduced: stray store had `jarvis_memory` with **0** embeddings,
+the real one `jarvis_episodes` + `jarvis_memory` with **119**. It also arrived
+**unignored**, because every store rule in `.gitignore` was anchored to
+`jarvis-backend/` — and that store is the plaintext vector mirror of facts that are
+ciphertext in `jarvis_longterm.db`. Both halves fixed; `test_store_paths.py` (11)
+pins them.
+
+### §24 IS LIVE-GATED — the first real partner message ever sent
+
+Two messages were delivered to Mousumi through the real path: governance CONFIRM →
+`consume_pending` → `ActionEngine._message_partner` → `telegram_bot.send_text_to_partner`.
+`Sent to Mousumi, Sir.` twice, different bodies, no duplicate refusal. **The
+`f84f644` fix holds outside its harness.** Note `normalise_body` collapses newlines,
+so a multi-paragraph message arrives as one paragraph — by design, worth knowing
+before composing one.
+
+⚠️ **This jumped the documented order.** `LIVE_GATE_CHECKLIST.md` makes `6.5` a hard
+gate *before* §24, precisely because §24 sends to a real person. `6.5` and A23's two
+refusal rows are still owed.
+
+### BRIDGE_SECRET rotated, and the desk key handed over
+
+Both ends rotated together and validated by a live handshake on the new value.
+**`APP_TOKEN` is its own value on Render** — proven, not assumed: `/app-link` refused
+the new bridge secret with HTTP 403, so the phone needed no re-pairing.
+
+`has_desk_key` went false → true. **It is NOT durable** — it lives in the gateway's
+process memory and the free tier spins down after ~15 min. `dropped_no_key` went
+4 → 10 in one hour (the Mousumi turns), then reset to 0 on the restart. Those facts
+are gone, not queued. The permanent fix is the desk **public** key in Render's env
+(queue item 5), and the "no new config on Render" objection is thinner now that two
+vars were added anyway.
+
+### Tavily: desk CONFIRMED working, gateway still unverified
+
+The mobile RESUME's suspicion is half closed. From this desk, `api_key`-in-body auth
+returns HTTP 200 with live results; the Bearer style works too; DDG fallback works.
+**But that was the desk's key from the desk's IP.** Render has its own key and a
+shared outbound address — the same thing that got Open-Meteo `429`ing in production
+while a laptop got 200. `/health` reports `search: tavily` from key *presence*, not
+from a successful call. **To close it: ask JARVIS on Telegram "who won the last F1
+race".** A correct current answer proves the gateway path; "couldn't reach live
+results" is a real finding.
+
+Reassuring while reading that code: `_LOOKUP_FAILED_NUDGE` already forbids inventing
+a score/number/price when a lookup returns empty, and forbids telling him to search
+himself. The honest-failure requirement is met.
+
+### Branches — three, and two are traps
+
+| Branch | State |
+|---|---|
+| `feat/cloud-gateway` | live, `d275127`, `0 0` |
+| `feat/app-full-power` | **fully contained** in cloud-gateway (`fbea514` IS the merge-base, 0 unique, 19 behind). Merging it is a no-op; merging it into `main` would land a half-working gateway. Redundant — delete when convenient, restore with `git push origin fbea5141faf5d5dd52348afdc371e99c1ae1fd76:refs/heads/feat/app-full-power` |
+| `main` | 155 behind, **+1 commit we lack** — `8d0ea4f`, the GPL LICENSE. Not a fast-forward. Leave until after §7 |
+
+**13 dependabot branches open, and GitHub reports 62 vulnerabilities on `main`**
+(1 critical, 30 high). Do NOT blind-merge: `cryptography` 48→50 is load-bearing for
+C#11a and the **protobuf 6.33.6 pin can move transitively**. Each wants a suite run,
+which is cheap now that the suite completes.
+
+### Mobile toolchain on THIS desk (F:\work\JARVIS-Mobile)
+
+Cloned beside the desk repo. Docs there cross-refer `../jarvis-brain`, which does not
+resolve here — the desk repo is `F:\work\JARVIS-Project`.
+
+Done: node v24.16.0 / npm 11.13.0 · 854 packages installed · **JDK 17.0.20.8** at
+`C:\Program Files\Eclipse Adoptium\jdk-17.0.20.8-hotspot` · cmdline-tools rev 22 at
+`%LOCALAPPDATA%\Android\Sdk` · `JAVA_HOME`/`ANDROID_HOME`/`ANDROID_SDK_ROOT`/PATH
+persisted at user scope. Device `84f40716` (chenfeng, 24053PY09I) authorised, USB
+reverse tunnel `tcp:8081` up, app `com.mypersonalintelligence.jarvis` installed
+2026-08-14 18:48 **with CAMERA granted** — so the `expo-image-picker` rebuild did
+happen and the app runs on Metro alone without any of this.
+
+**BLOCKED on Kaustav:** the five SDK packages. Versions come from
+`node_modules/react-native/gradle/libs.versions.toml`, not guesses —
+`platforms;android-36`, `build-tools;36.0.0`, `ndk;27.1.12297006`, `cmake;3.22.1`,
+`platform-tools`. Run
+`scratchpad\sdk_setup_interactive.bat` (regenerate it if the scratchpad is gone).
+**Two traps:** piping `y` into `sdkmanager.bat` does NOT reach the JVM's stdin from
+either PowerShell or cmd — every prompt reads EOF, answers N, and sdkmanager reports
+`7 of 7 SDK package licenses not accepted` while **exiting 0**. So licenses must be
+accepted interactively, and any install must be verified by checking the directories
+on disk. `android sdk list` (the replacement CLI) crashes with `0xC0000409`.
+`sdk.dir` in `local.properties` is no longer needed — Gradle falls back to
+`ANDROID_HOME` — but `prebuild --clean` still resets jvmargs to 2048m and R8 needs
+**6144m**.
+
+### ⏭ Next, in order
+
+1. **F-16** — confabulation on the conversational path. Pure code, no hardware. Port
+   F-09's allowlist, but wider: conversation legitimately claims more than a report.
+2. **§7 gate session 2** — `21.3` FIRST (5 min, 34 rows depend on it), then the seven
+   re-runs, then `4.4`, then `6.5`. See `LIVE_GATE_CHECKLIST.md`, which opens with the
+   session-2 order. A4's four LLM-routing rows now exercise Gemini-first, so the gate
+   tests the config actually intended for shipping.
+3. **Durable desk key** (queue item 5) — small, and it demonstrably costs facts today.
+4. **Dependabot session** — one at a time, suite each, watch the protobuf pin.
+5. **Gateway search verification** — the one-question Telegram check above.
+
+**Still not built, and still worth it:** turns do not sync cloud→desk, only facts.
+The right shape is a new frame type on the existing sealed bridge (same seal, same
+governance, same `source` tag), not a second data path with its own Supabase
+credential — the desk has no Postgres driver installed at all, deliberately.
+
+**Still owed off-machine:** the 6th cleartext `.env` copy in
+`JARVIS-BACKUPS\pre-encryption-20260808-004215\` wants shredding, and it will keep
+regenerating until `backup_memory.py` stops listing `.env` (checklist item 1a — his
+call, not done unasked).
+
 ## ▶ 2026-08-13 — the phone is connected, and the gateway grew four things
 
 All deployed on `feat/cloud-gateway` (`9c37b4d`). The phone half is in
