@@ -67,6 +67,18 @@ for _stream in (sys.stdout, sys.stderr):
 # deterministic instead of depending on whichever shell invoked it.
 _CHILD_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
+# A harness that HANGS is worse than one that fails, and until 2026-08-15 there
+# was no ceiling here at all. `test_app_link.py` blocked forever inside a
+# TestClient `receive_json()` — the stubbed brain raised, so the frame it was
+# waiting for was never sent — and the suite simply stopped, mid-run, with no
+# failure, no summary and no clue which file it was in. "0 failed" is a known
+# trap in this file's docstring; "no output at all" is a worse one, because the
+# run looks like it is still working.
+#
+# Generous on purpose: the slowest legitimate harnesses do real work. This is a
+# deadlock detector, not a performance budget.
+HARNESS_TIMEOUT_S = float(os.getenv("JARVIS_HARNESS_TIMEOUT_S", "600") or 600)
+
 HERE = Path(__file__).resolve().parent
 
 # Harnesses are DISCOVERED, not listed. Until 2026-08-08 this was a hand-kept
@@ -199,15 +211,32 @@ def main() -> int:
             broken.append(f"{name} (missing)")
             continue
         t0 = time.monotonic()
-        proc = subprocess.run(
-            [sys.executable, str(path)],
-            cwd=HERE,
-            env=_CHILD_ENV,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(path)],
+                cwd=HERE,
+                env=_CHILD_ENV,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=HARNESS_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired as e:
+            # The child is already killed by the time this lands. Print the tail
+            # it did manage — the last PASS line names the test BEFORE the one
+            # that hung, which is how tonight's hang was located.
+            dt = time.monotonic() - t0
+            out = e.stdout or ""
+            if isinstance(out, bytes):
+                out = out.decode("utf-8", "replace")
+            tail = "\n".join(out.splitlines()[-15:])
+            broken.append(f"{name} (TIMEOUT after {HARNESS_TIMEOUT_S:g}s)")
+            print(f"\n----- {name} TIMED OUT -----\n{tail}\n"
+                  f"(no summary line: this harness never finished. The last PASS above "
+                  f"is the test BEFORE the one that hung.)\n")
+            print(f"[HANG] {name:<32} {0:>4} checks  {dt:5.1f}s")
+            continue
         dt = time.monotonic() - t0
         passed, failed = parse_counts((proc.stdout or "") + (proc.stderr or ""))
         total_passed += passed
