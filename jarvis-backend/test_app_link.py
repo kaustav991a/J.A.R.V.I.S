@@ -83,8 +83,15 @@ _asked: list[tuple] = []
 _queued: list[tuple] = []
 
 
-async def _fake_think(chat_id, text, who, honorific):
-    _asked.append((chat_id, text, who, honorific))
+# The stub MUST tolerate think()'s real signature growing, and the reason is not
+# tidiness. When `think()` gained `context=` (the fix that stopped the model
+# reciting his coordinates every turn), this stub still took four arguments. The
+# call raised, so no `reply` frame was ever put in the sink, and `_drain`'s
+# `receive_json()` below blocked FOREVER — wedging not just this test but the
+# whole suite, silently, with no failure to read. `**_extra` is the guard: a
+# signature drift must cost a wrong assertion, never an infinite wait.
+async def _fake_think(chat_id, text, who, honorific, context="", **_extra):
+    _asked.append((chat_id, text, who, honorific, context))
     return CLOUD_SAID
 
 
@@ -243,7 +250,12 @@ def test_a_brain_fault_is_reported_rather_than_dropped():
             hit, _ = _drain(ws, want=lambda f: f.get("status") == "error")
     finally:
         cg.think = _fake_think
-    assert hit is not None and "groq is down" in hit["message"]
+    # Same rule as the transcriber fault below: the operator gets a sentence, the
+    # log gets the detail. "Reported rather than dropped" is still the property
+    # under test; leaking "groq is down" into the bubble is not part of it.
+    assert hit is not None and hit["message"].strip(), "the brain fault was dropped, not reported"
+    assert "groq is down" not in hit["message"], (
+        f"the provider's error leaked into the chat: {hit['message']!r}")
 
 
 # ── the desk path ───────────────────────────────────────────────────────────
@@ -437,32 +449,46 @@ def test_a_transcriber_fault_is_reported_and_the_socket_survives():
         # still usable afterwards
         ws.send_text("plain text still works")
         after, _ = _drain(ws, want=lambda f: f.get("status") == "speaking")
-    assert hit is not None and "whisper key exhausted" in hit["message"]
+    # Reported, and reported WITHOUT the provider's words. This used to assert
+    # that "whisper key exhausted" reached the bubble; `_excuse` deliberately
+    # stopped doing that, because a provider's error object in a persistent chat
+    # log is the right information for whoever runs this and the wrong
+    # information for whoever is talking to it.
+    assert hit is not None and hit["message"].strip(), "the fault was dropped, not reported"
+    assert "whisper key exhausted" not in hit["message"], (
+        f"the provider's error leaked into the chat: {hit['message']!r}")
     assert after is not None and after["message"] == CLOUD_SAID
 
 
 # ── the envelope parser ─────────────────────────────────────────────────────
 
+# Compared against `cg.AppMessage`, NOT a bare tuple. These four asserted
+# 3-tuples and broke the day `photo` was added for the camera feature — the
+# gateway was right and the test was stale, but a 4-field NamedTuple simply is
+# not equal to a 3-tuple, so it read as six real failures. Constructing the
+# NamedTuple lets its defaults fill the fields this test does not care about, so
+# the next defaulted field costs nothing here.
+
 def test_bare_text_stays_a_command():
-    assert cg._decode_app_message("  what time is it  ") == ("what time is it", None, "")
+    assert cg._decode_app_message("  what time is it  ") == cg.AppMessage("what time is it", None, "")
 
 
 def test_a_command_that_merely_looks_like_json_is_still_asked():
     # Someone pasting a JSON snippet at J.A.R.V.I.S. is asking about it.
     raw = '{"broken": '
-    assert cg._decode_app_message(raw) == (raw.strip(), None, "")
+    assert cg._decode_app_message(raw) == cg.AppMessage(raw.strip(), None, "")
     unknown = '{"type": "something-else", "x": 1}'
-    assert cg._decode_app_message(unknown) == (unknown, None, "")
+    assert cg._decode_app_message(unknown) == cg.AppMessage(unknown, None, "")
 
 
 def test_an_explicit_command_envelope_is_unwrapped():
-    assert cg._decode_app_message('{"type": "cmd", "text": "lock the pc"}') == ("lock the pc", None, "")
+    assert cg._decode_app_message('{"type": "cmd", "text": "lock the pc"}') == cg.AppMessage("lock the pc", None, "")
 
 
 def test_a_voice_envelope_yields_bytes_and_a_filename():
     raw = json.dumps({"type": "voice", "format": ".ogg",
                       "audio": base64.b64encode(b"xyz").decode()})
-    assert cg._decode_app_message(raw) == ("", b"xyz", "voice.ogg")
+    assert cg._decode_app_message(raw) == cg.AppMessage("", b"xyz", "voice.ogg")
 
 
 def test_a_voice_envelope_defaults_its_format():
