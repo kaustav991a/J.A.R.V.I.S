@@ -527,30 +527,73 @@ def _gemini_transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
     return _run_gemini(_call)
 
 
+# ── Is the second brain actually working? ────────────────────────────────────
+#
+# A silent fallback is worse than a loud failure. When the free tier's daily quota
+# runs out, Gemini answers 429 and every call quietly becomes a Groq call — so the
+# only symptom is transcription getting worse again, with no way to tell that from
+# the model simply having a bad day. These counters are what makes the difference
+# visible, and they are reported by /health.
+#
+# In-process and therefore reset by every restart, which is honest: they describe
+# this instance's life, not all time. `quota` is the distinction that matters —
+# a 429 means the tier is spent and waiting is the only cure, where any other
+# error usually means the request itself was wrong.
+_brain_stats: dict[str, dict] = {
+    cap: {"gemini_ok": 0, "fell_back": 0, "last_error": None, "last_error_at": None,
+          "last_error_was_quota": False}
+    for cap in ("text", "vision", "audio")
+}
+
+
+def _looks_like_quota(exc: BaseException) -> bool:
+    code = getattr(exc, "status_code", None)
+    if code == 429:
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "resource_exhausted" in msg or "quota" in msg
+
+
+def _note_fallback(capability: str, exc: BaseException) -> None:
+    import datetime as _dt
+    stat = _brain_stats[capability]
+    stat["fell_back"] += 1
+    # truncated: this is read from a browser, and a stack in a JSON field is noise
+    stat["last_error"] = str(exc)[:200]
+    stat["last_error_at"] = _dt.datetime.now(_OPERATOR_TZ).isoformat(timespec="seconds")
+    stat["last_error_was_quota"] = _looks_like_quota(exc)
+    quota = " (quota exhausted — resets at midnight US Pacific)" if stat["last_error_was_quota"] else ""
+    print(f"[CLOUD] Gemini {capability} failed{quota} ({exc}); falling back to Groq.", flush=True)
+
+
 # ── The dispatchers every caller uses ────────────────────────────────────────
 #
 # Gemini failing falls back to Groq rather than failing the turn. A provider
 # switch must never be able to take the assistant off the air: the worst a bad
 # `LLM_PROVIDER_*` value or an exhausted free tier can do is put the old brain
-# back, loudly, in the log.
+# back, loudly, in the log and in /health.
 def _complete(messages: list[dict], model: str = "", capability: str = "text") -> str:
     groq_model = model or (GROQ_VISION_MODEL if capability == "vision" else GROQ_MODEL)
     if _provider_for(capability) == "gemini" and gemini_ready():
         try:
-            return _gemini_complete(
+            out = _gemini_complete(
                 messages, GEMINI_VISION_MODEL if capability == "vision" else GEMINI_MODEL
             )
+            _brain_stats[capability]["gemini_ok"] += 1
+            return out
         except Exception as e:  # noqa: BLE001
-            print(f"[CLOUD] Gemini {capability} failed ({e}); falling back to Groq.", flush=True)
+            _note_fallback(capability, e)
     return _groq_complete(messages, groq_model)
 
 
 def _transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
     if _provider_for("audio") == "gemini" and gemini_ready():
         try:
-            return _gemini_transcribe(audio, filename)
+            out = _gemini_transcribe(audio, filename)
+            _brain_stats["audio"]["gemini_ok"] += 1
+            return out
         except Exception as e:  # noqa: BLE001
-            print(f"[CLOUD] Gemini transcription failed ({e}); falling back to Whisper.", flush=True)
+            _note_fallback("audio", e)
     return _groq_transcribe(audio, filename)
 
 
@@ -1536,6 +1579,13 @@ async def health():
                 "vision": _provider_for("vision"),
                 "audio": _provider_for("audio"),
                 "gemini_ready": gemini_ready(),
+                "gemini_model": GEMINI_MODEL,
+                "gemini_audio_model": GEMINI_AUDIO_MODEL,
+                "gemini_keys": len(_GEMINI_KEYS),
+                # Per capability: how many calls Gemini actually served, how many
+                # fell back to Groq, and why the last one did. `last_error_was_quota`
+                # true means the free tier is spent rather than the code being wrong.
+                "usage": _brain_stats,
             },
             "bridge": bool(BRIDGE_SECRET),
             # The phone refuses a gateway that does not declare this, because a
