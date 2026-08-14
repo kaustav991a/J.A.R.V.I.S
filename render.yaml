@@ -27,6 +27,13 @@ services:
       #   LLM_PROVIDER_AUDIO    voice transcription
       - key: LLM_PROVIDER
         value: groq
+      # TEXT is Gemini (2026-08-15, Kaustav's call): it answers code-switched
+      # romanised Bengali/English markedly better than llama-3.3-70b, which is the
+      # register this brain is actually spoken to in. Groq stays the default for
+      # anything not named here, and every Gemini failure still falls back to Groq
+      # loudly — check /health "brains.usage.text" for which one is really serving.
+      - key: LLM_PROVIDER_TEXT
+        value: gemini
       # Gemini is inert until a key is set, whatever the switches say.
       - key: GEMINI_API_KEYS
         sync: false

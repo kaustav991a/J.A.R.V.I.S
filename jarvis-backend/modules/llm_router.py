@@ -116,6 +116,39 @@ def _openrouter_configured() -> bool:
     return bool(os.getenv("OPENROUTER_API_KEY", "").strip())
 
 
+# Cloud providers, most-preferred first. Env-driven rather than hardcoded so a
+# provider switch is a config change instead of an edit — the same discipline the
+# cloud gateway's LLM_PROVIDER_* switches follow.
+#
+# GEMINI IS PRIMARY (2026-08-15, Kaustav's call). This reverses the 2026-07-11
+# ordering, and the reason is answer quality in the language he actually writes:
+# Gemini handles code-switched romanised Bengali/English markedly better than
+# llama-3.1-8b, and a fluent reply in the wrong register is the failure that
+# matters more often than a slow one. The cost is real and worth stating: Groq's
+# latency is unbeatable for real-time voice, so the spoken path pays for this.
+# Put groq back in front here to undo it — no code change, no deploy.
+_CLOUD_CHAIN_DEFAULT = "gemini,groq,openrouter"
+_KNOWN_CLOUD = ("gemini", "groq", "openrouter")
+
+
+def _cloud_chain() -> list[str]:
+    """The cloud half of the cascade, in preference order.
+
+    Unknown names are dropped rather than attempted, and an order that names
+    nothing valid falls back to every known provider — a typo in `.env` must not
+    be able to silence the cloud, which would look exactly like every provider
+    being down.
+    """
+    raw = os.getenv("JARVIS_CLOUD_ORDER") or _CLOUD_CHAIN_DEFAULT
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in (s.strip().lower() for s in raw.split(",")):
+        if name in _KNOWN_CLOUD and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out or list(_KNOWN_CLOUD)
+
+
 def _route_order(complexity: str, model: str | None) -> list[str]:
     """
     Returns the ordered list of providers to attempt.
@@ -126,20 +159,18 @@ def _route_order(complexity: str, model: str | None) -> list[str]:
 
     - A llava/vision model is pinned local-only (there's no cloud llava; the
       Gemini-first VISION cascade lives in universal_vision_call instead).
-    - 'heavy' / cloud_first: groq → gemini → openrouter, local as last resort.
-      Groq stays PRIMARY (unbeatable latency for real-time voice); Gemini is
-      the best free reasoning fallback; OpenRouter :free is the aggregator
-      safety net (daily-capped, variable quality → last cloud stop).
-    - local_first (privacy default): ollama first, then the same cloud chain.
+    - 'heavy' / cloud_first: the cloud chain (see `_cloud_chain`, Gemini first by
+      default), with local as the last resort.
+    - local_first (privacy default): ollama first, then that same cloud chain.
     - Unconfigured providers are dropped; an OPEN local breaker drops ollama
       from text routes.
     """
     if model and "llava" in model.lower():
         return ["ollama"]
     if complexity == "heavy" or LLM_MODE == "cloud_first":
-        order = ["groq", "gemini", "openrouter", "ollama"]
+        order = [*_cloud_chain(), "ollama"]
     else:
-        order = ["ollama", "groq", "gemini", "openrouter"]  # local-first default
+        order = ["ollama", *_cloud_chain()]  # local-first default
 
     if not _gemini_configured():
         order = [p for p in order if p != "gemini"]
