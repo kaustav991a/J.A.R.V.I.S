@@ -206,8 +206,28 @@ _OPERATOR_TZ = _operator_tz()
 _ADMIN_TIER = "admin"
 _VIP_GUEST_TIER = "vip_guest"
 
-# How many recent turns of per-chat context to keep (level-1 "independent" memory).
-_MAX_TURNS = 12
+def _int_env(name: str, default: int, floor: int = 1) -> int:
+    """An env integer that cannot take the process down.
+
+    Read at import time, so a typo in the dashboard would otherwise raise before
+    uvicorn has a route to serve — the whole assistant offline because someone put
+    a space in a number. A bad value is ignored and said out loud instead.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return max(floor, int(raw))
+    except ValueError:
+        print(f"[CLOUD] ⚠ {name}={raw!r} is not a number; using {default}.", flush=True)
+        return default
+
+
+# How many messages of history go into a prompt. Twelve was chosen when memory was
+# a dict that died with the process; with DATABASE_URL set there is no reason it
+# cannot be higher, so it is tunable without a deploy. It bounds tokens per call,
+# not what is stored — raising it costs money per turn, which is why it is not 100.
+_MAX_TURNS = _int_env("CLOUD_MAX_TURNS", 12, floor=2)
 
 # Privileged intent the cloud brain cannot fulfil (PC is off / unreachable).
 _PC_DEFERRAL = (
@@ -793,7 +813,7 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     remembered turn carried a stale copy of his coordinates and the model spent the
     conversation comparing them ("still overcast", "still in Presidency Division").
     """
-    history = _HISTORY.setdefault(chat_id, [])
+    history = await _history_for(chat_id)
 
     grounding = ""
     lookup_failed = False
@@ -862,17 +882,15 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     reply = _LOOKUP_MARKER.sub("", reply or "").strip()
 
     # what he actually said, not what he said plus a page of coordinates
-    history.append({"role": "user", "content": text})
-    history.append({"role": "assistant", "content": reply})
-    if len(history) > _MAX_TURNS * 2:
-        del history[: len(history) - _MAX_TURNS * 2]
+    await _history_add(chat_id, "user", text)
+    await _history_add(chat_id, "assistant", reply)
     return reply
 
 
 async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: str) -> str:
     """Answer a Telegram photo through the Groq vision model, in persona and
     with the same rolling per-chat memory as think()."""
-    history = _HISTORY.setdefault(chat_id, [])
+    history = await _history_for(chat_id)
 
     import datetime as _dt
     now = _dt.datetime.now(_OPERATOR_TZ)
@@ -896,15 +914,148 @@ async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: s
 
     # Store a text stand-in for the image so follow-up turns keep context
     # without re-sending base64 through the chat model.
-    history.append({"role": "user", "content": f"[sent a photo] {question}"})
-    history.append({"role": "assistant", "content": reply})
-    if len(history) > _MAX_TURNS * 2:
-        del history[: len(history) - _MAX_TURNS * 2]
+    await _history_add(chat_id, "user", f"[sent a photo] {question}")
+    await _history_add(chat_id, "assistant", reply)
     return reply
 
 
 # Per-chat rolling memory (level-1 "independent" memory; resets on restart).
+# ── Rolling memory, and where it lives ───────────────────────────────────────
+#
+# `_HISTORY` is the in-process cache and always has been. What is new is that it
+# can be *backed* by a database, because on its own it forgets everything on every
+# restart — and on Render's free tier a restart is a redeploy, a crash, or the
+# platform moving the instance. "It doesn't remember things" was the most-felt bug
+# in this system and it was never the model's fault: there was nowhere to remember.
+#
+# Unset `DATABASE_URL` and none of this runs; the behaviour is exactly what it was.
+# That is deliberate — a memory layer that cannot be switched off is a memory layer
+# you cannot diagnose.
+#
+# Postgres because the free tiers that exist are Postgres (Neon, Supabase), and
+# because Render's own filesystem is ephemeral: SQLite on the instance would die
+# with the instance, which is the problem, not the solution.
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
+
 _HISTORY: dict[int, list[dict]] = {}
+# which chats have been read back from the database, so it happens once per process
+_RECALLED: set[int] = set()
+_db_ready = False
+_db_broken = False
+
+
+def _db_conn():
+    """A connection per call, closed immediately.
+
+    Free-tier Postgres counts connections and reaps idle ones, so holding a pool
+    open across a mostly-idle gateway is how you arrive to find it unusable. The
+    cost of connecting is paid on turns a human is already waiting through.
+    """
+    import psycopg
+    return psycopg.connect(DATABASE_URL, connect_timeout=10)
+
+
+def _db_init_blocking() -> None:
+    with _db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS chat_turns (
+                   id       BIGSERIAL PRIMARY KEY,
+                   chat_id  BIGINT      NOT NULL,
+                   role     TEXT        NOT NULL,
+                   content  TEXT        NOT NULL,
+                   said_at  TIMESTAMPTZ NOT NULL DEFAULT now())"""
+        )
+        # the only query this table serves is "the last N turns of one chat"
+        cur.execute("CREATE INDEX IF NOT EXISTS chat_turns_by_chat ON chat_turns (chat_id, id DESC)")
+        conn.commit()
+
+
+def _db_load_blocking(chat_id: int, limit: int) -> list[dict]:
+    with _db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT role, content FROM chat_turns WHERE chat_id = %s ORDER BY id DESC LIMIT %s",
+            (chat_id, limit),
+        )
+        rows = cur.fetchall()
+    # newest-first out of the database, oldest-first into the prompt
+    return [{"role": role, "content": content} for role, content in reversed(rows)]
+
+
+def _db_append_blocking(chat_id: int, role: str, content: str) -> None:
+    with _db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO chat_turns (chat_id, role, content) VALUES (%s, %s, %s)",
+            (chat_id, role, content),
+        )
+        conn.commit()
+
+
+async def _memory_ready() -> bool:
+    """Whether turns can be persisted. Creates the table on first use.
+
+    A failure here latches: one broken start means this process stops trying, rather
+    than paying a ten-second connect timeout on every turn for the rest of its life.
+    The gateway keeps working from process memory, which is what it did before.
+    """
+    global _db_ready, _db_broken
+    if not DATABASE_URL or _db_broken:
+        return False
+    if _db_ready:
+        return True
+    try:
+        await asyncio.to_thread(_db_init_blocking)
+        _db_ready = True
+        print("[CLOUD] persistent memory ready", flush=True)
+        return True
+    except Exception as e:  # noqa: BLE001
+        _db_broken = True
+        print(f"[CLOUD] persistent memory unavailable ({e}); memory is this process only.", flush=True)
+        return False
+
+
+async def _history_for(chat_id: int) -> list[dict]:
+    """The rolling history, read back from the database the first time it is asked.
+
+    Only when the cache is empty. A process that has been talking already holds the
+    live conversation; overwriting that with a database read would replay turns it
+    has just had.
+    """
+    hist = _HISTORY.setdefault(chat_id, [])
+    if chat_id in _RECALLED or not await _memory_ready():
+        return hist
+    _RECALLED.add(chat_id)
+    if hist:
+        return hist
+    try:
+        rows = await asyncio.to_thread(_db_load_blocking, chat_id, _MAX_TURNS * 2)
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] memory recall failed ({e}); starting this chat empty.", flush=True)
+        return hist
+    if rows:
+        hist.extend(rows)
+        print(f"[CLOUD] recalled {len(rows)} message(s) for chat {chat_id}", flush=True)
+    return hist
+
+
+async def _history_add(chat_id: int, role: str, content: str) -> None:
+    """Append one message, in memory and on disk.
+
+    The in-process cap stays: it bounds what goes into a prompt, which is a token
+    budget rather than a storage one. The database keeps everything — a turn from
+    last week costs nothing to store and is the only way a longer window, or the
+    desk mining this later, ever becomes possible.
+    """
+    hist = _HISTORY.setdefault(chat_id, [])
+    hist.append({"role": role, "content": content})
+    if len(hist) > _MAX_TURNS * 2:
+        del hist[: len(hist) - _MAX_TURNS * 2]
+    if await _memory_ready():
+        try:
+            await asyncio.to_thread(_db_append_blocking, chat_id, role, content)
+        except Exception as e:  # noqa: BLE001
+            # not latched: one failed write is a blip, and the turn is still live in
+            # this process, so the conversation carries on
+            print(f"[CLOUD] memory write failed ({e}); the turn is in this process only.", flush=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1669,6 +1820,17 @@ async def health():
                 # true means the free tier is spent rather than the code being wrong.
                 "usage": _brain_stats,
             },
+            # Whether anything is remembered across a restart. `configured` false is
+            # the answer to "why does it keep forgetting" — on the free tier a
+            # redeploy or a platform move wipes an in-process dict, and UptimeRobot
+            # keeping the instance warm does not prevent either.
+            "memory": {
+                "configured": bool(DATABASE_URL),
+                "ready": _db_ready,
+                "broken": _db_broken,
+                "prompt_messages": _MAX_TURNS * 2,
+                "chats_cached": len(_HISTORY),
+            },
             "bridge": bool(BRIDGE_SECRET),
             # The phone refuses a gateway that does not declare this, because a
             # bare 200 would flip it to CLOUD and strand it on a dead socket —
@@ -2174,10 +2336,7 @@ async def _deliver_unprompted(message: str, title: str = "J.A.R.V.I.S.") -> dict
                  {"who": "KAUSTAV", "honorific": "Sir", "tier": "admin"})
     who = (ident.get("who") or "KAUSTAV").upper()
 
-    history = _HISTORY.setdefault(APP_CHAT_ID, [])
-    history.append({"role": "assistant", "content": said})
-    if len(history) > _MAX_TURNS * 2:
-        del history[: len(history) - _MAX_TURNS * 2]
+    await _history_add(APP_CHAT_ID, "assistant", said)
 
     await _broadcast_app({"status": "speaking", "message": said, "user": who})
     pushed = False

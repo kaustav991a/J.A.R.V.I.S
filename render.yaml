@@ -32,6 +32,18 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-3.5-flash
+      # Persistent rolling memory. Unset, the gateway remembers only within one
+      # process life — and on the free tier a redeploy, a crash or a platform move
+      # ends that, which is why it "keeps forgetting". Any free Postgres works
+      # (Neon, Supabase); Render's own disk is ephemeral so SQLite is not an option.
+      # The table is created on first use. Check /health "memory".
+      - key: DATABASE_URL
+        sync: false
+      # Messages of history put into each prompt (turns x2). Twelve was chosen when
+      # memory died with the process; with DATABASE_URL set, 40-60 is reasonable.
+      # It costs tokens per call, so it is a budget, not a maximum.
+      - key: CLOUD_MAX_TURNS
+        value: "12"
       - key: CLOUD_WEB_LOOKUP
         value: "1"
       # PUBLIC_URL must equal this service's own https URL once Render assigns it,
