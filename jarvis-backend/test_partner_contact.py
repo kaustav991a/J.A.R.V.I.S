@@ -746,6 +746,70 @@ def test_extraction_and_retention_were_not_touched():
         "partner_log stopped honouring its opt-in flag"
 
 
+# ── pre-Electron review, 2026-08-15 ──────────────────────────────────────────
+# `answer()` drops any row whose timestamp will not parse. That is right for ONE
+# bad row among good ones — `_parse`'s docstring says a wrong time is worse than
+# no time, and it is. It is wrong when EVERY row is bad, because then the
+# skipping IS the answer, and the answer it produced was:
+#
+#     "No, Sir — nothing from Mousumi at all."
+#
+# A confident denial manufactured by a failure, about another person, and
+# indistinguishable from the truth. This module already has two carefully
+# written honest-failure paths — `no_record_text` (recording off) and
+# `locked_text` (keystore sealed) — and this case fell through the gap between
+# them: the store opened, and what came out was not readable.
+
+def test_all_rows_unreadable_is_not_reported_as_silence():
+    rows = [{"timestamp": "not-a-timestamp", "urgent": False},
+            {"timestamp": "", "urgent": True},
+            {"timestamp": None, "urgent": False}]
+    out = pc.answer("Mousumi", rows)
+    assert "nothing from" not in out.lower(), (
+        "unreadable rows were reported as 'nothing from her' — a denial built "
+        f"out of a failure. Got: {out}")
+    assert "can't tell you either way" in out.lower()
+    assert "Mousumi" in out
+
+
+def test_the_unreadable_answer_matches_the_other_two_honest_failures():
+    # All three must refuse in the same voice, or the discipline is accidental.
+    unreadable = pc.unreadable_text("Mousumi")
+    no_record = pc.no_record_text("Mousumi", "JARVIS_LOG_CONTACT_EVENTS")
+    locked = pc.locked_text("Mousumi")
+    for text in (unreadable, no_record, locked):
+        assert "can't" in text.lower()
+        assert "no," not in text.lower()[:4], (
+            f"an honest failure must not open like a denial: {text}")
+
+
+def test_a_genuinely_empty_store_still_says_nothing_at_all():
+    # The guard must not swallow the TRUE negative — no rows means no contact,
+    # and that is a real answer he needs.
+    out = pc.answer("Mousumi", [])
+    assert "nothing from Mousumi at all" in out
+    out_none = pc.answer("Mousumi", None)
+    assert "nothing from Mousumi at all" in out_none
+
+
+def test_one_bad_row_among_good_ones_is_still_skipped_quietly():
+    # The original behaviour, deliberately preserved: a single unreadable row
+    # must not turn a working answer into a refusal.
+    now = datetime.now().astimezone()
+    rows = [{"timestamp": now.isoformat(), "urgent": False},
+            {"timestamp": "garbage", "urgent": True}]
+    out = pc.answer("Mousumi", rows, now=now)
+    assert out.startswith("Yes,"), f"a good row should still answer: {out}"
+    assert "can't" not in out.lower()
+
+
+def test_the_urgent_flag_survives_the_guard():
+    now = datetime.now().astimezone()
+    rows = [{"timestamp": now.isoformat(), "urgent": True}]
+    out = pc.answer("Mousumi", rows, now=now)
+    assert "important" in out and "call her" in out
+
+
 if __name__ == "__main__":
     import traceback
 

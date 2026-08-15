@@ -105,24 +105,43 @@ def score_live(tasks: list, limit: int | None = None) -> dict:
         return None
 
     for task in tasks[:limit]:
-        called: list = []
-
-        async def watch(kind, data, _called=called):
-            if kind == "tool_start":
-                _called.append(data.get("tool"))
-
         result = asyncio.run(agent_runner.run_agent_command(
             task["prompt"], engine, tool_set="files", send=send,
             presence="at_desk" if task.get("confirm") else "unknown"))
+
+        # What the run ACTUALLY called, read from its own audit trail.
+        #
+        # This used to build a `called` list from a `watch(kind, data)` callback
+        # that was defined and then never passed — `run_agent_command` takes no
+        # event-callback parameter at all, so it could not have been. `called`
+        # was therefore always empty and EVERY live task scored ✗, whatever the
+        # model did. The 40/40 this project quotes is the RETRIEVAL eval; the
+        # live number has never actually been measured.
+        #
+        # `tool_runs` is better than an event hook anyway: it is the loop's own
+        # record of what executed, not a side channel that can drift from it.
+        runs = list(getattr(result, "tool_runs", None) or [])
+        called = [r.name for r in runs]
+        # A DENIED call still means the model chose the right tool — governance
+        # refusing it is a separate question from findability, and conflating the
+        # two would score the loop down for working as designed.
+        chosen = [r.name for r in runs if not getattr(r, "denied", False)]
         expected = set(task["expect"])
+        hit = bool(expected & set(called))
         results.append({
             "id": task["id"], "category": task.get("category", "?"),
-            "hit": bool(expected & set(called)), "loaded": bool(expected & set(called)),
+            "hit": hit, "loaded": hit,
             "rank": None, "top": called[:3], "expect": task["expect"],
             "ok": bool(result.ok), "stop": result.stop_reason,
+            "denied": [r.name for r in runs if getattr(r, "denied", False)],
         })
-        print(f"  {task['id']:12} {'✓' if results[-1]['hit'] else '✗'} "
-              f"called={called}", flush=True)
+        mark = "✓" if hit else "✗"
+        denied = [r.name for r in runs if getattr(r, "denied", False)]
+        note = f" (denied: {denied})" if denied else ""
+        print(f"  {task['id']:12} {mark} called={called}{note}", flush=True)
+        if not called and not chosen:
+            print(f"    ↳ no tool ran at all — stop_reason={result.stop_reason}",
+                  flush=True)
     return summarise(results, "live")
 
 

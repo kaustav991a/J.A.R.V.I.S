@@ -445,6 +445,22 @@ def locked_text(display: str, honor: str = "Sir") -> str:
             f"either way.")
 
 
+def unreadable_text(display: str, honor: str = "Sir") -> str:
+    """Rows exist and none of them could be read.
+
+    The third member of the `no_record_text` / `locked_text` family, and the one
+    that was missing. Those two cover "no record is kept" and "the store will not
+    open"; this covers "the store opened and what came out was not usable".
+
+    All three say the same thing: **"I can't see" must never be rendered as
+    "there is nothing there".** Without this, a store full of contact events
+    whose timestamps stopped parsing answered "nothing from her at all" —
+    confident, wrong, and indistinguishable from the truth.
+    """
+    return (f"I can't tell you either way, {honor} — I have {display}'s contact "
+            f"records but I can't read the times on them, so I won't guess.")
+
+
 def answer(display: str, rows, *, now: datetime | None = None,
            honor: str = "Sir") -> str:
     """The butler's line, built from metadata alone.
@@ -455,12 +471,23 @@ def answer(display: str, rows, *, now: datetime | None = None,
     """
     now = now.astimezone() if now else datetime.now().astimezone()
 
+    rows = list(rows or [])
     stamped = []
-    for r in rows or []:
+    for r in rows:
         dt = _parse(r.get("timestamp"))
         if dt is not None:
             stamped.append((dt, bool(r.get("urgent"))))
     stamped.sort(key=lambda p: p[0], reverse=True)
+
+    # `_parse` skips a row it cannot read, which is right for ONE bad row among
+    # good ones — a wrong time is worse than no time. It is wrong when EVERY row
+    # is bad, because then the skipping IS the answer, and the answer it produces
+    # is "nothing from her at all". That is a confident denial manufactured by a
+    # failure, which is the one thing this module exists to avoid saying.
+    if rows and not stamped:
+        print(f"[CONTACT-EVENTS] {len(rows)} contact row(s) had unreadable "
+              f"timestamps — refusing to report them as silence.", flush=True)
+        return unreadable_text(display, honor)
 
     today = [p for p in stamped if p[0].date() == now.date()]
 
