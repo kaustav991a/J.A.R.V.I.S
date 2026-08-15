@@ -8,8 +8,8 @@
 
 ## ▶▶ 2026-08-15 — START HERE. Four commits pushed, and the suite runs again.
 
-**HEAD `e77454b` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **67/67 harnesses,
-1806 checks, 0 failed** — and that number matters, because *the suite had been
+**HEAD `7fe7f5a` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **69/69 harnesses,
+1885 checks, 0 failed** — and that number matters, because *the suite had been
 unrunnable since the office-PC push and nobody knew* (it was 64/1562 when that was
 found; F-16 below added the 65th harness).
 
@@ -200,7 +200,7 @@ Backend **13 → 2**. Frontend **3 → 0** (`npm audit` reports `found 0 vulnera
 - **`chromadb` 1.5.9 — PYSEC-2026-311, no fix version exists.** 1.5.9 *is* the latest
   release on PyPI. Nothing to move to until upstream ships one.
 
-## ▶▶ PRE-ELECTRON CODE REVIEW — 8 FINDINGS FIXED 2026-08-15, **NOT FINISHED**
+## ▶▶ PRE-ELECTRON CODE REVIEW — 10 FINDINGS FIXED 2026-08-15, **NOT FINISHED**
 
 **Deliberately brought FORWARD, ahead of the §7 gate**, reversing the step-6 ordering
 below. The reason is this file's own rule: **a row only passes against the tree it passed
@@ -237,7 +237,7 @@ from being bypassed. `terminal_agent` is deliberately excluded and pinned as suc
 `test_shell_safety.py` (48) asserts the property **structurally**: an AST walk proving no
 `os.system`/`shell=True` call in those files takes an f-string at all.
 
-### ✅ Findings 2–8 — ALL FIXED. Eight findings, 15 sites, five commits.
+### ✅ Findings 1–10 — ALL FIXED. Ten findings, 19 sites, seven commits.
 
 | # | Commit | What | Sites |
 |---|---|---|---|
@@ -249,6 +249,22 @@ from being bypassed. `terminal_agent` is deliberately excluded and pinned as suc
 | 6 | `f2a42de` | **the encryption keys were not on the do-not-delete list**; `_workspace_write` had no check at all | 2 |
 | 7 | `e77454b` | the gesture daemon **leaked a camera + reader thread** on every failed setup | 1 |
 | 8 | `e77454b` | a corrupt saved widget position **white-screened the HUD**, and survived restarts | 3 |
+| 9 | `e3ef3e1` | a reply **cut off mid-path deleted the parent folder** — in the shared parse spine, so every path at once | 1 |
+| 10 | `7fe7f5a` | the browser tools would fetch **`file://` and localhost** — a read of any file, around `workspace_read` | 3 |
+
+**Finding 9 is the one that needs no attacker at all.** `heal_and_load` closes a value the
+model was cut off mid-way through, which is right for the common case. For a destructive
+action it is not: a truncated target is not a *broken* target, it is a different valid one —
+and for a path it is a **parent**. `delete_file` on a directory calls `shutil.rmtree`. All it
+takes is a long path and `max_tokens`. Now refused when, and only when, the JSON had to be
+**closed** to parse (a trailing-comma repair is lossless and still allowed), and only for
+destructive types — the rest of the batch survives.
+
+**Finding 10 completes finding 6.** The protected-file list guards writing and deleting and
+says nothing about *reading* — and `web_browse` is AUTO tier, so `file:///…/.env` rendered in
+Playwright and came back as page text. Blocked with the private ranges and `169.254.169.254`,
+because the desk API is unauthenticated on the reasoning that only local processes reach it,
+and a model fetching localhost is the case that reasoning excluded.
 
 **One root cause produced findings 1, 2 and 6, and it is worth carrying forward:**
 **governance approves an action by TYPE and never inspects the ARGUMENT.** `close_app`,
@@ -309,12 +325,17 @@ unreproduced. This is not proof it was the cause, but it was definitely present.
 > deny by default and make the harnesses pass an explicit permissive authorizer. **Not done
 > unasked** — it changes the contract every existing agent harness relies on.
 
+> **Owed, and deliberately not fixed:** `gmail_send` does not validate its recipient. It is
+> CONFIRM tier, so a human approves every send and that approval IS the control. **Check
+> during the §7 gate that the confirmation prompt actually reads back the recipient** — if it
+> does not, the control is theatre and this becomes a real finding.
+
 ### ⏭ NOT REVIEWED — this is where a continuation starts
 
-- `modules/agent_tools.py` (1573), `agent_runner.py` (639), `agent_core.py` (571) — only
-  pattern-checked, never read. **Largest unread surface in the tree.**
-- `brain.py` (590), `memory_manager.py` (321), `action_parser.py` (332) — `action_parser` is
-  the shared parse spine, so a defect there reaches every path at once.
+- `modules/agent_runner.py` (639) beyond its authorizer and CONFIRM routing;
+  `agent_tools.py` was covered for the injection/precondition shape only — its ~56 individual
+  tool handlers were not each read.
+- `brain.py` (590), `memory_manager.py` (321).
 - `modules/agent_search.py`, `agent_skills.py`, `agent_metrics.py`, `tool_calls.py`.
 - `cursor_overlay.py` (548) and `modules/gesture_engine.py` (776) were reported clean by a
   reviewer but not read closely.
