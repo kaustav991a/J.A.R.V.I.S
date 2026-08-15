@@ -29,6 +29,33 @@ const BrowserWidget = ({ externalUrl, immersive = false }) => {
 
   const handleFrameError = () => setLoadError(true);
 
+  // Only http(s) may reach the iframe.
+  //
+  // `externalUrl` arrives over the WebSocket — it is whatever the backend, and
+  // therefore ultimately the model, decided to open. Inside an Electron shell a
+  // `file:///` frame reads the local disk and a `data:` frame executes script,
+  // so this is not the same risk it would be in a browser tab. The typed path
+  // below already forces https:// onto anything unschemed; this closes the same
+  // gap on the path nobody types into.
+  //
+  // Returns null for anything it will not open, so the caller can leave the
+  // previous page up rather than blanking the frame.
+  const safeHttpUrl = (raw) => {
+    const text = String(raw || "").trim();
+    if (!text) return null;
+    try {
+      const parsed = new URL(text, window.location.href);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        console.warn(`[BrowserWidget] refused a ${parsed.protocol} URL`);
+        return null;
+      }
+      return parsed.href;
+    } catch {
+      console.warn("[BrowserWidget] refused an unparseable URL");
+      return null;
+    }
+  };
+
   useEffect(() => {
     if (externalUrl) {
       let finalUrl = externalUrl.trim();
@@ -40,8 +67,10 @@ const BrowserWidget = ({ externalUrl, immersive = false }) => {
       } else if (finalUrl.includes("youtu.be/")) {
         finalUrl = finalUrl.replace("youtu.be/", "www.youtube.com/embed/") + "?autoplay=1";
       }
-      setUrlInput(finalUrl);
-      setCurrentUrl(finalUrl);
+      const safe = safeHttpUrl(finalUrl);
+      if (!safe) return;          // leave whatever is on screen; do not blank it
+      setUrlInput(safe);
+      setCurrentUrl(safe);
     }
   }, [externalUrl]);
 
@@ -64,7 +93,11 @@ const BrowserWidget = ({ externalUrl, immersive = false }) => {
       finalUrl = "https://" + finalUrl;
     }
 
-    setCurrentUrl(finalUrl);
+    // Same gate as the WebSocket path: a typed `file:///` or `javascript:` is
+    // no safer for being typed.
+    const safe = safeHttpUrl(finalUrl);
+    if (!safe) return;
+    setCurrentUrl(safe);
   };
 
   return (
