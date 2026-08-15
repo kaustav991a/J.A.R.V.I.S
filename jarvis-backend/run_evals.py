@@ -4,9 +4,15 @@ Roadmap §6.8.4 (Phase 4). ~40 real requests, each with the tool (or tools) that
 should serve it. Run it after any change to a description, an alias or the
 ranking, and the number moves or it does not.
 
-    venv\Scripts\python.exe run_evals.py            # retrieval, offline
-    venv\Scripts\python.exe run_evals.py --live     # the real model, real Groq
+    venv\Scripts\python.exe run_evals.py            # retrieval, offline, harmless
+    venv\Scripts\python.exe run_evals.py --live     # ⚠ REAL actions on THIS machine
     venv\Scripts\python.exe run_evals.py --metrics  # what the live runs recorded
+
+⚠ `--live` IS NOT A SIMULATION. It drives a real `ActionEngine`, so the tasks
+close applications, lock the screen, read the inbox and spend the search key on
+whatever desk it runs from. It prompts for confirmation now, and refuses
+outright when there is no console to confirm on. Do not run it while you are
+using the computer.
 
 TWO MODES, AND THE DIFFERENCE IS THE POINT
 ------------------------------------------
@@ -187,6 +193,34 @@ def main(argv: list) -> int:
             agent_metrics.summarise(agent_metrics.load_runs())))
         return 0
     if "--live" in argv:
+        # `--live` drives a REAL ActionEngine, so the tasks do not simulate
+        # anything: they close apps, lock the screen, read the inbox and spend
+        # the search key, on whatever machine this is run on. Learned by running
+        # it on Kaustav's desk mid-session — it shut his browser and locked him
+        # out while he was working, and the only warning was about rate limit.
+        #
+        # The eval is still worth running. It just must not be a surprise, and
+        # it must not run unattended: the actions land on the desk of whoever
+        # happens to be sitting there.
+        print(f"\n{'!' * 68}")
+        print("  --live drives the REAL ActionEngine on THIS machine.")
+        print("  These tasks genuinely close applications, lock the screen,")
+        print("  read your inbox, and spend your search-API quota.")
+        print("  Writes are refused unattended, so nothing is deleted — but")
+        print("  do not run this while you are using the computer.")
+        print(f"{'!' * 68}\n")
+        if "--yes" not in argv:
+            try:
+                reply = input("Type 'live' to continue, anything else aborts: ")
+            except EOFError:
+                # No console (CI, a pipe, a background shell). Refuse rather
+                # than assume consent — an unattended yes is how this went wrong.
+                print("No console to confirm on — aborting. Pass --yes if you "
+                      "are certain and nobody is at the machine.")
+                return 2
+            if reply.strip().lower() != "live":
+                print("Aborted. Nothing was run.")
+                return 2
         print(f"Running {len(tasks)} tasks against the REAL model — this costs "
               f"rate limit and minutes.\n")
         return report(score_live(tasks))
