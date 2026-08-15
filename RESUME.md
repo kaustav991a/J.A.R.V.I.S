@@ -6,7 +6,124 @@
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
 > bookmark, not a plan.
 
-## ▶▶ 2026-08-15 — START HERE. Four commits pushed, and the suite runs again.
+## ▶▶ 2026-08-16 — START HERE. Six commits, UNPUSHED. Suite 73/73, 1967 checks.
+
+**Packaging was started and then STOPPED, on Kaustav's call, and he was right.**
+The review is not finished and the §7 gate has run 15 of 192 rows, so an installer
+now would wrap unreviewed, ungated code — the most expensive possible moment to find
+anything. `electron` and `electron-builder` are deliberately **not installed**.
+`ELECTRON_SHIP_PLAN.md` holds the sequencing for when the gate is done.
+
+What was kept from that work is not packaging, it is the origin decision the roadmap
+flagged: **the packaged HUD is served by the backend at `/hud`, never loaded from
+`file://`** (`49e64a5`). A `file://` renderer sends `Origin: null`, which main.py's
+four-entry CORS list refuses — and the tempting fix is to add `null` or `*`, which
+gives away the origin check for good. Same origin, no new CORS entry, no `file://`
+document in the process. With it: `GET /health`, `vite base: './'`, a shell-level
+navigation lockdown (navigate only within the loaded origin, `window.open` denied,
+http(s) handed to the real browser, `<webview>` refused) and a single-instance lock.
+
+### Groq's retirement was only half applied — and OpenRouter had rotted too
+
+`a943582` moved the code default off `llama-3.3-70b-versatile` and stopped there.
+**`render.yaml` still declared it** (`37bb49b`), and a value declared there WINS over
+the code default, so the cloud gateway's Groq leg would have started 404ing on the
+16th with every harness green.
+
+Reading the live catalogues then found the bigger one: **three of OpenRouter's four
+`:free` models no longer exist.** `openai/gpt-oss-120b:free`,
+`qwen/qwen3-next-80b-a3b-instruct:free` and `meta-llama/llama-3.3-70b-instruct:free`
+are all gone — the PAID base ids still exist, which is why a casual look says fine.
+`OPENROUTER_TOOL_MODELS` held those three and nothing else, so **the tool cascade's
+last leg was wholly dead**, and it only runs once Groq and Gemini have both failed.
+
+Replacements were probed, not chosen from a page — a six-tool shelf with close
+neighbours, scoring tool choice, argument fidelity, and calling nothing when nothing
+fits:
+
+| model | score | median | note |
+|---|---|---|---|
+| `nvidia/nemotron-3-super-120b-a12b:free` | 4/4 | 3.8s | 262k ctx |
+| `nvidia/nemotron-nano-9b-v2:free` | 4/4 | 5.0s | the one survivor of the old list |
+| `openai/gpt-oss-20b:free` | 4/4 | 12.8s | different vendor, familiar family |
+| `nvidia/nemotron-3.5-lightning:free` | **3/4** | **1.3s** | 1M ctx — and see below |
+
+**Ordered by correctness, not speed** (`f2db8d1`). Lightning is 3× faster and is the
+one that got it wrong: *"shut down VS Code on the pc"* → `close_app(app_name="code")`,
+a target nobody said. This leg is reached already degraded, so a wrong action costs
+more than a slow one.
+
+**Nemotron is free and tool-capable — on OpenRouter only. Groq has no nemotron at
+all** (15 models, checked). **Hermes is not usable here:** all four on OpenRouter are
+paid, and none advertise tool support — a live request returns
+`404 No endpoints found that support tool use`. Groq is untouched and still first.
+
+`test_model_ids.py` (5) pins the resolved values, both OpenRouter lists, the `:free`
+requirement, and `render.yaml`.
+
+### Review findings 14–16, all fixed
+
+| # | Commit | What |
+|---|---|---|
+| 14 | `f8c5b82` | **six other spellings of `127.0.0.1` walked past the URL guard** |
+| 15 | `addcadc` | he was approving the **first 120 characters** of an email |
+| 16 | `d781bcb` | an **ungoverned** agent run said nothing about it |
+
+**Finding 14 is finding 10's fix being incomplete.** `_url_problem` matched host
+PREFIXES, which recognises exactly one way of writing loopback.
+`http://2130706433:8000/api/agent/confirm` is 127.0.0.1 in decimal, port 8000 is the
+desk's unauthenticated API, and `/api/agent/confirm` **approves governance prompts**.
+Also allowed: hex, octal, `0`, `::ffff:127.0.0.1`, expanded `::1`. And it refused
+`https://10.com/`, a real domain. The host is now parsed by the same `inet_aton` the
+socket layer uses to connect — read the address the way the connection will, not the
+way it is spelled — then classified with `ipaddress`. A NAME is resolved once in a
+worker thread under a 2s timeout, because `localtest.me` and the `nip.io` family are
+a free redirect back to the desk API.
+
+> **A blocklist over the SPELLINGS of a thing can never be complete** — the same
+> lesson F-09 taught about a blocklist over mutation VERBS. Both fixes ended in the
+> same place: parse and classify, do not pattern-match.
+
+**Finding 15 closes the `gmail_send` question this file recorded as owed.** The
+recipient DOES read back, so the control was not theatre — it was half of one.
+`question_for` caps at 120 characters and the HUD rendered nothing else, so
+`{"to": …, "subject": …, "body": …}` showed recipient and subject and about forty
+characters of the body, with APPROVE autofocused and bound to `Y`. Same for
+`workspace_write` and `edit_file`. The frame now carries the model's own ARGUMENTS,
+labelled, elided at 600 chars with a count of what is hidden — built from the
+arguments, never by re-parsing the pipe-joined target.
+
+**Finding 16 was recorded here as a latent risk and is still not a live defect** —
+verified rather than assumed: `run_agent_loop` has one production call site and
+`run_agent_command` assigns an authorizer on both branches. The default stays
+permissive (flipping it changes every harness's contract), but an ungoverned run now
+prints and emits `ungoverned`.
+
+### And a harness was not running its own tests
+
+Three tests were added to `test_url_precondition.py` and it reported **"43 passed, 0
+failed"** — the identical number as before. It drove a hand-written `TESTS = [...]`
+list. **A green count that does not move is the most convincing possible way to not
+notice.** That file discovers now (43 → 57). The other 23 harnesses that keep such a
+list were checked and have **no orphans today**, so rather than rewrite them,
+`test_harness_integrity.py` fails the suite if one ever appears. `run_harnesses.py`
+had this identical bug one level up (§6.8.2).
+
+### ⏭ Where the review stops
+
+Covered so far: `agent_tools.py`'s registry spine and URL/target composition,
+`agent_core.run_agent_loop` end to end, `agent_confirm`, `agent_runner`'s authorizers
+and its `run_agent_loop` call. **Still unread:** `agent_tools.py`'s ~56 individual
+handlers below wave 3, the rest of `agent_runner.py`, `brain.py` (590),
+`memory_manager.py` (321), `agent_search`/`agent_skills`/`agent_metrics`/`tool_calls`,
+`cursor_overlay.py` (548), `gesture_engine.py` (776), the frontend widgets.
+
+⚠️ **`jarvis-backend/run_evals.py` has an UNCOMMITTED change** excluding six
+follow-up prompts from the live score. Left uncommitted deliberately: it raises the
+reported number by removing 15% of the set, it is unharnessed, and its own comment
+names the real fix (seed the prior turn so all 40 score). Decide before it is quoted.
+
+## ▶▶ 2026-08-15 — Four commits pushed, and the suite runs again.
 
 **HEAD `7fe7f5a` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **69/69 harnesses,
 1885 checks, 0 failed** — and that number matters, because *the suite had been
