@@ -693,6 +693,22 @@ def _macro_url_precondition(args: dict) -> str | None:
     return _url_problem(raw) if raw else None
 
 
+def _send_file_precondition(args: dict) -> str | None:
+    """`telegram_send_file` reads a file off the disk and uploads it.
+
+    Finding 18. The path must be absolute (different tools resolve relative paths
+    against different roots), AND it must not be one of the protected files. The
+    protected list already documents that "READING is refused too, not only
+    writing" — this tool simply never asked it, and it is AUTO tier, so nothing
+    else would have.
+    """
+    problem = af.absolute_path_problem(args.get("path"))
+    if problem:
+        return problem
+    from modules.protected_paths import protected_path_problem
+    return protected_path_problem(str(args.get("path") or ""))
+
+
 def _remember_target(args: dict) -> str:
     """`_remember_fact` splits on the FIRST colon into (category, fact) and
     falls back to category "Fact" for anything it does not recognise. The colon
@@ -1534,7 +1550,12 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                aliases=("phone", "document", "attachment", "pdf", "share"),
                build_target=lambda a: {"path": str(a.get("path", "")).strip(),
                                        "caption": str(a.get("caption") or "")},
-               precondition=lambda a: af.absolute_path_problem(a.get("path")))
+               # Both doors, for the reason finding 17 records: absolute-path
+               # shape here, AND the protected-file list — `.env` and the key
+               # wraps must not leave the machine, even to his own phone, because
+               # sending one puts every credential into a third party's chat log
+               # for good. The engine enforces the same check at the sink.
+               precondition=_send_file_precondition)
 
     r.register("remember_fact",
                "Store something about him for later — a preference, a "

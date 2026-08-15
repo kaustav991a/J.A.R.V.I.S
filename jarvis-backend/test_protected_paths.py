@@ -272,6 +272,75 @@ def test_the_guard_lives_in_one_module_not_three_copies():
     check(imported, "action_engine imports the guard rather than keeping its own copy")
 
 
+
+def test_telegram_send_file_cannot_upload_the_key_files():
+    """Finding 18, 2026-08-16 — the THIRD road to the protected files.
+
+    Finding 6 put them on the list for WRITING and DELETING; findings 10/14/17
+    closed READING them through a URL. `telegram_send_file` reads one and uploads
+    it, and it is AUTO tier, so nothing asks first. "Only the owner receives it"
+    is true and beside the point: `.env` holds every API key, the bridge secret
+    and the unlock code, and sending it puts all of that permanently into a third
+    party's chat log.
+
+    Driven against the real handler with a bot that records whether it was ever
+    reached — a refusal string alone would pass even if the upload had happened.
+    """
+    import asyncio
+    import action_engine as ae
+    from modules import protected_paths as pp
+
+    engine = ae.ActionEngine.__new__(ae.ActionEngine)
+    engine.protected_files = pp.PROTECTED_FILES
+    engine.protected_folders = pp.PROTECTED_FOLDERS
+
+    sent = []
+
+    class SpyBot:
+        @staticmethod
+        def is_configured():
+            return True
+
+        @staticmethod
+        async def send_document_to_owner(path, caption):
+            sent.append(path)
+            return True
+
+    import sys as _sys
+    real = _sys.modules.get("modules.telegram_bot")
+    _sys.modules["modules.telegram_bot"] = SpyBot
+    try:
+        for target in (str(pp.BACKEND_DIR / ".env"),
+                       str(pp.BACKEND_DIR / "jarvis_key.dpapi"),
+                       {"path": str(pp.BACKEND_DIR / "jarvis_key.recovery"),
+                        "caption": "here you go"}):
+            out = asyncio.run(engine._telegram_send_file(target))
+            check(isinstance(out, str) and out,
+                  f"refused with a sentence: {str(target)[:40]}")
+            check("Sent" not in out, "...and did not claim it was sent")
+        check(sent == [], f"nothing must have reached Telegram; got {sent}")
+    finally:
+        if real is not None:
+            _sys.modules["modules.telegram_bot"] = real
+        else:
+            _sys.modules.pop("modules.telegram_bot", None)
+
+
+def test_the_send_file_tool_refuses_before_dispatch_too():
+    """Both doors. The tool-layer precondition gives the model a correctable
+    instruction; the engine check catches the one-shot path."""
+    from modules import agent_tools as at
+    from modules import protected_paths as pp
+
+    problem = at._send_file_precondition({"path": str(pp.BACKEND_DIR / ".env")})
+    check(problem is not None, "the tool precondition refuses .env")
+    ok = at._send_file_precondition(
+        {"path": str(pp.BACKEND_DIR.parent / "README.md")})
+    check(ok is None, "an ordinary absolute path is still allowed")
+    rel = at._send_file_precondition({"path": "notes.txt"})
+    check(rel is not None, "a relative path is still refused")
+
+
 TESTS = [
     test_every_key_file_is_refused,
     test_the_workspace_agent_refuses_every_protected_file,
@@ -288,6 +357,8 @@ TESTS = [
     test_delete_file_consults_the_guard,
     test_workspace_write_consults_the_guard,
     test_the_guard_runs_before_the_destructive_call,
+    test_telegram_send_file_cannot_upload_the_key_files,
+    test_the_send_file_tool_refuses_before_dispatch_too,
 ]
 
 

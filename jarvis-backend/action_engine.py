@@ -1592,6 +1592,24 @@ class ActionEngine:
         if not path:
             return "No file path specified to send, sir."
 
+        # THE THIRD ROAD TO THE KEY FILES. Finding 6 put them on the protected
+        # list for WRITING and DELETING; findings 10/14/17 closed READING them
+        # through a URL. This reads one and uploads it — and it is AUTO tier, so
+        # nothing asks first.
+        #
+        # "Only the owner ever receives it" is true and beside the point: `.env`
+        # holds every API key, the bridge secret and the unlock code, and sending
+        # it puts all of that permanently into a third party's chat log. The model
+        # can be steered here by a page it was told to read.
+        #
+        # `protected_paths` already says reading is refused too — this handler
+        # simply never asked it.
+        protected = self._protected_path_problem(path)
+        if protected:
+            print(f"[ACTION ENGINE] telegram_send_file refused: "
+                  f"{os.path.basename(path)} is protected.", flush=True)
+            return protected
+
         try:
             from modules import telegram_bot
         except Exception as e:
