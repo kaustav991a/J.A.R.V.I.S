@@ -135,17 +135,45 @@ on disk. `android sdk list` (the replacement CLI) crashes with `0xC0000409`.
 `ANDROID_HOME` — but `prebuild --clean` still resets jvmargs to 2048m and R8 needs
 **6144m**.
 
+### ✅ F-16 IS FIXED (2026-08-15) — conversation reports too
+
+The last keyboard-buildable item on the gate list. *"Now that I've adjusted the camera, I
+can see you clearly, Sir."* It adjusted nothing, and `process_command` /
+`process_stream` had no guard at all — F-09's wraps `generate_briefing` only.
+
+**The axis is different from F-09's, and that is the whole fix.** A briefing never acts,
+so any completion claim in it is false by construction. Conversation *sometimes* acts —
+so the question is **"did anything actually happen?"** Tier 1 (speech, perception,
+analysis) is always admissible; tier 2 (opened, closed, sent, played) needs an
+`[Executed: ...]` stub within the last 6 working-memory messages — **a parse of what was
+dispatched, never what the model said about itself**. Everything in neither tier goes,
+which is where *adjusted*, *calibrated*, *tuned* and every verb nobody thought of land.
+
+The guard runs only on a **prose** turn. When JARVIS really does change the volume the
+reply is a JSON action and the confirmation comes from `action_engine`, untouched — so a
+capability claim *in prose* is already the suspicious shape. `_MANDATE_RE` is
+deliberately not ported: "as you asked" is routinely true mid-conversation.
+
+**Two defects the harness caught first:** a dropped sentence next to a code fence took
+the fence with it, and the streaming path left the raw reply in working memory — where a
+fabrication becomes established context the next turn builds on.
+`test_conversational_truthfulness.py` (111) drives the **real `process_stream`** against
+a fake model. Suite **65/65, 1673 checks**. ⏳ **Not yet spoken to** — F-09's first fix
+also passed its harness and then failed live.
+
 ### ⏭ Next, in order
 
-1. **F-16** — confabulation on the conversational path. Pure code, no hardware. Port
-   F-09's allowlist, but wider: conversation legitimately claims more than a report.
-2. **§7 gate session 2** — `21.3` FIRST (5 min, 34 rows depend on it), then the seven
+1. **§7 gate session 2** — `21.3` FIRST (5 min, 34 rows depend on it), then the seven
    re-runs, then `4.4`, then `6.5`. See `LIVE_GATE_CHECKLIST.md`, which opens with the
    session-2 order. A4's four LLM-routing rows now exercise Gemini-first, so the gate
-   tests the config actually intended for shipping.
-3. **Durable desk key** (queue item 5) — small, and it demonstrably costs facts today.
-4. **Dependabot session** — one at a time, suite each, watch the protobuf pin.
-5. **Gateway search verification** — the one-question Telegram check above.
+   tests the config actually intended for shipping. **Add an F-16 row while you are
+   there:** an ordinary voice turn must not claim work it did not do — and it must still
+   sound like JARVIS, because the guard was deliberately kept narrow.
+2. **Durable desk key** (queue item 5) — small, and it demonstrably costs facts today.
+3. **Dependabot session** — one at a time, suite each, watch the protobuf pin.
+4. **Gateway search verification** — the one-question Telegram check above.
+5. **F-15**, if it reproduces — a transient stored as a permanent Fact. It did NOT recur
+   on comparable corrections the same session, so **confirm before building anything**.
 
 **Still not built, and still worth it:** turns do not sync cloud→desk, only facts.
 The right shape is a new frame type on the existing sealed bridge (same seal, same

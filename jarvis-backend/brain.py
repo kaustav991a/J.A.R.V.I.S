@@ -1553,9 +1553,20 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
             _stub = f"[Executed: {', '.join(_atypes)}. Done.]"
             memory.add_to_working_memory("assistant", _stub)
         else:
-            # No action detected — a conversational reply; store it verbatim.
+            # No action detected — a conversational reply. F-16: this turn did
+            # nothing at all, so any completed-mutation claim inside it is
+            # unfounded unless a real action ran a turn or two ago. Strip it
+            # BEFORE it is spoken and before it enters working memory — a
+            # fabrication left in the buffer becomes established context, and
+            # the next turn builds on it as though it were true.
+            _title = "Madam" if active_user == "MOUSUMI" else "Sir"
+            response = _strip_unfounded_conversational_claims(
+                response,
+                actions_ran=_actions_ran_recently(memory.get_working_memory()),
+                title=_title,
+            )
             memory.add_to_working_memory("assistant", response)
-            
+
         return response
     except Exception as e:
         import traceback as _tb
@@ -1699,12 +1710,76 @@ def process_stream(user_text: str, active_user: str = "KAUSTAV"):
             timeout=60.0,
         )
         
+        # F-16 on the streaming path. A claim cannot be withheld once half of it
+        # has been spoken, so chunks are held back to the nearest sentence end
+        # and judged whole. The one consumer (streaming_daemon) already joins the
+        # entire stream before deciding anything, so nothing real is paid for it.
+        _f16_title = "Madam" if active_user == "MOUSUMI" else "Sir"
+        _f16_ran = _actions_ran_recently(memory.get_working_memory())
+        _pending = ""
+        _raw = False          # action payload or code fence — never rewrite it
+        _emitted = False
+        _f16_dropped = 0
+        _spoken = ""          # what actually left the generator, for the buffer
+
         full_response = ""
         for text_chunk in completion:
-            if text_chunk:
-                full_response += text_chunk
+            if not text_chunk:
+                continue
+            full_response += text_chunk
+            if _raw:
                 yield text_chunk
-                
+                continue
+            _pending += text_chunk
+            if full_response.lstrip()[:1] in ("{", "[", "`"):
+                # JSON actions and fenced code are not prose. Sentence-splitting
+                # either one corrupts it; hand the rest through untouched.
+                _raw = True
+                if _pending:
+                    _emitted = True
+                    yield _pending
+                    _pending = ""
+                continue
+            while True:
+                _m = _SENTENCE_SPLIT_RE.search(_pending)
+                if not _m:
+                    break
+                _sentence, _pending = _pending[:_m.end()], _pending[_m.end():]
+                if _sentence_is_unfounded(
+                        _sentence,
+                        # A fence anywhere in the reply so far means the reply is
+                        # AUTHORING, so "I've written a function" describes the
+                        # message rather than claiming a file was created.
+                        _conversational_allowed(_f16_ran, "```" in full_response)):
+                    _f16_dropped += 1
+                    print(f"[BRAIN]   dropped (stream): {_sentence.strip()[:110]}", flush=True)
+                    continue
+                _emitted = True
+                _spoken += _sentence
+                yield _sentence
+        if _pending and not _raw:
+            if _sentence_is_unfounded(
+                    _pending,
+                    _conversational_allowed(_f16_ran, "```" in full_response)):
+                _f16_dropped += 1
+                print(f"[BRAIN]   dropped (stream): {_pending.strip()[:110]}", flush=True)
+            else:
+                _emitted = True
+                _spoken += _pending
+                yield _pending
+        if _f16_dropped and not _emitted:
+            # The whole reply was unfounded. Say something true rather than
+            # nothing — silence reads as a fault.
+            _spoken = f"I have no completed actions to report, {_f16_title}."
+            yield _spoken
+        if _f16_dropped:
+            # The buffer must hold what was SPOKEN, never the raw reply — a
+            # fabrication left in working memory becomes established context and
+            # the next turn builds on it as though it were true.
+            print(f"[BRAIN] reply(stream): dropped {_f16_dropped} unfounded "
+                  f"action claim(s) (actions_ran={_f16_ran}).", flush=True)
+            full_response = _spoken
+
         # After streaming completes, add to working memory
         if is_locked and not any(x in full_response.lower() for x in ["mousumi", "kinshuk", "welcome", "granted", "pleasure"]):
             yield " Access Denied. Interaction terminated."
@@ -2232,11 +2307,14 @@ _BARE_COMPLETION = ("taken care of", "handled that", "handled this",
                     "done that for you", "done as you asked")
 
 
-def _claims_a_completion(sentence: str) -> bool:
+def _claims_a_completion(sentence: str, allowed: frozenset = _ALLOWED_REPORTING) -> bool:
     """True if the sentence claims JARVIS finished doing something it may not do.
 
     Reads the verb rather than pattern-matching a phrase list, and judges it
-    against the closed set of things a REPORT may legitimately claim.
+    against the closed set of things the CALLER says may legitimately be claimed.
+    One parser, two policies: the briefing passes `_ALLOWED_REPORTING` (it only
+    ever reports), the conversational guard below passes a wider set, because
+    conversation legitimately claims more than a report does.
     """
     for m in _COMPLETION_RE.finditer(sentence):
         words = [w.lower() for w in m.groups() if w]
@@ -2261,7 +2339,7 @@ def _claims_a_completion(sentence: str) -> bool:
                            or verb in _IRREGULAR_PARTICIPLES)
         if not looks_completed:
             continue          # "I have three items to report" — not a verb claim
-        if verb not in _ALLOWED_REPORTING:
+        if verb not in allowed:
             return True
     return False
 
@@ -2312,6 +2390,220 @@ def _strip_unfounded_action_claims(text: str) -> str:
     # than nothing — silence reads as a fault, and a fabricated briefing is the
     # thing we are refusing to speak.
     return cleaned or "All primary systems are online, Sir."
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F-16 — the same confabulation, on the CONVERSATIONAL path
+# ─────────────────────────────────────────────────────────────────────────────
+# Live gate 2026-08-09, 01:52, an ordinary voice turn:
+#
+#     "Now that I've adjusted the camera, I can see you clearly, Sir."
+#
+# It adjusted nothing. There is no action in the registry that adjusts a camera.
+# Same false-completion class as F-09, different function: the F-09 guard wraps
+# generate_briefing only, and process_command / process_stream were unguarded.
+#
+# Its allowlist cannot simply be reused. A briefing REPORTS, so seven verbs
+# cover everything it may legitimately claim; conversation says "I've told you",
+# "I've noticed", "I've opened it" — the briefing set would flatten all of that.
+#
+# So the policy is wider, and still closed on both sides:
+#
+#   TIER 1 — SPEECH, PERCEPTION, ANALYSIS. Saying, noticing, remembering,
+#     checking, searching. JARVIS can do these on any turn by definition, so
+#     they need no evidence and are always admissible.
+#
+#   TIER 2 — DISCRETE CAPABILITY. Opening, closing, sending, playing, saving.
+#     Admissible only when this conversation ACTUALLY RAN something recently —
+#     evidence, not narration: the "[Executed: ...]" stubs process_command
+#     writes to working memory after action_parser found actions in the reply.
+#
+#   EVERYTHING ELSE is stripped. Note what is NOT in either set: adjusted,
+#   calibrated, tuned, fixed, configured, optimised. Those name no action this
+#   system has, which is exactly why the model reached for one. They are not
+#   blocklisted — they are simply not admitted, and neither is any verb nobody
+#   thought of. That is the F-09 lesson: the open set must be the one that loses.
+#
+# The guard runs ONLY on a prose turn — a turn on which the model emitted no
+# action at all. That is what makes tier 2's coarseness affordable: when JARVIS
+# really does adjust the volume, the reply is a JSON action and the spoken
+# confirmation comes from action_engine, which this never touches. A capability
+# claim in *prose* is already the suspicious shape.
+#
+# _MANDATE_RE is deliberately NOT applied here. "As you asked" is routinely true
+# in conversation — the user did just ask — where in an unprompted 7 a.m.
+# briefing it is an invented mandate. Same words, opposite prior.
+_CONVERSATIONAL_REPORTING = _ALLOWED_REPORTING | frozenset({
+    # speech acts — what an assistant does by talking
+    "told", "said", "mentioned", "explained", "answered", "replied", "asked",
+    "suggested", "recommended", "advised", "offered", "added", "described",
+    "clarified", "reminded", "warned", "informed", "greeted", "apologised",
+    "apologized", "repeated", "quoted", "listed", "outlined",
+    # perception and cognition — never world-changing
+    "noticed", "thought", "considered", "understood", "heard", "listened",
+    "learned", "learnt", "remembered", "recalled", "forgotten", "assumed",
+    "believed", "realised", "realized", "wondered", "recognised", "recognized",
+    "inferred", "guessed", "estimated", "expected", "meant", "tried",
+    # read-only inspection and analysis
+    "searched", "scanned", "examined", "analysed", "analyzed", "compared",
+    "calculated", "measured", "verified", "consulted", "referenced", "traced",
+    "tracked", "sensed", "identified",
+    # gerunds, reached via "I have been ..." / "taken the liberty of ..."
+    "telling", "saying", "mentioning", "explaining", "answering", "asking",
+    "suggesting", "recommending", "advising", "describing", "reminding",
+    "noticing", "thinking", "considering", "listening", "remembering",
+    "recalling", "wondering", "searching", "scanning", "examining",
+    "analysing", "analyzing", "comparing", "calculating", "verifying",
+    "tracking", "identifying", "trying",
+})
+# Verbs that name something the action registry can genuinely do, discretely
+# enough that "I have <verb>" is a checkable claim rather than a vague gesture
+# at effort. Everything here is EVIDENCE-GATED — see _actions_ran_recently.
+_CAPABILITY_CLAIMS = frozenset({
+    "opened", "closed", "launched", "started", "stopped", "played", "paused",
+    "resumed", "muted", "unmuted", "sent", "wrote", "written", "saved",
+    "created", "deleted", "removed", "typed", "minimised", "minimized",
+    "maximised", "maximized", "locked", "unlocked", "enabled", "disabled",
+    "activated", "deactivated", "toggled", "displayed", "shown", "hidden",
+    "dimmed", "restarted", "terminated", "killed", "cancelled", "canceled",
+    "scheduled", "downloaded", "installed", "copied", "renamed", "executed",
+    "ran", "dispatched", "emailed", "messaged", "texted", "called", "browsed",
+    "navigated", "printed", "translated", "converted", "generated", "built",
+    "turned", "switched", "set", "increased", "decreased", "raised", "lowered",
+    # gerunds
+    "opening", "closing", "launching", "starting", "stopping", "playing",
+    "sending", "saving", "creating", "deleting", "typing", "running",
+})
+# Completions with no object at all. Never admitted, evidence or not: a claim
+# that names nothing cannot be checked against anything, so "an action ran
+# recently" is not evidence FOR it — it is only an excuse. "I've taken care of
+# it" is also the exact phrasing that shipped the F-09 fabrication.
+_BARE_CONVERSATIONAL = _BARE_COMPLETION + (
+    "sorted that", "sorted it", "seen to it", "dealt with that",
+    "dealt with it", "took care of it",
+)
+# Authoring verbs. "I have written a function for you" is a claim about a FILE
+# when the reply is prose, and a description of the reply itself when the reply
+# carries a code fence. So they are admitted on the evidence of the fence — the
+# artifact is in the message, which is the strongest evidence available.
+_AUTHORING_CLAIMS = frozenset({
+    "wrote", "written", "created", "generated", "built", "drafted", "produced",
+    "sketched", "outlined", "writing", "creating", "generating", "drafting",
+})
+# A fenced block is never a prose claim, and re-joining one around a dropped
+# sentence would destroy its line breaks. Held out of the scan, put back after.
+_FENCE_RE = re.compile(r"```.*?```|```.*\Z", re.DOTALL)
+# Sentences AND the whitespace between them, so an untouched newline survives.
+_SENTENCE_SPLIT_RE = re.compile(r"((?<=[.!?])\s+)")
+# How far back "recently" reaches, in working-memory messages. Small on purpose:
+# the legitimate case is a follow-up about something just done ("did you open
+# it?"), not a claim resurfacing twenty turns after the fact.
+_EVIDENCE_WINDOW_MSGS = 6
+_EXECUTED_STUB_RE = re.compile(r"\[Executed:|\[Action executed\.", re.IGNORECASE)
+
+
+def _actions_ran_recently(messages: list, window: int = _EVIDENCE_WINDOW_MSGS) -> bool:
+    """True if a real action executed within the last `window` messages.
+
+    Reads the "[Executed: ...]" stub that process_command / process_stream write
+    after `action_parser` found actions in the model's reply. That stub is
+    written from a PARSE of what was dispatched, never from what the model said
+    about itself, which is the whole reason it can be used as evidence.
+    """
+    if not messages:
+        return False
+    for msg in list(messages)[-window:]:
+        try:
+            if msg.get("role") != "assistant":
+                continue
+            if _EXECUTED_STUB_RE.search(str(msg.get("content", "") or "")):
+                return True
+        except AttributeError:
+            continue
+    return False
+
+
+def _conversational_allowed(actions_ran: bool = False, fenced: bool = False) -> frozenset:
+    """The admissible-claim set for one conversational reply.
+
+    Split out so the buffered path and the streaming path share ONE policy.
+    Two copies of a truthfulness rule is two rules, and the second one drifts.
+    """
+    allowed = _CONVERSATIONAL_REPORTING
+    if actions_ran:
+        allowed = allowed | _CAPABILITY_CLAIMS
+    if fenced:
+        allowed = allowed | _AUTHORING_CLAIMS
+    return allowed
+
+
+def _sentence_is_unfounded(sentence: str, allowed: frozenset) -> bool:
+    """True if this one sentence claims work that did not happen."""
+    if not sentence.strip():
+        return False
+    low = sentence.lower()
+    if any(p in low for p in _BARE_CONVERSATIONAL):
+        return True           # unconditional — see _BARE_CONVERSATIONAL
+    return _claims_a_completion(sentence, allowed)
+
+
+def _strip_unfounded_conversational_claims(
+    text: str, actions_ran: bool = False, title: str = "Sir"
+) -> str:
+    """Remove sentences claiming JARVIS completed work it did not do (F-16).
+
+    `actions_ran` is the caller's evidence that something really executed in the
+    last few turns — pass `_actions_ran_recently(memory.get_working_memory())`.
+    It only ever WIDENS what is admissible; with no evidence, every capability
+    claim goes, and with evidence the tier-2 set is admitted.
+
+    Known residual, deliberate: with evidence present, "I have opened it" is
+    admitted without checking it was *that* action. Closing it would need a
+    verb→action_type map maintained alongside every new action in the registry,
+    which would drift silently and fail open — worse than a stated boundary.
+
+    A reply with nothing to drop is returned BYTE-IDENTICAL. That matters more
+    here than in the briefing: conversational replies carry code, lists and
+    deliberate line breaks, and a guard that reflows every reply it inspects
+    would damage far more turns than it repairs.
+    """
+    if not text:
+        return text
+    fenced = "```" in text
+    allowed = _conversational_allowed(actions_ran, fenced)
+    # Hold code fences out of the scan under a placeholder. The trailing full
+    # stop is load-bearing: without it the placeholder has no sentence
+    # terminator, so it merges into whichever sentence follows and a dropped
+    # claim next to a code block takes the code block with it.
+    fences: list = []
+
+    def _stash(m):
+        fences.append(m.group(0))
+        return f"\x00FENCE{len(fences) - 1}\x00."
+
+    body = _FENCE_RE.sub(_stash, text) if fenced else text
+    parts = _SENTENCE_SPLIT_RE.split(body)
+    kept, dropped = [], []
+    for i in range(0, len(parts), 2):
+        sentence = parts[i]
+        separator = parts[i + 1] if i + 1 < len(parts) else ""
+        if _sentence_is_unfounded(sentence, allowed):
+            dropped.append(sentence)
+        else:
+            kept.append(sentence + separator)
+    if not dropped:
+        return text          # untouched turns keep their formatting exactly
+    print(f"[BRAIN] reply: dropped {len(dropped)} unfounded action claim(s) "
+          f"(actions_ran={actions_ran}, fenced={fenced}).", flush=True)
+    for d in dropped:
+        print(f"[BRAIN]   dropped: {d[:110]}", flush=True)
+    cleaned = "".join(kept).strip()
+    for idx, block in enumerate(fences):
+        cleaned = cleaned.replace(f"\x00FENCE{idx}\x00.", block)
+    # If the guard ate the whole reply, say something that is true whatever the
+    # turn was about. Silence reads as a fault; an acknowledgement ("of course")
+    # would agree with the claim we just refused to speak.
+    return cleaned or f"I have no completed actions to report, {title}."
 
 
 def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_user: str = "KAUSTAV", comprehensive: bool = False) -> str:

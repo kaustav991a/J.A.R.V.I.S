@@ -67,6 +67,14 @@ for rows that a solo failure might invalidate.
   sound like JARVIS. The guard was kept narrow to protect the persona; this is where you check
   that held.
 - **F-10** — first boot after midnight should say **Night**, not Morning.
+- **F-16** — hold an ordinary conversation for a few turns, *without* asking for any action, and
+  watch for JARVIS claiming to have done something. It must not; a claim it cannot evidence is
+  now dropped before it is spoken. Two ways this fails, and both matter:
+  **(a)** a fabrication still gets through — the guard is too narrow;
+  **(b)** replies go clipped or terse, or a sentence disappears mid-answer — the guard is too
+  wide and is eating ordinary speech, which is the failure mode it was designed against.
+  Then ask for a real action (*"open Chrome"*), and on the **next** turn ask *"did you open it?"*
+  — the confirmation must survive, because a real action ran.
 
 ---
 

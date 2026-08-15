@@ -119,14 +119,55 @@ answer, an invented action, and an alert that cannot fire.
 > `recall_all_facts()`; junk facts are the fuel that produced the confabulation above. Fixing the
 > briefing guard treats the symptom, and F-15 is upstream of it. **Fix them together.**
 >
-> ### F-16 (NEW) — the same confabulation on the CONVERSATIONAL path
+> ### F-16 — ✅ **FIXED 2026-08-15** — the same confabulation on the CONVERSATIONAL path
 >
 > 01:52, ordinary voice turn: *"**Now that I've adjusted the camera**, I can see you clearly,
 > Sir."* It adjusted nothing. Same false-completion class as F-09, different function.
-> **F-09's guard wraps `generate_briefing` only** — `process_command` and `process_stream` are
+> **F-09's guard wraps `generate_briefing` only** — `process_command` and `process_stream` were
 > unguarded. The allowlist approach ports directly, but the allowlist itself must be WIDER
 > there: conversation legitimately claims more than a report does, so reusing the briefing set
 > would flatten normal speech.
+>
+> **The fix, and the axis it turns on.** A briefing never acts, so *any* completion claim in it
+> is false by construction. Conversation sometimes does act — so the question is not "may this
+> function claim things" but **"did anything actually happen?"** Two tiers, both closed:
+>
+> | Tier | Verbs | Admitted |
+> |---|---|---|
+> | **1 — speech, perception, analysis** | told, noticed, checked, searched, remembered… | always; JARVIS can do these on any turn by definition |
+> | **2 — discrete capability** | opened, closed, sent, played, saved… | **only on evidence** — an `[Executed: ...]` stub within the last 6 working-memory messages |
+> | *neither* | adjusted, calibrated, tuned, fixed, configured, and every verb nobody thought of | never |
+>
+> The evidence is a **parse of what was dispatched**, never what the model said about itself —
+> that distinction is the whole point, since the model narrating an action is the bug, not the
+> proof. And the guard only ever runs on a **prose** turn: when JARVIS really does change the
+> volume the reply is a JSON action and the confirmation comes from `action_engine`, which this
+> never touches. A capability claim *in prose* is already the suspicious shape.
+>
+> Three details worth not re-deriving:
+> - **`_MANDATE_RE` is deliberately NOT applied here.** "As you asked" is routinely true
+>   mid-conversation — the user did just ask — where in an unprompted 07:00 briefing it is an
+>   invented mandate. Same words, opposite prior.
+> - **A reply with nothing to drop is returned byte-identical.** Conversational replies carry
+>   code, lists and deliberate line breaks; a guard that reflowed every reply it inspected would
+>   damage more turns than it repaired. Code fences are held out of the scan entirely, and a
+>   fence in the reply admits the *authoring* verbs — "I have written a function" describes the
+>   message when the artifact is in it.
+> - **The streaming path buffers to the sentence.** A claim cannot be withheld once half of it
+>   has been spoken. `streaming_daemon` already joins the whole stream before deciding anything,
+>   so nothing real is paid for it.
+>
+> **Two defects the harness caught before the live gate could:** a dropped sentence sitting next
+> to a code fence took the fence with it (the placeholder had no sentence terminator, so it
+> merged into the following sentence), and `_strip` left the raw reply in working memory on the
+> streaming path — a fabrication in the buffer becomes established context and the next turn
+> builds on it as though it were true. Both fixed.
+>
+> Harness `test_conversational_truthfulness.py` (111), which drives the **real `process_stream`**
+> against a fake model rather than grepping for the call. Suite **65/65, 1673 checks**.
+>
+> ⏳ **Still owed: the live gate.** This has not been spoken to yet — F-09's first fix passed its
+> harness and then failed on its first real briefing, which is exactly why that is a separate box.
 >
 > Also observed: it described "a cigarette in hand" when there was none, and on correction
 > agreed without revising. **F-15 did NOT recur** on those same corrections — the extractor
