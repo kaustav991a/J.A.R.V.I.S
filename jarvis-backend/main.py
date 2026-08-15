@@ -12,9 +12,11 @@ for _stream in (_sys.stdout, _sys.stderr):
         pass
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager 
+from contextlib import asynccontextmanager
+from pathlib import Path
 import json
 import asyncio
 import sensors
@@ -949,6 +951,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- The packaged HUD is served from HERE, on purpose --------------------------
+# The Electron shell could load its bundle off disk with `file://`. It does not,
+# and this mount is the reason why.
+#
+# A `file://` document sends `Origin: null`, so every fetch in the HUD would be
+# refused by the four-entry list above — and the obvious fix is to add `null` or
+# `*` to it, which gives away the origin check permanently. The desk API is
+# unauthenticated on the reasoning that only local processes can reach it, and
+# that reasoning is only worth anything while the origin list stays closed.
+#
+# Serving the build from the API's own origin means the packaged renderer IS
+# `http://127.0.0.1:8000`. No new CORS entry, no `file://` document in the
+# process at all — the surface the browser-tool findings were about.
+#
+# `html=True` makes `/hud/` resolve to index.html, so the hash routes the shell
+# opens (`/hud/#/notch`, `/hud/#/sidecar`) land on the SPA entry point.
+_HUD_DIST = Path(__file__).resolve().parent.parent / "jarvis-frontend" / "dist"
+if _HUD_DIST.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/hud", StaticFiles(directory=str(_HUD_DIST), html=True), name="hud")
+    print(f"[HUD] serving packaged build from {_HUD_DIST}", flush=True)
+else:
+    # No build present — a dev checkout running Vite on :5173. Answer honestly
+    # rather than 404ing anonymously: a packaged shell that gets this message has
+    # a missing `npm run build`, not a broken backend.
+    @app.get("/hud")
+    @app.get("/hud/{_path:path}")
+    async def _hud_not_built(_path: str = ""):
+        return JSONResponse(
+            status_code=503,
+            content={"error": "hud_not_built",
+                     "detail": f"No frontend build at {_HUD_DIST}. "
+                               f"Run `npm run build` in jarvis-frontend."},
+        )
+
 engine = ActionEngine()
 
 # --- Phase 4 regression hooks (opt-in: avoids exposing classify / speech trace in production) ---
@@ -966,6 +1004,21 @@ if os.getenv("JARVIS_REGRESSION_ROUTES") == "1":
 @app.get("/")
 def read_root():
     return {"status": "J.A.R.V.I.S. Backend is Online"}
+
+
+@app.get("/health")
+def health():
+    """Readiness, for anything that has to wait for this process to come up.
+
+    The Electron shell and the launcher both poll this before opening a window:
+    in a packaged build the backend also SERVES the HUD, so a window opened too
+    early is a blank frameless rectangle with no taskbar entry to close it from.
+
+    Deliberately cheap and deliberately dull — it reports that the process is
+    answering and whether a HUD build is mounted, and touches no subsystem. A
+    readiness probe that can itself be slow or throw is not a readiness probe.
+    """
+    return {"status": "ok", "hud": _HUD_DIST.is_dir()}
 
 @app.get("/api/tv/status")
 async def tv_status():
