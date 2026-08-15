@@ -8,8 +8,8 @@
 
 ## ▶▶ 2026-08-15 — START HERE. Four commits pushed, and the suite runs again.
 
-**HEAD `b27f351` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **66/66 harnesses,
-1721 checks, 0 failed** — and that number matters, because *the suite had been
+**HEAD `e77454b` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **67/67 harnesses,
+1806 checks, 0 failed** — and that number matters, because *the suite had been
 unrunnable since the office-PC push and nobody knew* (it was 64/1562 when that was
 found; F-16 below added the 65th harness).
 
@@ -200,7 +200,7 @@ Backend **13 → 2**. Frontend **3 → 0** (`npm audit` reports `found 0 vulnera
 - **`chromadb` 1.5.9 — PYSEC-2026-311, no fix version exists.** 1.5.9 *is* the latest
   release on PyPI. Nothing to move to until upstream ships one.
 
-## ▶▶ PRE-ELECTRON CODE REVIEW — **STARTED 2026-08-15, NOT FINISHED**
+## ▶▶ PRE-ELECTRON CODE REVIEW — 8 FINDINGS FIXED 2026-08-15, **NOT FINISHED**
 
 **Deliberately brought FORWARD, ahead of the §7 gate**, reversing the step-6 ordering
 below. The reason is this file's own rule: **a row only passes against the tree it passed
@@ -237,42 +237,78 @@ from being bypassed. `terminal_agent` is deliberately excluded and pinned as suc
 `test_shell_safety.py` (48) asserts the property **structurally**: an AST walk proving no
 `os.system`/`shell=True` call in those files takes an f-string at all.
 
-### 🟡 Pass 2 — a spot-check, NOT a clearance
+### ✅ Findings 2–8 — ALL FIXED. Eight findings, 15 sites, five commits.
 
-A reviewer swept `cloud_gateway.py`, `agent_tools/runner/core`, `mcp_client/bridge` and
-`main.py` for auth, injection, governance bypass, fail-open and hang defects, and
-**reported none**. What it positively confirmed: `hmac.compare_digest` on **all four**
-auth paths (webhook, desk-link, app-link, Bearer), auth validated **before** accept,
-MCP commands as lists never strings, governance **before** execute in `agent_core`, and
-`MAX_LINE_BYTES` bounding `mcp_client`'s reads.
+| # | Commit | What | Sites |
+|---|---|---|---|
+| 1 | `b27f351` | model-supplied string → **cmd.exe** | 3 |
+| 2 | `0786452` | model-supplied string → **ADB shell on the TV** | 6 |
+| 3 | `d021c00` | a push Expo **rejected** was logged as delivered, and dead tokens never pruned | 1 |
+| 4 | `d021c00` | every migration minted a fresh **plaintext `.env`** — `--no-secrets` existed and was never passed | 3 |
+| 5 | `d021c00` | a **corrupt key file** crashed instead of reading as locked | 1 |
+| 6 | `f2a42de` | **the encryption keys were not on the do-not-delete list**; `_workspace_write` had no check at all | 2 |
+| 7 | `e77454b` | the gesture daemon **leaked a camera + reader thread** on every failed setup | 1 |
+| 8 | `e77454b` | a corrupt saved widget position **white-screened the HUD**, and survived restarts | 3 |
 
-⚠️ **Treat that as encouraging, not proven.** It was 11 tool calls over ~7,500 lines —
-a pattern spot-check, not a reading. `cloud_gateway.py` alone is 2,160 new lines and is
-the only internet-facing surface in the tree.
+**One root cause produced findings 1, 2 and 6, and it is worth carrying forward:**
+**governance approves an action by TYPE and never inspects the ARGUMENT.** `close_app`,
+`delete_file` and `tv_play_media` are all perfectly ordinary things to be allowed, so
+`tier_allows` waved through whatever string came with them. Since §6.8 the model acts on
+text it did not write — web results, indexed documents, MCP replies — so that string is
+attacker-reachable. **Anywhere a model-supplied value reaches a shell, a path, or a query,
+the tier check is not protecting it.**
 
-### ⏭ NOT YET REVIEWED — start here
+Two of these were **stragglers, not oversights**, which is the more useful lesson: the
+primary launch path moved to `os.startfile` in May 2026 for exactly the reason finding 1
+describes, and the retry fallback kept the old form; the YouTube branch of `tv_agent`
+already used `shlex.quote` while its five neighbours did not. *An injection class fixed one
+site at a time stays open.*
 
-Nothing below has been looked at, by anyone:
+Finding 7 deserves a flag: it is a **mechanism that produces F-08's symptoms** — a camera
+that dies later, on a machine where nothing obviously went wrong, degrading across sessions
+rather than failing once. `LIVE_GATE_FINDINGS` still records F-08's original trigger as
+unreproduced. This is not proof it was the cause, but it was definitely present.
 
-- **`cloud_gateway.py` properly** — read it, do not pattern-match it. Highest value in the tree.
-- `modules/gesture_engine.py` (776), `gesture_daemon.py` (607), `gesture_camera.py` (358),
-  `cursor_overlay.py` (548) — the G5 hardware stack.
-- `modules/llm_router.py` (501), `presence_probe.py` (426), `agent_search.py` (425),
-  `agent_files.py` (367) — **`agent_files` writes to disk from model-chosen paths; check
-  traversal**, the same shape as finding 1.
-- `modules/memory_crypto.py` (540), `fact_seal.py` (309), `fact_outbox.py` (298) — crypto.
-- `brain.py` (590), `memory_manager.py` (321), `action_parser.py` (332).
-- The whole **frontend** (`App.jsx` 287 + components) — untouched so far.
-- `backup_memory.py`, `migrate_*.py` — they move real data.
+### 🟢 Verified sound — checked, not assumed. Do not re-raise these.
 
-**The lesson finding 1 generalises:** governance gates the *verb*, never the *argument*.
-Anywhere a model-supplied string reaches a shell, a path, or a query, the tier check is
-not protecting it. `agent_files` is the next place to look for that shape.
+- **All four gateway auth paths** use `hmac.compare_digest` and validate **before** accept
+  (webhook, `/desk-link`, `/app-link`, Bearer on the three POSTs). Unconfigured = refuse.
+- **The webhook's `if WEBHOOK_SECRET_TOKEN:` LOOKS fail-open and is not** — the token
+  derives from `BOT_TOKEN`, and without `BOT_TOKEN` there is no bot at all. The path is
+  token-derived too, and `_identify` is an env-configured allowlist.
+- **The desk binds `127.0.0.1`** (`JARVIS_HOST` in `.env`, and the watchdog control port is
+  hard-coded to localhost). This is what makes `main.py`'s unauthenticated `/api/*` — including
+  `/api/agent/confirm`, which approves governance prompts — acceptable. CORS is an explicit
+  origin list, no wildcard. ⚠️ **The Electron step must revisit this**: the packaged app has a
+  different origin, and the tempting fix is a permissive one.
+- The gateway's `0.0.0.0` bind is the Render container, whose routes all authenticate.
+- **Every SQL statement in the gateway is parameterised.** Outbound URL builders
+  percent-encode and use float format specs against fixed hosts — no SSRF.
+- `_decode_app_message` / `_decode_where` type-check, length-cap and range-check everything
+  the phone sends. `_excuse` keeps provider errors out of the chat. `llm_router`'s
+  all-providers-down path returns an honest sentence, never an empty action list.
+- **`fact_outbox.queue_fact` returning `None` with no desk key is NOT a defect** — it is
+  queue item 5's documented behaviour (`dropped_no_key`, surfaced in `/health`, never stored
+  in plaintext). Fixing it needs the desk public key on Render, not a code change.
+
+### ⏭ NOT REVIEWED — this is where a continuation starts
+
+- `modules/agent_tools.py` (1573), `agent_runner.py` (639), `agent_core.py` (571) — only
+  pattern-checked, never read. **Largest unread surface in the tree.**
+- `brain.py` (590), `memory_manager.py` (321), `action_parser.py` (332) — `action_parser` is
+  the shared parse spine, so a defect there reaches every path at once.
+- `modules/agent_search.py`, `agent_skills.py`, `agent_metrics.py`, `tool_calls.py`.
+- `cursor_overlay.py` (548) and `modules/gesture_engine.py` (776) were reported clean by a
+  reviewer but not read closely.
+- The frontend beyond `App.jsx` / `NotchView` / `SidecarView` — the widget components.
+- **Deliberately deferred, not missed:** three `setTimeout` cleanups (App.jsx,
+  FirstBootSequence.jsx). React 18 warns on a post-unmount state update; it does not crash,
+  and those components live for the app's lifetime.
 
 ### ⏭ Next, in order
 
-1. **Finish this review** — `cloud_gateway.py` first, then `agent_files.py` for path
-   traversal. Then the gate.
+1. **Finish this review** — `agent_tools` / `agent_runner` / `agent_core` first (the
+   agentic core acts, and it is the biggest thing nobody has read), then `action_parser`.
 2. **§7 gate session 2** — `21.3` FIRST (5 min, 34 rows depend on it), then the seven
    re-runs, then `4.4`, then `6.5`. See `LIVE_GATE_CHECKLIST.md`, which opens with the
    session-2 order. A4's four LLM-routing rows now exercise Gemini-first, so the gate
