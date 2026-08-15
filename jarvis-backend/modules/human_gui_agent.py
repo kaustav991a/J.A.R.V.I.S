@@ -1026,8 +1026,18 @@ class HumanGUIAgent:
         if not app_name:
             return {"success": False, "reason": "could_not_extract_app_name"}
 
+        # app_name is a word lifted out of a task string the MODEL composed.
+        # split() removes whitespace but not quotes or ampersands, so
+        # `open x"&calc&"` used to reach cmd.exe as three commands.
+        from modules import shell_safety
+        if not shell_safety.is_shell_safe(app_name):
+            print(f"[HUMAN GUI AGENT] launch refused: "
+                  f"{shell_safety.reject_reason(app_name)}")
+            return {"success": False, "reason": "unsafe_app_name"}
+
         try:
-            subprocess.Popen(f'start "" "{app_name}"', shell=True)
+            # Argument list, shell=False — app_name is data, not syntax.
+            subprocess.Popen(["cmd", "/c", "start", "", app_name], shell=False)
             print(f"[HUMAN GUI AGENT] App '{app_name}' launched via subprocess.")
             return {"success": True, "message": f"'{app_name}' launched via subprocess."}
         except Exception as e:

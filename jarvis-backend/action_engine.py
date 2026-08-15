@@ -986,11 +986,23 @@ class ActionEngine:
         # a new process ⇒ genuinely launched; none ⇒ honest failure (return None so
         # the retry engine reports the original error instead of a phantom success).
         if action == "launch_app":
+            # The PRIMARY launch path moved to os.startfile in May 2026 precisely
+            # to stop building a shell line; this retry fallback was left behind on
+            # the old form. `target` comes from the model's action JSON, so
+            # `x" & calc & "` closed the quote and ran anything it liked.
+            from modules import shell_safety
+            if not shell_safety.is_shell_safe(target):
+                print(f"[ACTION ENGINE] launch_app retry refused: "
+                      f"{shell_safety.reject_reason(target)}", flush=True)
+                return None
             try:
                 import psutil
                 import time as _t
                 before = {p.pid for p in psutil.process_iter()}
-                os.system(f'start "" "{target}"')
+                # A list with shell=False: `target` is an ARGUMENT to start, never
+                # syntax, so it cannot introduce a second command.
+                subprocess.run(["cmd", "/c", "start", "", target],
+                               shell=False, capture_output=True, timeout=15)
                 _t.sleep(1.2)
                 after = {p.pid for p in psutil.process_iter()}
                 if after - before:
@@ -2438,14 +2450,30 @@ class ActionEngine:
             f"trying taskkill fallback.",
             flush=True,
         )
+        from modules import shell_safety
         any_killed = False
         for target_exe in exe_targets:
             # Secondary shell protection — should never reach here, but belt-and-suspenders.
             if target_exe.lower() == "explorer.exe":
                 continue
-            ret = os.system(f'taskkill /IM "{target_exe}" /F 2>nul')
-            if ret == 0:
-                any_killed = True
+            # exe_targets falls through to f"{app_lower.replace(' ', '')}.exe" when
+            # the name is not a known alias — the model's raw close_app target with
+            # only spaces removed. Quotes and & survived that, and this line used to
+            # interpolate them straight into a command line.
+            if not shell_safety.is_shell_safe(target_exe):
+                print(f"[ACTION ENGINE] taskkill refused: "
+                      f"{shell_safety.reject_reason(target_exe)}", flush=True)
+                continue
+            # taskkill is a real executable, not a cmd builtin, so no shell is
+            # needed at all — the argument list ends the injection outright.
+            try:
+                proc = subprocess.run(["taskkill", "/IM", target_exe, "/F"],
+                                      shell=False, capture_output=True, timeout=15)
+                if proc.returncode == 0:
+                    any_killed = True
+            except (subprocess.SubprocessError, OSError) as _tk_err:
+                print(f"[ACTION ENGINE] taskkill failed for {target_exe}: {_tk_err}",
+                      flush=True)
 
         if any_killed:
             return f"Task terminated. {raw_name.title()} is closed, Sir."
