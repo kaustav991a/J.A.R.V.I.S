@@ -8,9 +8,10 @@
 
 ## ▶▶ 2026-08-15 — START HERE. Four commits pushed, and the suite runs again.
 
-**HEAD `d275127` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **64/64 harnesses,
-1562 checks, 0 failed** — and that number matters, because *the suite had been
-unrunnable since the office-PC push and nobody knew*.
+**HEAD `3d3c7d6` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **65/65 harnesses,
+1673 checks, 0 failed** — and that number matters, because *the suite had been
+unrunnable since the office-PC push and nobody knew* (it was 64/1562 when that was
+found; F-16 below added the 65th harness).
 
 ### The suite was not failing. It was hanging.
 
