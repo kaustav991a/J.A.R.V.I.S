@@ -61,12 +61,12 @@ grpcio==1.80.0
 grpcio-status==1.71.2
 gunicorn==26.0.0
 h11==0.16.0
-h2==4.3.0
+h2==4.4.1
 h5py==3.14.0
 hf-xet==1.5.0
-hpack==4.1.0
+hpack==4.2.0
 httpcore==1.0.9
-httplib2==0.31.2
+httplib2==0.32.0
 httptools==0.7.1
 httpx==0.28.1
 huggingface_hub==1.16.1
@@ -130,7 +130,7 @@ ormsgpack==1.12.2
 overrides==7.7.0
 packaging==26.2
 pandas==3.0.3
-pillow==12.2.0
+pillow==12.3.0
 playwright==1.60.0
 polars==1.41.2
 polars-runtime-32==1.41.2
@@ -140,7 +140,7 @@ protobuf==6.33.6
 proto-plus==1.28.0
 psutil==7.2.2
 pyasn1_modules==0.4.2
-pyasn1==0.6.3
+pyasn1==0.6.4
 PyAudio==0.2.14
 PyAutoGUI==0.9.54
 pybase64==1.4.3
