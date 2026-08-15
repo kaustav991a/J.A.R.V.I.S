@@ -106,6 +106,71 @@ def tier_allows(permission_tier: str, action_type: str) -> bool:
     return (action_type or "").lower() in VIP_GUEST_ALLOWED_ACTIONS
 
 
+# ── J.A.R.V.I.S.'s own irreplaceable state ──────────────────────────────────
+# Pre-Electron review, 2026-08-15. `restricted_folders` guards the operating
+# system and misses the only files on this machine that CANNOT be reinstalled.
+# `jarvis_key.dpapi` + `jarvis_key.recovery` are the two wraps around the DEK:
+# lose them and every row of `jarvis_longterm.db` is permanently unreadable —
+# including by him, and including with the recovery code, because the recovery
+# WRAP is one of the files.
+#
+# Reachable two ways, neither of which consulted anything: `delete_file`
+# unlinked and `workspace_write` truncated. Governance approves both by TYPE and
+# never by argument, so a model steered by an injected page or document could
+# have ended the encryption arc in a single action.
+#
+# Exact FILES, not the backend directory, so JARVIS keeps full freedom to write
+# code and notes beside them. This is a short list of things that must outlive a
+# mistake, not a sandbox.
+_BACKEND_DIR = Path(__file__).resolve().parent
+PROTECTED_FILES = frozenset(
+    p.resolve() if p.exists() else p
+    for p in (
+        _BACKEND_DIR / "jarvis_key.dpapi",       # DPAPI wrap of the DEK
+        _BACKEND_DIR / "jarvis_key.recovery",    # scrypt wrap — the last resort
+        _BACKEND_DIR / "jarvis_x25519.enc",      # cloud→desk unseal private key
+        _BACKEND_DIR / "jarvis_key.canary",      # proves a key opens the store
+        _BACKEND_DIR / "jarvis_longterm.db",     # the encrypted memories
+        _BACKEND_DIR / "jarvis_fact_ledger.db",  # replay ledger for sealed facts
+        _BACKEND_DIR / ".env",                   # every API key and token
+    )
+)
+# The off-machine copies, which exist precisely to survive what happens in here.
+PROTECTED_FOLDERS = (_BACKEND_DIR.parent.parent / "JARVIS-BACKUPS",)
+
+
+def protected_path_problem(target_path: str,
+                           files=PROTECTED_FILES,
+                           folders=PROTECTED_FOLDERS) -> "str | None":
+    """Refuse anything that would destroy state that cannot be rebuilt.
+
+    Resolved FIRST, then compared, so `..`, a symlink, or a Windows short name
+    (`PROGRA~1`) cannot walk around the check. `PurePath` comparison on Windows
+    is case-insensitive, so `JARVIS_KEY.DPAPI` is caught too.
+
+    Returns a refusal string, or None when the path is fine.
+    """
+    if not isinstance(target_path, str) or not target_path.strip():
+        return "I need a path, Sir."
+    # A NUL byte is never part of a real filename. `Path.resolve()` accepts one
+    # without complaint and the failure surfaces much later, at the syscall —
+    # which means the guard would have already said yes.
+    if "\x00" in target_path:
+        return "That path is malformed, Sir — I won't act on it."
+    try:
+        path = Path(target_path).resolve()
+    except (OSError, ValueError):
+        return "That path could not be resolved, Sir."
+    if path in files:
+        return (f"I won't touch {path.name}, Sir — it is part of the key store or "
+                "the encrypted memory, and losing it cannot be undone.")
+    for folder in folders:
+        if folder == path or folder in path.parents:
+            return ("I won't touch the backups, Sir — they exist to survive "
+                    "exactly this kind of mistake.")
+    return None
+
+
 class ActionEngine:
     def __init__(self):
         self.os_agent       = OSAgent()
@@ -143,6 +208,24 @@ class ActionEngine:
             Path("C:/Program Files").resolve(),
             Path("C:/Program Files (x86)").resolve()
         ]
+        # ── J.A.R.V.I.S.'s own irreplaceable state ───────────────────────────
+        # Pre-Electron review, 2026-08-15. The restricted list above guards the
+        # operating system and misses the only files on this machine that CANNOT
+        # be reinstalled. `jarvis_key.dpapi` + `jarvis_key.recovery` are the two
+        # wraps around the DEK; lose them and every row of `jarvis_longterm.db`
+        # is permanently unreadable — including by him, and including with the
+        # recovery code, because the recovery WRAP is one of the files.
+        #
+        # Reachable both ways: `delete_file` unlinks and `workspace_write`
+        # truncates, and neither consulted anything. Governance approves those by
+        # type, never by argument, so a model steered by an injected web page or
+        # document could have destroyed the encryption arc in one action.
+        #
+        # Exact FILES, not the backend directory, so JARVIS keeps full freedom to
+        # write code and notes beside them — the point is a short list of things
+        # that must outlive a mistake, not a sandbox.
+        self.protected_files = PROTECTED_FILES
+        self.protected_folders = PROTECTED_FOLDERS
         
         # --- SMART HOME: DYNAMIC TV DETAILS ---
         self.tv_ip = "192.168.0.108" 
@@ -1682,6 +1765,12 @@ class ActionEngine:
         content = content.replace("\\n", "\n").replace("\\t", "\t")
         if not filepath:
             return "No file path specified for workspace write."
+        # Truncating a key file destroys it exactly as thoroughly as unlinking it,
+        # and this path had no check at all.
+        protected = self._protected_path_problem(filepath)
+        if protected:
+            print(f"[ACTION ENGINE] workspace_write refused: protected path.", flush=True)
+            return protected
         try:
             result = self.workspace_agent.write_file(filepath, content)
             # Inject written content into working memory so the LLM knows the
@@ -2483,9 +2572,19 @@ class ActionEngine:
 
         return f"I couldn't find a running process for '{raw_name}', Sir. It may already be closed."
 
+    def _protected_path_problem(self, target_path: str) -> str | None:
+        """Instance view of `protected_path_problem` — see that function."""
+        return protected_path_problem(target_path,
+                                      self.protected_files, self.protected_folders)
+
     def _delete_file(self, target_path: str) -> str:
         try:
             path = Path(target_path).resolve()
+            protected = self._protected_path_problem(target_path)
+            if protected:
+                print(f"[ACTION ENGINE] delete refused: {path.name} is protected.",
+                      flush=True)
+                return protected
             for restricted in self.restricted_folders:
                 if restricted in path.parents or path == restricted:
                     return "Security override triggered."
