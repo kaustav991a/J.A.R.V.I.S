@@ -40,6 +40,7 @@ Registry entries CALL INTO action_engine — no tool logic is reimplemented here
 
 from __future__ import annotations
 
+import urllib.parse
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
@@ -634,6 +635,77 @@ def _macro_target(args: dict) -> str:
     return f"{macro}:{url}" if url else macro
 
 
+# ── rule 3: a URL the model chose is not automatically a WEB url ─────────────
+# Pre-Electron review, 2026-08-15. `web_browse`, `open_link` and `os_macro`'s
+# optional `url` all took a bare string. Two things that is not:
+#
+#   file:///…/jarvis-backend/.env   Playwright renders it and hands the CONTENTS
+#                                   back as page text. That reads any file on the
+#                                   disk while bypassing `workspace_read` — and
+#                                   the protected-file list, which only guards
+#                                   writing and deleting.
+#   http://127.0.0.1:8000/api/…     the desk's own API is unauthenticated ON
+#                                   PURPOSE, because only local processes reach
+#                                   it. A model steered into fetching localhost
+#                                   is exactly the case that assumption excluded.
+#
+# Same root as findings 1, 2 and 6: governance approves `web_browse` by type and
+# never looks at the argument. And since §6.8 the argument can come from a page
+# the model was told to read.
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+_BLOCKED_HOST_PREFIXES = (
+    "localhost", "127.", "0.0.0.0", "::1", "[::1]",
+    "10.", "192.168.", "169.254.",          # private + link-local (cloud metadata)
+)
+
+
+def _url_problem(raw: Any) -> str | None:
+    """Refuse anything that is not a public http(s) URL. None means fine."""
+    text = str(raw or "").strip()
+    if not text:
+        return "A full URL is required, including https://."
+    try:
+        parsed = urllib.parse.urlparse(text)
+        # `open_link` documents that https:// may be left off, so a bare domain
+        # is legitimate input. A MISSING scheme becomes https; a WRONG one
+        # (file:, javascript:, C:) still has to answer for itself below.
+        if not parsed.scheme:
+            parsed = urllib.parse.urlparse("https://" + text)
+    except Exception:  # noqa: BLE001
+        return f"'{text[:60]}' is not a URL I can parse."
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        return (f"I only open http and https addresses, and that one is "
+                f"'{scheme or 'no scheme'}'. If you need a file from the disk, "
+                "use `workspace_read` — it is the tool that is allowed to.")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return "That URL has no host."
+    if any(host == p.rstrip(".") or host.startswith(p) for p in _BLOCKED_HOST_PREFIXES):
+        return ("That address is on this machine or this network, not the web. "
+                "I don't fetch those — ask me directly for what you need instead.")
+    # 172.16.0.0/12 needs a range check rather than a prefix
+    if host.startswith("172."):
+        try:
+            second = int(host.split(".")[1])
+            if 16 <= second <= 31:
+                return ("That address is on this network, not the web. I don't "
+                        "fetch those.")
+        except (IndexError, ValueError):
+            pass
+    return None
+
+
+def _url_precondition(args: dict) -> str | None:
+    return _url_problem((args or {}).get("url"))
+
+
+def _macro_url_precondition(args: dict) -> str | None:
+    """`os_macro`'s url is OPTIONAL — absent is fine, present must be a web URL."""
+    raw = str((args or {}).get("url") or "").strip()
+    return _url_problem(raw) if raw else None
+
+
 def _remember_target(args: dict) -> str:
     """`_remember_fact` splits on the FIRST colon into (category, fact) and
     falls back to category "Fact" for anything it does not recognise. The colon
@@ -811,7 +883,11 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "Open a specific URL and read the page. Use when a search result "
                "must be verified or a named page has to be read in full.",
                _obj({"url": {"type": "string",
-                             "description": "Full URL, including https://"}}))
+                             "description": "Full URL, including https://"}}),
+               # file:// would render a local file and hand its CONTENTS back as
+               # page text — a read of any file on the disk, around
+               # `workspace_read` and around the protected-file list.
+               precondition=_url_precondition)
     r.register("search_documents",
                "Search Kaustav's own indexed documents and notes. Use for "
                "anything personal that would not be on the public web.",
@@ -1224,6 +1300,9 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                                             "open instead of its default."}},
                     ["macro"]),
                build_target=_macro_target,
+               # the optional url override reaches the same browser open as
+               # `open_link`, so it answers to the same rule
+               precondition=_macro_url_precondition,
                aliases=("mode", "routine", "setup", "workspace", "focus"))
 
     r.register("open_link",
@@ -1234,6 +1313,7 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                _obj({"url": {"type": "string",
                              "description": "The address. https:// is added if "
                                             "you leave it off."}}),
+               precondition=_url_precondition,
                aliases=("website", "page", "browser", "url", "site"))
 
     # ── Wave 4 (§6.8.2): git ─────────────────────────────────────────────────
