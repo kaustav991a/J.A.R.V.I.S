@@ -8,7 +8,7 @@
 
 ## ▶▶ 2026-08-15 — START HERE. Four commits pushed, and the suite runs again.
 
-**HEAD `3d3c7d6` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **65/65 harnesses,
+**HEAD `62c2e60` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **65/65 harnesses,
 1673 checks, 0 failed** — and that number matters, because *the suite had been
 unrunnable since the office-PC push and nobody knew* (it was 64/1562 when that was
 found; F-16 below added the 65th harness).
@@ -104,10 +104,9 @@ himself. The honest-failure requirement is met.
 | `feat/app-full-power` | **fully contained** in cloud-gateway (`fbea514` IS the merge-base, 0 unique, 19 behind). Merging it is a no-op; merging it into `main` would land a half-working gateway. Redundant — delete when convenient, restore with `git push origin fbea5141faf5d5dd52348afdc371e99c1ae1fd76:refs/heads/feat/app-full-power` |
 | `main` | 155 behind, **+1 commit we lack** — `8d0ea4f`, the GPL LICENSE. Not a fast-forward. Leave until after §7 |
 
-**13 dependabot branches open, and GitHub reports 62 vulnerabilities on `main`**
-(1 critical, 30 high). Do NOT blind-merge: `cryptography` 48→50 is load-bearing for
-C#11a and the **protobuf 6.33.6 pin can move transitively**. Each wants a suite run,
-which is cheap now that the suite completes.
+**✅ ALL 13 DEPENDABOT BUMPS ARE APPLIED (2026-08-15) — plus three it never raised.**
+See the dependency block below. The branches themselves are still *open on GitHub* and
+will stay open until this lands on `main`; that is expected, not work.
 
 ### Mobile toolchain on THIS desk (F:\work\JARVIS-Mobile)
 
@@ -162,6 +161,45 @@ fabrication becomes established context the next turn builds on.
 a fake model. Suite **65/65, 1673 checks**. ⏳ **Not yet spoken to** — F-09's first fix
 also passed its harness and then failed live.
 
+### ✅ DEPENDENCIES ARE CLEARED (2026-08-15) — and dependabot was wrong twice
+
+All 13 bumps applied one at a time on this branch, each with a **236-package pip-freeze
+diff** before/after to catch transitive drift. **`protobuf` held at 6.33.6 throughout** —
+checked after every single install, which is the reason to do this by hand.
+
+**Two of dependabot's own proposals were wrong for this repo:**
+
+| PR | Why it was wrong | What was done |
+|---|---|---|
+| `setuptools` → **83.0.0** | `torch 2.12.0+cpu` declares a hard `setuptools<82`; pip flags 83 as an incompatible install | took **81.0.0**, the ceiling under that bound |
+| `brace-expansion` → **1.1.16** | the advisory names `<=1.1.17` as vulnerable — **1.1.16 is inside the vulnerable range**. Merging it would have closed the alert without fixing anything | `npm audit fix` → **1.1.18** |
+
+**And dependabot missed things.** `pip-audit` over the installed tree found **13
+vulnerabilities in 5 packages** with no branch open for any of them. Most important:
+**`starlette` 1.1.0, two advisories, sitting under FastAPI on the cloud gateway's request
+path** — the one surface a stranger can reach. Now 1.3.1. Also `pydantic-settings`
+2.14.1→2.14.2 and the venv's own `pip` 24.3.1→26.2.1 (6 advisories).
+
+Backend **13 → 2**. Frontend **3 → 0** (`npm audit` reports `found 0 vulnerabilities`).
+
+> **How to re-run the audit** — this is not obvious and cost a detour. `pip-audit -r
+> requirements.txt` **fails**: `torch==2.12.0+cpu` is not on PyPI, so the resolve dies
+> before any advisory is read. Audit the installed tree instead, from a throwaway venv so
+> nothing is installed into the real one:
+> ```
+> python -m venv %TEMP%\auditenv && %TEMP%\auditenv\Scripts\pip install pip-audit
+> %TEMP%\auditenv\Scripts\pip-audit --path jarvis-backend\venv\Lib\site-packages
+> ```
+
+**⚠️ THE TWO THAT REMAIN ARE BLOCKED UPSTREAM, NOT FORGOTTEN:**
+
+- **`setuptools` 81.0.0 — PYSEC-2026-3447 wants exactly 83.0.0, and torch forbids it.**
+  The only way out is moving torch, which touches the protobuf / tensorflow / mediapipe
+  balance `requirements.txt` warns about in writing. **A separate reviewable change** —
+  worth doing before the `.exe`, not as a tail-end tweak.
+- **`chromadb` 1.5.9 — PYSEC-2026-311, no fix version exists.** 1.5.9 *is* the latest
+  release on PyPI. Nothing to move to until upstream ships one.
+
 ### ⏭ Next, in order
 
 1. **§7 gate session 2** — `21.3` FIRST (5 min, 34 rows depend on it), then the seven
@@ -171,10 +209,12 @@ also passed its harness and then failed live.
    there:** an ordinary voice turn must not claim work it did not do — and it must still
    sound like JARVIS, because the guard was deliberately kept narrow.
 2. **Durable desk key** (queue item 5) — small, and it demonstrably costs facts today.
-3. **Dependabot session** — one at a time, suite each, watch the protobuf pin.
-4. **Gateway search verification** — the one-question Telegram check above.
-5. **F-15**, if it reproduces — a transient stored as a permanent Fact. It did NOT recur
+3. **Gateway search verification** — the one-question Telegram check above.
+4. **F-15**, if it reproduces — a transient stored as a permanent Fact. It did NOT recur
    on comparable corrections the same session, so **confirm before building anything**.
+5. **The torch move**, before the `.exe` — it is the only thing standing between
+   `setuptools` and a closed advisory, and it is the riskiest pin in the tree. Do it as
+   its own change with the protobuf pin under a microscope, never bundled with anything.
 
 **Still not built, and still worth it:** turns do not sync cloud→desk, only facts.
 The right shape is a new frame type on the existing sealed bridge (same seal, same
