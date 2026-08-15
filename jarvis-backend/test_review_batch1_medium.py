@@ -279,6 +279,88 @@ def test_all_three_body_less_routes_are_guarded():
         check(guarded.get(name) is True, f"{name} checks the caller")
 
 
+# ── R14/R15/R16: the sinks that were trusting a caller-side rule ─────────────
+
+def test_close_app_cannot_kill_a_protected_process_or_jarvis_itself():
+    """`terminal_agent.kill_process` keeps the real protected list and then
+    DELEGATES here, documenting "no bypass possible". It did not: this method's
+    only guard was a one-entry explorer.exe check, so the direct `close_app`
+    ACTION never passed that list.
+
+    And the process that matters most was on nobody's list — `exe_targets`
+    falls back to "<name>.exe", so close_app("python") killed the backend.
+    """
+    import action_engine as ae
+    from modules.terminal_agent import _PROTECTED_PROCESSES
+
+    engine = ae.ActionEngine.__new__(ae.ActionEngine)
+    killed = []
+    for name in ("lsass", "csrss", "winlogon", "services", "svchost"):
+        out = engine._close_app(name)
+        check("protected" in out.lower() or "refus" in out.lower(),
+              f"close_app('{name}') is refused")
+    for name in ("python", "pythonw"):
+        out = engine._close_app(name)
+        check("terminate me" in out.lower(),
+              f"close_app('{name}') refuses to kill JARVIS itself")
+    check("explorer.exe" not in str(_PROTECTED_PROCESSES),
+          "explorer.exe stays on its own separate guard (unchanged)")
+
+
+def test_an_email_body_survives_its_own_pipes():
+    """The owner approves the whole string at the CONFIRM prompt, so what was
+    approved and what leaves the machine must be the same text."""
+    import action_engine as ae
+
+    engine = ae.ActionEngine.__new__(ae.ActionEngine)
+    sent = {}
+
+    class FakeGmail:
+        def send_email(self, to, subject, body):
+            sent.update(to=to, subject=subject, body=body)
+            return "sent"
+
+    original = ae.GmailAgent
+    ae.GmailAgent = FakeGmail
+    try:
+        engine._send_email(
+            "boss@x.com | Q3 invoice | Please pay by Friday | thanks, Kaustav")
+    finally:
+        ae.GmailAgent = original
+
+    check(sent.get("to") == "boss@x.com", "the recipient is parsed")
+    check(sent.get("subject") == "Q3 invoice", "the subject is parsed")
+    check(sent.get("body") == "Please pay by Friday | thanks, Kaustav",
+          f"the whole body survives its pipes; got {sent.get('body')!r}")
+
+
+def test_a_fact_containing_a_colon_is_stored_whole():
+    """The category fallback already knows the split was wrong. Undo the split
+    too, rather than committing half of what he said."""
+    import action_engine as ae
+    import memory_manager
+
+    engine = ae.ActionEngine.__new__(ae.ActionEngine)
+    stored = {}
+    original = memory_manager.add_memory
+    memory_manager.add_memory = lambda content, category, user: stored.update(
+        content=content, category=category)
+    try:
+        engine._remember_fact("router login: admin/hunter2")
+        check(stored.get("content") == "router login: admin/hunter2",
+              f"the whole fact is stored; got {stored.get('content')!r}")
+        check(stored.get("category") == "Fact", "with the fallback category")
+
+        stored.clear()
+        engine._remember_fact("Preference: he takes tea over coffee")
+        check(stored.get("category") == "Preference",
+              "a REAL category is still honoured")
+        check(stored.get("content") == "he takes tea over coffee",
+              "...and its fact is the part after the colon")
+    finally:
+        memory_manager.add_memory = original
+
+
 TESTS = sorted(
     (fn for name, fn in list(globals().items())
      if name.startswith("test_") and callable(fn)),

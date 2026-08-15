@@ -2,8 +2,20 @@
   "review": "pre-Electron code review, batch 1",
   "date": "2026-08-16",
   "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code.",
-  "areas_done": ["main-api", "io-agents"],
-  "areas_pending": ["action-engine", "agent-support", "agent-runner", "memory", "comms", "brain", "perception", "frontend"],
+  "areas_done": [
+    "action-engine",
+    "main-api",
+    "io-agents"
+  ],
+  "areas_pending": [
+    "agent-support",
+    "agent-runner",
+    "memory",
+    "comms",
+    "brain",
+    "perception",
+    "frontend"
+  ],
   "findings": [
     {
       "id": "R1",
@@ -11,11 +23,13 @@
       "file": "main.py:1841 and main.py:2916",
       "root_cause": "C",
       "severity": "high",
-      "verified": false,
+      "verified": true,
       "reachable_by": "any CONFIRM-tier action staged by a NON-desk caller (run_remote_command via Telegram/cloud bridge, or OvernightWorker), then any short affirmative typed at /api/backdoor or spoken at the desk within the 90s TTL",
       "failure": "Telegram stages message_partner/gmail_send/workspace_write. governance_manager.check() fills the single _pending_slot so has_pending() is true process-wide and the desk intercept arms. _DESK_PENDING['cid'] is still None, so the owner's next 'yes' calls consume_pending(None), which resolves as 'the most recently pended action, whoever staged it' and executes with governance_bypass=True. Worse: the phrase JARVIS itself tells the user to say ('approve task 3fa9c2d1') is swallowed by this intercept BEFORE agent_yield.parse_approval runs, so the named task id is discarded and the pending slot executes instead.",
       "evidence": "if governance_manager.has_pending() or _DESK_PENDING['cid'] is not None: ... approved_payload = governance_manager.consume_pending(_DESK_PENDING['cid'])",
-      "fix": "Never fall back to the single slot from an approval path. Arm the intercept on _DESK_PENDING['cid'] is not None only. Handle agent_yield.parse_approval (an id-bearing phrase) BEFORE the generic governance intercept in both dispatch paths."
+      "fix": "Never fall back to the single slot from an approval path. Arm the intercept on _DESK_PENDING['cid'] is not None only. Handle agent_yield.parse_approval (an id-bearing phrase) BEFORE the generic governance intercept in both dispatch paths.",
+      "status": "FIXED",
+      "commit": "67a0ad6"
     },
     {
       "id": "R2",
@@ -23,11 +37,13 @@
       "file": "main.py:2489",
       "root_cause": "B",
       "severity": "high",
-      "verified": false,
+      "verified": true,
       "reachable_by": "POST /api/backdoor with any command that raises; the HUD command line, and run_phase1_regression.py which drives every regression row through this endpoint",
       "failure": "The dispatch body is wrapped in try/except Exception. On a fault it logs, pushes {'status':'error'} over the WebSocket, speaks the fault -- then falls out of the except into the unconditional return {'status': 'success'}. The HTTP caller is told the command succeeded. run_phase1_regression sets http_ok = (status == 'success'), so a SECURITY row whose command crashed the dispatcher with no traces is scored as 'the model correctly refused' -- a PASS. The graceful-failure branch is unreachable for the same reason.",
       "evidence": "await safe_send_all({'status': 'error', ...}); asyncio.create_task(speaker.speak_text(...))\\n\\n    return {'status': 'success'}",
-      "fix": "Return JSONResponse(status_code=500) from the except, and give the intercept branches explicit returns so 'success' is only produced by a path that finished."
+      "fix": "Return JSONResponse(status_code=500) from the except, and give the intercept branches explicit returns so 'success' is only produced by a path that finished.",
+      "status": "FIXED",
+      "commit": "67a0ad6"
     },
     {
       "id": "R3",
@@ -35,11 +51,13 @@
       "file": "modules/workspace_agent.py:336-349 (gate), :77 (_BLOCKED_EXTENSIONS)",
       "root_cause": "C",
       "severity": "high",
-      "verified": false,
+      "verified": true,
       "reachable_by": "edit_file tool -> workspace_patch (CONFIRM) -> _resolve_safe; payload then triggered by check_calendar (AUTO)",
       "failure": ".py and .json are not blocked and the backend directory is inside a workspace root, so governance.json, modules/protected_paths.py, modules/url_safety.py, modules/shell_safety.py and the lazily-imported calendar_agent.py are all writable. Injected text steers the model into read_file (AUTO, satisfies the ledger) then edit_file appending a module-level payload. The owner is asked only \"'workspace_patch' is a CONFIRM-tier action\" -- the path and replacement text are never shown. The next check_calendar (AUTO) imports and executes it in-process, past governance, protected_paths, url_safety and shell_safety in one step.",
       "evidence": "protected_paths.py:49 states the assumption this breaks: 'Deliberately NOT the whole backend directory'. action_engine.py:1344 does a lazy `from modules.calendar_agent import CalendarAgent` inside an AUTO action.",
-      "fix": "Add the enforcement surface to PROTECTED_FILES (governance.json, governance_manager.py, protected_paths.py, url_safety.py, shell_safety.py, terminal_agent.py), or refuse any workspace write/patch under BACKEND_DIR. Independently, the CONFIRM prompt should name the resolved path -- which finding 15 already began."
+      "fix": "Add the enforcement surface to PROTECTED_FILES (governance.json, governance_manager.py, protected_paths.py, url_safety.py, shell_safety.py, terminal_agent.py), or refuse any workspace write/patch under BACKEND_DIR. Independently, the CONFIRM prompt should name the resolved path -- which finding 15 already began.",
+      "status": "FIXED",
+      "commit": "67a0ad6"
     },
     {
       "id": "R4",
@@ -47,11 +65,13 @@
       "file": "main.py:2981",
       "root_cause": "B",
       "severity": "medium",
-      "verified": false,
+      "verified": true,
       "reachable_by": "voice/WS command path: 'initiate lockdown', 'house party protocol', 'clean slate protocol', 'security override'",
       "failure": "JARVIS speaks 'All external ports have been secured, sir.' and paints LockdownOverlay. No firewall call, no engine action, no state change -- the branch ends in `continue`. The same security_override frame is raised for a real intruder in background_monitor.py, so the phrasing is not obviously theatrical in context.",
       "evidence": "lockdown_msg = 'Security override accepted. Initiating lockdown protocols. All external ports have been secured, sir.' ... # Keep it locked until reboot or override\\ncontinue",
-      "fix": "Either wire it to a real governed action, or reword it to what it is -- a HUD state change."
+      "fix": "Either wire it to a real governed action, or reword it to what it is -- a HUD state change.",
+      "status": "FIXED",
+      "commit": "9b12df6"
     },
     {
       "id": "R5",
@@ -63,7 +83,8 @@
       "reachable_by": "reloading the HUD while JARVIS is idle -- i.e. parked in wait_for_wake_word, which is where the owner connection spends nearly all its idle time",
       "failure": "The old connection holds _VOICE_LOOP_OWNER and is blocked inside the mic thread, so its finally: _release_voice_loop cannot run. The new connection makes exactly ONE claim attempt, loses it, and parks in a view-only receive() loop with no re-claim path -- after telling the user 'SYSTEM OFFLINE // STANDBY FOR VOICE INPUT'. After a reload the first wake word is swallowed by the dying loop and every one after it is heard by nobody. The code comment asserts the opposite.",
       "evidence": "if not _claim_voice_loop(websocket): ... while True: await websocket.receive()",
-      "fix": "Make the view-only branch re-attempt the claim, and make the claim evict a socket whose client_state is no longer CONNECTED."
+      "fix": "Make the view-only branch re-attempt the claim, and make the claim evict a socket whose client_state is no longer CONNECTED.",
+      "status": "OPEN"
     },
     {
       "id": "R6",
@@ -71,11 +92,13 @@
       "file": "main.py:1275",
       "root_cause": "A",
       "severity": "medium",
-      "verified": false,
+      "verified": true,
       "reachable_by": "POST /api/autopilot -- unauthenticated, not behind backdoor_gate, never calls governance_manager or the ActionEngine",
       "failure": "req.out_dir flows into agent_worker as abspath -> makedirs -> open(join(out_dir, basename(fname)), 'w'). basename() stops traversal INSIDE the directory but nothing constrains the directory: out_dir pointing at the Startup folder creates the path and writes LLM-authored content there. The same work reached through the run_autopilot action IS tiered in governance.json; this route is its ungoverned twin.",
       "evidence": "agent_worker.launch_autopilot(req.file_key, out_dir=req.out_dir, token=req.token, ...)",
-      "fix": "Resolve out_dir under the workspace root and reject escapes, and route through governance_manager.check so the HTTP door is not looser than the action door."
+      "fix": "Resolve out_dir under the workspace root and reject escapes, and route through governance_manager.check so the HTTP door is not looser than the action door.",
+      "status": "FIXED",
+      "commit": "9b12df6"
     },
     {
       "id": "R7",
@@ -83,11 +106,13 @@
       "file": "main.py:1127 (/api/listen), :1239 (/api/governance/cancel), :1263 (/api/tasks/{id}/cancel)",
       "root_cause": "C",
       "severity": "medium",
-      "verified": false,
+      "verified": true,
       "reachable_by": "fetch('http://127.0.0.1:8000/api/listen', {method:'POST', mode:'no-cors'}) from ANY origin. No declared body means a CORS simple request: no preflight, the middleware only decides whether the RESPONSE may be read, and the handler runs regardless.",
       "failure": "A page open in the owner's browser calls /api/listen; listen_request.request('hud') is set; wait_for_jarvis() returns True without a wake word, so the desk mic opens for a full command window and whatever is spoken in the room executes at ADMIN tier. Offline it starts the biometric boot instead -- camera and mic on, unprompted. /api/governance/cancel lets an arbitrary page drop a pending confirmation.",
       "evidence": "The JSON-body routes are genuinely protected -- a non-JSON content type fails body validation and a JSON content type forces a preflight the four-origin list rejects. These three declare no body.",
-      "fix": "Validate Origin/Sec-Fetch-Site (or a Host allowlist, which also closes DNS rebinding) on every state-changing route, or give these routes a JSON body so they inherit the preflight."
+      "fix": "Validate Origin/Sec-Fetch-Site (or a Host allowlist, which also closes DNS rebinding) on every state-changing route, or give these routes a JSON body so they inherit the preflight.",
+      "status": "FIXED",
+      "commit": "9b12df6"
     },
     {
       "id": "R8",
@@ -95,11 +120,13 @@
       "file": "modules/workspace_agent.py:210 and :255",
       "root_cause": "B",
       "severity": "medium",
-      "verified": false,
+      "verified": true,
       "reachable_by": "edit_file tool -> workspace_patch (CONFIRM) -> patch_file",
       "failure": "A cp1252/latin-1 text file in the workspace is read with errors='replace', so every undecodable byte becomes U+FFFD, and the whole buffer is written back as UTF-8. Patching one ASCII line silently rewrites every accented character, dash and quote in the rest of the file. The returned diff is computed from original vs patched -- both already mojibake -- so it is structurally incapable of showing the damage, and the reply says 'Patched X: 1 replacement(s)'. The same round-trip also rewrites every line ending to CRLF.",
       "evidence": "original = safe.read_text(encoding='utf-8', errors='replace') ... safe.write_text(patched, encoding='utf-8')",
-      "fix": "Read bytes and refuse the patch if they do not decode strictly as UTF-8 (that is also the real binary detection the docstring claims); write back with newline='' so line endings survive."
+      "fix": "Read bytes and refuse the patch if they do not decode strictly as UTF-8 (that is also the real binary detection the docstring claims); write back with newline='' so line endings survive.",
+      "status": "FIXED",
+      "commit": "9b12df6"
     },
     {
       "id": "R9",
@@ -107,11 +134,13 @@
       "file": "modules/file_agent.py:186-211",
       "root_cause": "B (with D)",
       "severity": "medium",
-      "verified": false,
+      "verified": true,
       "reachable_by": "create_note tool (CONFIRM) -> _note_target builds 'title: content' -> FileAgent.create_note",
       "failure": "create_note('Budget: Q3 figures') writes JarvisNotes/Budget.txt. A later create_note('Budget: Q4 figures') opens the same path with mode 'w' -- the Q3 note is gone, and the reply says created. Two effects compound: the first colon is the title/content delimiter so any title containing one is truncated and collides; and there is no collision handling at all, unlike _safe_rename_dest and organize_downloads which both refuse to clobber.",
       "evidence": "if ':' in target: title, content = target.split(':', 1) ... with open(filepath, 'w', encoding='utf-8') as f:",
-      "fix": "Pass title and content as separate arguments, and either uniquify like _safe_rename_dest or return 'a note by that name exists' instead of claiming creation."
+      "fix": "Pass title and content as separate arguments, and either uniquify like _safe_rename_dest or return 'a note by that name exists' instead of claiming creation.",
+      "status": "FIXED",
+      "commit": "9b12df6"
     },
     {
       "id": "R10",
@@ -119,11 +148,99 @@
       "file": "modules/web_agent.py:152 and :177",
       "root_cause": "D",
       "severity": "low",
-      "verified": false,
+      "verified": true,
       "reachable_by": "web_click / web_type tools -- governance AUTO, no confirmation -- action_engine.py:486 passes str(target) straight through; the schema declares element_id as a free string",
       "failure": "element_id = \"1'], a[href^='http\" builds [data-jarvis-id='1'], a[href^='http'] and Playwright clicks the first DOM match. The numbered map returned by _mark_and_extract_dom is the contract AND the audit record of what the agent may act on; a page whose text steers the model can escape it.",
       "evidence": "selector = f\"[data-jarvis-id='{element_id}']\"",
-      "fix": "Reject any element_id that is not ^\\d+$ before building the selector."
+      "fix": "Reject any element_id that is not ^\\d+$ before building the selector.",
+      "status": "FIXED",
+      "commit": "9b12df6"
+    },
+    {
+      "id": "R11",
+      "title": "ghost_save_file wrote any absolute path without consulting the protected-file list",
+      "file": "action_engine.py:551 and :283",
+      "root_cause": "C",
+      "severity": "high",
+      "verified": true,
+      "status": "FIXED",
+      "commit": "67a0ad6",
+      "reachable_by": "ghost_save_file from the one-shot catalogue (CONFIRM tier), then resolve_pending_save for the overwrite leg",
+      "failure": "target 'F:/.../jarvis-backend|.env' puts that path in the Save As dialog; 'overwrite' writes the focused app's buffer over the DEK wrap or every API key. The branch deliberately verbalizes no paths and the CONFIRM prompt names only the action type, so the owner is never told which file.",
+      "fix": "_protected_path_problem on both legs, including the force_overwrite one that actually clobbers"
+    },
+    {
+      "id": "R12",
+      "title": "sleep_protocol returned a UI sentinel no caller consumes",
+      "file": "action_engine.py:2189",
+      "root_cause": "B",
+      "severity": "medium",
+      "verified": true,
+      "status": "FIXED",
+      "commit": "9b12df6",
+      "reachable_by": "sleep_protocol, a registered AUTO agent tool",
+      "failure": "returns the literal 'UI_WIDGET_TOGGLE:close_display'; nothing reads it, so the raw sentinel goes back to the model as a RESULT and is narrated as 'displays cleared' with the displays untouched",
+      "fix": "mapped to the two frames main.py sends, via hud_frames, so it happens or fails with NO_DISPLAY"
+    },
+    {
+      "id": "R13",
+      "title": "the close_app retry closes every window whose TITLE contains the target",
+      "file": "action_engine.py:1021",
+      "root_cause": "C",
+      "severity": "medium",
+      "verified": false,
+      "status": "OPEN",
+      "reachable_by": "close_app (AUTO) -> execute_with_retry -> _attempt_fallback, fired whenever the primary returns a _FAILURE_PHRASES hit",
+      "failure": "close_app('notion') finds no notion.exe (it is a browser tab), trips the failure phrase, and the fallback PostMessage(WM_CLOSE)s every top-level window whose title CONTAINS 'notion' -- i.e. the Chrome window titled 'Roadmap - Notion - Google Chrome', taking every other tab with it. That is exactly what the primary path refuses to do. Unbounded substring, no minimum length, no allowlist, and it reports 'Retry successful.'",
+      "fix": "run the fallback's candidates through the same _WEB_ONLY_SERVICES/shell checks as the primary, require a strong match, cap the number of windows closed"
+    },
+    {
+      "id": "R14",
+      "title": "_close_app has no protected-process list",
+      "file": "action_engine.py:2508",
+      "root_cause": "C",
+      "severity": "medium",
+      "verified": false,
+      "status": "OPEN",
+      "reachable_by": "close_app with any model-supplied name; exe_targets falls back to f'{app_lower.replace(\" \",\"\")}.exe' for anything unknown",
+      "failure": "close_app('python') resolves to python.exe and kills the JARVIS backend itself mid-action -- no shutdown, pending confirmations and working memory lost. The only guard is a one-entry blocklist for explorer.exe. terminal_agent keeps the real list (lsass, csrss, wininit, winlogon, services, smss, svchost) and DELEGATES here, documenting 'no bypass possible' -- but the direct close_app action never passes that list. Blocked today only by AccessDenied on a non-elevated run; a packaged app launched elevated for GUI automation loses even that.",
+      "fix": "import terminal_agent._PROTECTED_PROCESSES plus the current process image name and refuse them in _close_app, so the list lives at the sink it is delegated to"
+    },
+    {
+      "id": "R15",
+      "title": "_send_email truncates the body at the first extra pipe and reports it sent",
+      "file": "action_engine.py:1189",
+      "root_cause": "D",
+      "severity": "low",
+      "verified": false,
+      "status": "OPEN",
+      "reachable_by": "send_email, still in the one-shot catalogue (brain.py:182/388) as the legacy path",
+      "failure": "'boss@x.com | Q3 invoice | Please pay by Friday | thanks, Kaustav' splits into four parts; parts[2] is used as the whole body, so everything after the third pipe is dropped silently -- after the owner approved the full string at the CONFIRM prompt. The corrected twin _gmail_send uses split('|', 2).",
+      "fix": "target.split('|', 2), matching _gmail_send"
+    },
+    {
+      "id": "R16",
+      "title": "_remember_fact drops the leading segment of any fact containing a colon",
+      "file": "action_engine.py:2760",
+      "root_cause": "D",
+      "severity": "low",
+      "verified": false,
+      "status": "OPEN",
+      "reachable_by": "remember_fact from the one-shot catalogue, contract target='Category: fact details' (the agent-tool path is safe -- _remember_target always prepends a category)",
+      "failure": "'router login: admin/hunter2' -> category 'router login' fails the valid_cats test and falls back to 'Fact', but the fact STORED is only 'admin/hunter2'. The subject is gone from long-term memory and memory_recall later reads back a value with no referent. The code detects the mis-parse and still commits the truncated half.",
+      "fix": "when the prefix is not a valid category, store the ORIGINAL target as the fact rather than the post-split remainder"
+    },
+    {
+      "id": "R17",
+      "title": "a HUD reload permanently orphans the wake-word loop",
+      "file": "main.py:2556",
+      "root_cause": "E",
+      "severity": "medium",
+      "verified": false,
+      "status": "OPEN",
+      "reachable_by": "reloading the HUD while JARVIS is idle -- i.e. parked in wait_for_wake_word, where the owner connection spends nearly all its time",
+      "failure": "the old connection holds _VOICE_LOOP_OWNER and is blocked in the mic thread, so its finally: _release_voice_loop cannot run. The new connection makes ONE claim attempt, loses it, and parks in a view-only receive() loop with no re-claim path -- after telling the user 'SYSTEM OFFLINE // STANDBY FOR VOICE INPUT'. After a reload the first wake word is swallowed by the dying loop and every one after is heard by nobody. The code comment asserts the opposite.",
+      "fix": "make the view-only branch re-attempt the claim, and make the claim evict a socket whose client_state is no longer CONNECTED"
     }
   ],
   "verified_sound": [
@@ -144,5 +261,10 @@
   "residual_notes": [
     "POST /api/tasks reaches the engine through execute_with_retry so governance still rules, but it carries no biometric gate -- AUTO-tier actions queued by a local caller run while the desk is locked, the state backdoor_gate exists to prevent for /api/backdoor.",
     "web_agent._init_browser short-circuits on self._playwright alone, so a page/browser that dies mid-session leaves non-None dead handles and every web_* call errors until web_close is called."
-  ]
+  ],
+  "summary": {
+    "total": 17,
+    "fixed": 11,
+    "open": 6
+  }
 }

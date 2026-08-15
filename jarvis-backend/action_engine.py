@@ -1,5 +1,6 @@
 import subprocess
 import os
+import sys
 import asyncio
 import re
 import shutil
@@ -1220,7 +1221,17 @@ class ActionEngine:
     def _send_email(self, target: str) -> str:
         try:
             # Expected format: "to@email.com | Subject | Body text"
-            parts = [p.strip() for p in target.split("|")]
+            #
+            # Review finding R15: `split("|")` with no maxsplit meant the BODY
+            # ended at the next pipe. "…| Please pay by Friday | thanks, Kaustav"
+            # sent only "Please pay by Friday" — after the owner approved the
+            # whole string at the CONFIRM prompt, so the thing he authorised and
+            # the thing that left the machine were different.
+            #
+            # `maxsplit=2` matches `_gmail_send`, which was already correct. A
+            # pipe is legitimate content in a sentence; only the first two are
+            # structure.
+            parts = [p.strip() for p in target.split("|", 2)]
             if len(parts) < 3:
                 return "I need the recipient, subject, and body to send an email, sir. Format: 'to@email.com | Subject | Body'"
             agent = GmailAgent()
@@ -2537,6 +2548,54 @@ class ActionEngine:
                 "Windows Shell. Skipping termination, Sir."
             )
 
+        # ── Review finding R14: the protected list lives at the SINK ──────────
+        # `terminal_agent.kill_process` keeps the real list — lsass, csrss,
+        # wininit, winlogon, services, smss, svchost — and then DELEGATES here,
+        # documenting that "_close_app() ... enforces the blacklists ... no
+        # bypass possible". It did not: this method's only guard was the
+        # one-entry explorer.exe check above, so the direct `close_app` ACTION
+        # never passed that list. A rule enforced on the caller's side is a rule
+        # the other caller does not have.
+        #
+        # And the process that matters most is not on anyone's list: `exe_targets`
+        # falls back to f"{app_lower.replace(' ', '')}.exe" for unknown names, so
+        # `close_app("python")` resolves to python.exe and kills the JARVIS
+        # backend itself — same user, so no AccessDenied — mid-action, with
+        # pending confirmations and working memory lost. `close_app` is AUTO, so
+        # nothing asks first.
+        from modules.terminal_agent import _PROTECTED_PROCESSES
+
+        # Matched on a NORMALISED name. The Start-Menu index resolves "python" to
+        # `python 3.13.exe` on this machine — spaces and a version — so an exact
+        # comparison against "python.exe" misses the very process this exists to
+        # protect. Spaces out, lowercased, then compared as a prefix for the
+        # interpreter family.
+        _own_stem = os.path.splitext(
+            os.path.basename(sys.executable or "python.exe"))[0].lower().replace(" ", "")
+        _self_family = {_own_stem, "python", "pythonw"}
+
+        def _norm(name: str) -> str:
+            return os.path.splitext(str(name))[0].lower().replace(" ", "")
+
+        _hit = None
+        _is_self = False
+        for t in exe_targets:
+            n = _norm(t)
+            if f"{n}.exe" in _PROTECTED_PROCESSES or n in _PROTECTED_PROCESSES:
+                _hit = t
+                break
+            if any(n.startswith(fam) for fam in _self_family if fam):
+                _hit, _is_self = t, True
+                break
+        if _hit:
+            print(f"[ACTION ENGINE] close_app: '{_hit}' is a protected process — "
+                  f"termination refused.", flush=True)
+            if _is_self:
+                return ("That would terminate me, Sir — I'm running under that "
+                        "process. Refusing.")
+            return (f"Error: '{_hit}' is a protected system process. "
+                    f"Terminating it would destabilise Windows. Refusing, Sir.")
+
         # ── 5. Terminate via psutil ───────────────────────────────────────────
         killed: list[str] = []
         for proc in psutil.process_iter(["pid", "name"]):
@@ -2803,8 +2862,22 @@ class ActionEngine:
             import memory_manager
             # Coerce category into valid enum if possible, otherwise default to Fact
             valid_cats = ["Preference", "Correction", "Fact"]
-            cat_safe = category if category in valid_cats else "Fact"
-            
+            # Review finding R16. The category fallback was right and the FACT
+            # was not: "router login: admin/hunter2" split into a category of
+            # "router login" — which fails this test and correctly falls back to
+            # "Fact" — while the fact stored was only "admin/hunter2". The
+            # subject was gone from long-term memory, and `memory_recall` later
+            # read back a value with no referent.
+            #
+            # The code already knows the split was wrong; that is what this
+            # fallback IS. So undo the split too, rather than committing half of
+            # what he said.
+            if category not in valid_cats:
+                cat_safe = "Fact"
+                fact = target.strip()
+            else:
+                cat_safe = category
+
             memory_manager.add_memory(content=fact, category=cat_safe, user="KAUSTAV")
             return "Committed to memory, Sir."
         except Exception as e:
