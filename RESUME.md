@@ -344,6 +344,56 @@ unreproduced. This is not proof it was the cause, but it was definitely present.
   FirstBootSequence.jsx). React 18 warns on a post-unmount state update; it does not crash,
   and those components live for the app's lifetime.
 
+## 🚨 GROQ RETIRED `llama-3.3-70b-versatile` ON 2026-08-16 — READ THIS FIRST
+
+Vendor mail arrived 2026-08-15. **The default was changed and pushed the same day; one
+step is still owed, and it is the one that proves it.**
+
+**What it was wired to, and why it mattered more than a config line:**
+
+| Where | Was | Now |
+|---|---|---|
+| `llm_router.py:36` `GROQ_TOOL_MODEL` | `llama-3.3-70b-versatile` | **`openai/gpt-oss-120b`** |
+| `cloud_gateway.py` `GROQ_MODEL` | `llama-3.3-70b-versatile` | **`openai/gpt-oss-120b`** |
+
+`TOOL_PROVIDERS = ("groq", "gemini", "openrouter")` puts **groq first**, so *every tool
+turn in the §6.8 agent layer* went through that one id. `.env` sets `GROQ_MODEL` but has
+**never** set `GROQ_TOOL_MODEL`, so it was taking the hardcoded default. The gateway leg is
+the fallback behind Gemini — the leg you don't discover is broken until the primary is
+already failing.
+
+**Verified live, not guessed** (a guessed id is what caused the `model_not_found` incident
+this file already records): the Groq SDK lists 15 models; `openai/gpt-oss-120b` and
+`qwen/qwen3.6-27b` both exist, and **both emit correct `tool_calls`**. `gpt-oss-120b` was
+chosen because it returned the argument verbatim (`"notepad"`) where qwen title-cased it
+(`"Notepad"`) — tool arguments feed target matching.
+
+> ⚠️ **A probe that 403s from this desk is NOT evidence.** Raw `urllib` to `api.groq.com`
+> gets **Cloudflare error 1010** (bot-fingerprint ban) on every key and every model,
+> including unauthenticated. It looks exactly like dead keys and is not. **Use the `groq`
+> SDK** — it sets a real user-agent and works fine. Nearly cost a false "your account is
+> dead" report.
+
+### ⏭ OWED — the step that actually proves the swap
+
+**Run the LIVE eval.** `run_evals.py --live` measures the whole loop against real Groq and
+records which tools were actually called. It is deliberately **not** in the suite (costs
+rate limit and minutes), and the suite's 40/40 is the **retrieval** eval — deterministic,
+no network, and **model-independent**, so *the green suite says nothing about this change*.
+Quoting one as the other is the thing that file warns about in writing.
+
+    jarvis-backend> venv\Scripts\python.exe run_evals.py --live
+
+Compare against the 40/40 recorded for llama-3.3-70b. If gpt-oss-120b scores worse, try
+`GROQ_TOOL_MODEL=qwen/qwen3.6-27b` — it is a one-line `.env` change, no deploy.
+
+**Also owed: Render.** Its `GROQ_MODEL` is set in the dashboard, which I cannot see. If it
+pins the retired id, the cloud fallback is dead there regardless of this commit.
+`/health` reports `brains.text`, so it is one page-load to check.
+
+Not affected: `llama-3.1-8b-instant` (desk chat, `.env`), `whisper-large-v3`, and the
+Gemini legs.
+
 ### ⏭ Next, in order
 
 1. **Finish this review** — `agent_tools` / `agent_runner` / `agent_core` first (the

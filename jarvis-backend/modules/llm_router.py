@@ -33,7 +33,15 @@ GROQ_MODEL        = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 # above is right for cheap classification and wrong for a multi-step tool loop —
 # it invents tool names, drops required args and loops. Kept as a SEPARATE env so
 # making the agent smarter never makes every routing turn more expensive.
-GROQ_TOOL_MODEL   = os.getenv("GROQ_TOOL_MODEL", "llama-3.3-70b-versatile")
+# `llama-3.3-70b-versatile` until 2026-08-15 — Groq decommissioned it on the
+# 16th, and this default is what every TOOL turn ran on: `TOOL_PROVIDERS` puts
+# groq first, so the whole §6.8 agent layer went through this one id. Groq's
+# recommended replacements are `openai/gpt-oss-120b` and `qwen/qwen3.6-27b`;
+# both were confirmed present in the live model list and both emit correct
+# tool_calls. gpt-oss-120b is chosen because it returned the argument
+# VERBATIM ("notepad") where qwen title-cased it ("Notepad") — tool arguments
+# feed target matching, so a model that does not rewrite them is worth having.
+GROQ_TOOL_MODEL   = os.getenv("GROQ_TOOL_MODEL", "openai/gpt-oss-120b")
 # Gemini cloud fallback — separate org/quota from Groq, so a drained Groq daily
 # bucket escalates here instead of dying. Skipped automatically if GEMINI_API_KEY
 # is unset. Uses the legacy google-generativeai SDK (already a dependency).

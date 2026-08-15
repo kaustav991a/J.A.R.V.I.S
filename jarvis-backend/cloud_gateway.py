@@ -38,7 +38,8 @@ REQUIRED ENV
 OPTIONAL ENV
 ------------
     TELEGRAM_GF_ID / TELEGRAM_BROTHER_ID   VIP guest numeric ids
-    GROQ_MODEL             default llama-3.3-70b-versatile (good remote chat)
+    GROQ_MODEL             default openai/gpt-oss-120b (llama-3.3-70b-versatile
+                           was decommissioned by Groq 2026-08-16)
     GROQ_VISION_MODEL      default meta-llama/llama-4-scout-17b-16e-instruct
                            (answers Telegram photos)
     GROQ_WHISPER_MODEL     default whisper-large-v3 (transcribes Telegram voice
@@ -91,7 +92,10 @@ BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 MODE = (os.getenv("CLOUD_GATEWAY_MODE") or "webhook").strip().lower()
 PUBLIC_URL = (os.getenv("PUBLIC_URL") or "").strip().rstrip("/")
 PORT = int(os.getenv("PORT", "8080"))
-GROQ_MODEL = (os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
+# `llama-3.3-70b-versatile` was decommissioned by Groq on 2026-08-16. Gemini is
+# the text brain now, so this is the FALLBACK leg — which is exactly the leg you
+# do not find out is broken until the primary is already failing.
+GROQ_MODEL = (os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b").strip()
 # This default is DEAD. On 2026-08-14 a photo came back
 # `404 model_not_found: meta-llama/llama-4-scout-17b-16e-instruct does not exist or
 # you do not have access to it` — Groq retires model ids, and a hardcoded one ages
