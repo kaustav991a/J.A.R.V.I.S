@@ -178,8 +178,107 @@ def test_the_guard_runs_before_the_destructive_call():
           f"the guard runs first (guard@{guard_line} < unlink@{unlink_line})")
 
 
+# ── the second road to the same files ────────────────────────────────────────
+# Guarding `_delete_file` and `_workspace_write` in action_engine looked
+# complete and was not. `_workspace_patch` reaches the same files through
+# `WorkspaceAgent.patch_file`, and the key files are JSON — so a find-and-replace
+# corrupts one as thoroughly as an overwrite.
+#
+# workspace_agent's own sandbox does not help: its default roots are `F:\work`
+# and the repo, so `jarvis-backend/jarvis_key.dpapi` is INSIDE them, and
+# `_BLOCKED_EXTENSIONS` covers `.exe` and `.zip` but not `.dpapi`, `.recovery`,
+# `.enc`, `.db` or `.env`.
+#
+# The rule is therefore applied at `_resolve_safe` — the one function read_file,
+# write_file and patch_file all funnel through. A rule enforced at three call
+# sites is a rule with a fourth call site in its future.
+
+def _ws():
+    from modules.workspace_agent import WorkspaceAgent
+    return WorkspaceAgent()
+
+
+def _denied(text):
+    return isinstance(text, str) and text.startswith("Access denied")
+
+
+def test_the_workspace_agent_refuses_every_protected_file():
+    w = _ws()
+    for name in ("jarvis_key.dpapi", "jarvis_key.recovery", "jarvis_x25519.enc",
+                 "jarvis_longterm.db", ".env"):
+        p = str(BACKEND / name)
+        check(_denied(w.read_file(p)), f"read refused: {name}")
+        check(_denied(w.write_file(p, "x")), f"write refused: {name}")
+        check(_denied(w.patch_file(p, "a", "b")), f"patch refused: {name}")
+
+
+def test_reading_a_key_file_is_refused_not_only_writing():
+    # `jarvis_key.dpapi` IS the wrapped key and `.env` is every credential.
+    # Handing either back as file content is the same disclosure as copying it.
+    w = _ws()
+    check(_denied(w.read_file(str(BACKEND / ".env"))),
+          "reading .env through the workspace agent is refused")
+
+
+def test_a_relative_path_that_resolves_onto_a_key_file_is_refused():
+    """The check must run AFTER resolution, not before.
+
+    A relative name is resolved against a workspace ROOT by the agent but
+    against the CWD by `protected_path_problem`, so testing the raw string
+    would let these through whenever the two differ. Each of these reaches a
+    file that really exists.
+    """
+    w = _ws()
+    for rel in ("JARVIS-Project/jarvis-backend/jarvis_key.dpapi",
+                "JARVIS-Project/jarvis-backend/.env",
+                "JARVIS-Project/jarvis-backend/../jarvis-backend/jarvis_key.recovery",
+                r"JARVIS-Project\jarvis-backend\jarvis_longterm.db"):
+        resolved = w._resolve_within_roots(rel)
+        if resolved is None or not resolved.exists():
+            check(True, f"(not reachable in this checkout, skipped) {rel[:40]}")
+            continue
+        check(_denied(w.read_file(rel)),
+              f"relative form refused: ...{rel[-44:]}")
+
+
+def test_the_workspace_agent_still_does_its_job():
+    # A guard that also stops the work is not a fix. `brain.py` is over the read
+    # cap, so its refusal must be the SIZE one, not an access denial.
+    w = _ws()
+    out = w.read_file(str(BACKEND / "brain.py"))
+    check(not _denied(out), f"brain.py is not access-denied (got: {out[:48]!r})")
+    scratch = BACKEND / "_protected_paths_probe.md"
+    try:
+        wrote = w.write_file(str(scratch), "hello")
+        check(not _denied(wrote), "an ordinary file beside the keys is writable")
+    finally:
+        scratch.unlink(missing_ok=True)
+
+
+def test_the_guard_lives_in_one_module_not_three_copies():
+    import ast
+    src = (HERE / "modules" / "workspace_agent.py").read_text(
+        encoding="utf-8", errors="replace")
+    check("protected_path_problem" in src,
+          "workspace_agent consults the shared guard")
+    check("_resolve_safe" in src and "_resolve_within_roots" in src,
+          "the root check and the protected check are separate, composable steps")
+    # and action_engine must import it rather than redefining it
+    ae = (HERE / "action_engine.py").read_text(encoding="utf-8", errors="replace")
+    tree = ast.parse(ae)
+    imported = any(
+        isinstance(n, ast.ImportFrom) and (n.module or "").endswith("protected_paths")
+        for n in ast.walk(tree))
+    check(imported, "action_engine imports the guard rather than keeping its own copy")
+
+
 TESTS = [
     test_every_key_file_is_refused,
+    test_the_workspace_agent_refuses_every_protected_file,
+    test_reading_a_key_file_is_refused_not_only_writing,
+    test_a_relative_path_that_resolves_onto_a_key_file_is_refused,
+    test_the_workspace_agent_still_does_its_job,
+    test_the_guard_lives_in_one_module_not_three_copies,
     test_the_two_wraps_are_both_on_the_list,
     test_a_traversal_cannot_walk_around_the_check,
     test_the_check_is_case_insensitive_on_windows,

@@ -34,22 +34,50 @@ def target(name, **args):
 
 # ── target composition: where a wrong string sends the wrong mail ────────────
 
-def test_gmail_send_composes_the_pipe_separated_target():
-    """Handler: `parts = target.split("|")` -> to, subject, body."""
-    got = target("gmail_send", to="a@b.com", subject="Invoice", body="Please see attached.")
-    parts = [p.strip() for p in got.split("|")]
-    assert parts == ["a@b.com", "Invoice", "Please see attached."], got
+def _mail_fields(**kw):
+    """Build gmail_send's target and parse it the way `_send_email` does.
+
+    Asserting on the PROPERTY (the three fields arrive as written) rather than
+    on the wire format. The previous version of these two tests pinned the
+    delimited string itself, which is why neither noticed that the handler had
+    moved from `split("|")` to `split("|", 2)` underneath them — the docstring
+    still described a truncation the code had already stopped doing.
+    """
+    import json as _json
+
+    got = target("gmail_send", **kw)
+    stripped = str(got).strip()
+    if stripped.startswith("{"):
+        d = _json.loads(stripped)
+        return (str(d.get("to", "")).strip(), str(d.get("subject", "")).strip(),
+                str(d.get("body", "")).strip())
+    parts = [p.strip() for p in stripped.split("|", 2)]
+    return tuple((parts + ["", "", ""])[:3])
+
+
+def test_gmail_send_carries_all_three_fields():
+    got = _mail_fields(to="a@b.com", subject="Invoice", body="Please see attached.")
+    assert got == ("a@b.com", "Invoice", "Please see attached."), got
+
+
+def test_a_pipe_in_the_subject_does_not_move_it_into_the_body():
+    """The finding. "Re: Q3 | final" is an ordinary subject line.
+
+    Under the delimited format it parsed as subject="Re: Q3",
+    body="final | ...", and the email SENT that way with nobody told. The body
+    case was already safe (maxsplit=2 keeps the tail); the subject case was not.
+    """
+    to, subject, body = _mail_fields(
+        to="a@b.com", subject="Re: Q3 | final", body="Here is the report.")
+    assert subject == "Re: Q3 | final", subject
+    assert body == "Here is the report.", body
+    assert to == "a@b.com", to
 
 
 def test_a_body_containing_a_pipe_does_not_shift_the_fields():
-    """`_gmail_send` splits on every pipe, so a pipe in the BODY lands in a
-    fourth field. It takes parts[0..2], so the body is truncated at the pipe
-    rather than the recipient changing — worth knowing, and worth pinning, so a
-    future edit does not turn a truncation into a misdirection."""
-    got = target("gmail_send", to="a@b.com", subject="S", body="one | two")
-    parts = [p.strip() for p in got.split("|")]
-    assert parts[0] == "a@b.com" and parts[1] == "S", got
-    assert len(parts) == 4, "the pipe stopped being a field separator"
+    to, subject, body = _mail_fields(to="a@b.com", subject="S", body="one | two")
+    assert (to, subject) == ("a@b.com", "S"), (to, subject)
+    assert body == "one | two", f"the body lost a pipe: {body!r}"
 
 
 def test_gmail_reply_composes_thread_then_body():

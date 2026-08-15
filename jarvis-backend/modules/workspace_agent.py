@@ -321,7 +321,36 @@ class WorkspaceAgent:
         """
         Resolve `raw` to an absolute Path and verify it is inside at least
         one WORKSPACE_ROOT. Returns None if the path is outside all roots.
+
+        Also refuses J.A.R.V.I.S.'s own key store and encrypted memory. Being
+        inside a workspace root is NOT sufficient: the default roots are the
+        repo and its parent, so `jarvis-backend/jarvis_key.dpapi` sits squarely
+        within them, and `_BLOCKED_EXTENSIONS` covers `.exe` and `.zip` but not
+        `.dpapi`, `.recovery`, `.enc`, `.db` or `.env`.
+
+        Applied HERE rather than at each caller because this one function is
+        what `read_file`, `write_file` and `patch_file` all funnel through — and
+        a rule enforced at three call sites is a rule with a fourth call site in
+        its future.
         """
+        resolved = self._resolve_within_roots(raw)
+        if resolved is None:
+            return None
+        # Checked on the RESOLVED path, not the raw string. A relative name is
+        # resolved against a workspace ROOT here but against the CWD by
+        # `protected_path_problem`, so testing the raw string would let
+        # "jarvis-backend/jarvis_key.dpapi" through whenever the two differ.
+        from modules.protected_paths import protected_path_problem
+
+        if protected_path_problem(str(resolved)) is not None:
+            print(f"[WORKSPACE] refused a protected path: {resolved.name}",
+                  flush=True)
+            return None
+        return resolved
+
+    @staticmethod
+    def _resolve_within_roots(raw: str) -> Optional[Path]:
+        """The original root check, unchanged — resolve and confirm containment."""
         try:
             p = Path(raw).expanduser()
             if not p.is_absolute():

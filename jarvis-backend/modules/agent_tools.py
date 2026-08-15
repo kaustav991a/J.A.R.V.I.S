@@ -40,6 +40,7 @@ Registry entries CALL INTO action_engine — no tool logic is reimplemented here
 
 from __future__ import annotations
 
+import json
 import urllib.parse
 from dataclasses import dataclass, replace
 from typing import Any, Callable
@@ -696,6 +697,24 @@ def _url_problem(raw: Any) -> str | None:
     return None
 
 
+def _mail_target(args: dict) -> str:
+    """`gmail_send`'s target as JSON rather than "to | subject | body".
+
+    The pipe form is parsed with `split("|", 2)`, so pipes in the BODY survive —
+    but a pipe in the SUBJECT moved the rest of the subject into the body and
+    sent it. "Re: Q3 | final" is an ordinary subject line, and a model composing
+    one from a web page or a thread it just read can produce any character at
+    all. Structure therefore stops being encoded in a character the content is
+    allowed to contain. `_send_email` already parses this shape (it checks for a
+    leading "{" before falling back to the delimiter).
+    """
+    return json.dumps({
+        "to": str((args or {}).get("to", "")).strip(),
+        "subject": str((args or {}).get("subject", "")).strip(),
+        "body": str((args or {}).get("body", "")),
+    })
+
+
 def _url_precondition(args: dict) -> str | None:
     return _url_problem((args or {}).get("url"))
 
@@ -1075,9 +1094,14 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                      "subject": {"type": "string", "description": "Subject line."},
                      "body": {"type": "string", "description": "Message body."}},
                     ["to", "subject", "body"]),
-               build_target=lambda a: (f"{str(a.get('to', '')).strip()} | "
-                                       f"{str(a.get('subject', '')).strip()} | "
-                                       f"{a.get('body', '')}"))
+               # JSON, not "to | subject | body". The handler splits the pipe
+               # form with maxsplit=2, so a pipe in the BODY is harmless — but a
+               # pipe in the SUBJECT silently moved half the subject into the
+               # body and sent it that way. "Re: Q3 | final" is an ordinary
+               # subject line, so the fix is to stop encoding structure in a
+               # character the content is allowed to contain, rather than to
+               # forbid the character. `_send_email` already accepts this shape.
+               build_target=_mail_target)
 
     r.register("gmail_reply",
                "Reply to an existing email thread. Requires the owner's "
