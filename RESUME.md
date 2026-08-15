@@ -109,6 +109,50 @@ list were checked and have **no orphans today**, so rather than rewrite them,
 `test_harness_integrity.py` fails the suite if one ever appears. `run_harnesses.py`
 had this identical bug one level up (§6.8.2).
 
+### Findings 17 and 18 — both are the SAME road, found twice more
+
+| # | Commit | What |
+|---|---|---|
+| 17 | `<url-safety>` | the URL guard was on the agent's door, and **there are two doors** |
+| 18 | `1ee5499` | the model could **upload `.env` to Telegram**, and nothing asked first |
+
+**17:** `web_browse` / `open_link` / `os_macro`'s url are in the **one-shot catalogue**
+too (`action_router.py:139`, `brain.py:166`, `brain.py:367`) — the ordinary
+conversational path, which never touches a tool-layer precondition. So finding 10's
+fix guarded the agent loop and left the other door open. `_web_browse` is the bad one:
+Playwright renders what it is given and the page text comes back as the action result.
+The rule moved to `modules/url_safety.py` (twin of `shell_safety.py`) and is now
+enforced at the **sink** as well as before dispatch.
+
+**18:** `telegram_send_file` takes a model-supplied absolute path, reads it, uploads
+it — and is **AUTO tier**. Its only precondition was that the path be absolute.
+`.env` is every API key, the bridge secret and the unlock code; `jarvis_key.dpapi`
+opens the memory store. "Only the owner receives it" is true and beside the point —
+the file leaves the machine and lands permanently in a third party's chat log.
+`protected_paths.py` already says *"READING is refused too"*; this handler never
+asked it. Checked the sibling: `workspace_read` **is** guarded (`_resolve_safe`).
+
+> **THE PATTERN IS NOW FOUR FOR FOUR, AND IT IS THE THING TO CARRY FORWARD.**
+> finding 6 = writing/deleting the key files · 10/14/17 = reading them through a URL ·
+> 18 = reading them through a file send. **An injection class fixed one site at a time
+> stays open.** Before the next protected-resource fix, ask: *which OTHER verb reaches
+> this resource, and which other door reaches that verb?*
+
+### ⚠️ THE ULTRACODE SWEEP WAS RUN AND RETURNED NOTHING — read before repeating it
+
+A 10-agent workflow (`jarvis-pre-electron-review`, script saved under
+`workflows/scripts/`) was launched to finish the review: one reader per subsystem,
+each finding adversarially verified. **It consumed roughly 38% of a session quota in
+a few minutes and every agent was still running when it had to be stopped.** The
+journal holds ten `started` entries and no results, so a resume re-runs all of it —
+`resumeFromRunId` caches only COMPLETED calls.
+
+**Do not relaunch it as-is.** Ten agents each reading 2 000–3 000-line files in
+parallel is the cost problem, and their tokens come from the same pool as the main
+loop's. Either run **two or three areas at a time**, or give each agent a narrower
+slice (one root cause across a few files, not "read this file in full"). The area
+prompts themselves are good and worth keeping — the sizing was wrong, not the shape.
+
 ### ⏭ Where the review stops
 
 Covered so far: `agent_tools.py`'s registry spine and URL/target composition,
