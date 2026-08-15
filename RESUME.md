@@ -290,6 +290,24 @@ unreproduced. This is not proof it was the cause, but it was definitely present.
 - **`fact_outbox.queue_fact` returning `None` with no desk key is NOT a defect** — it is
   queue item 5's documented behaviour (`dropped_no_key`, surfaced in `/health`, never stored
   in plaintext). Fixing it needs the desk public key on Render, not a code change.
+- **`agent_core`'s governance seam is correct**: `authorize` runs before EVERY execution,
+  deliberately outside the engine lock, denials are counted and fed back to the model as an
+  instruction rather than silently retried. The two branches that run *before* it
+  (`skills.handle`, `shelf.handle`) are read-only by construction — `SkillLibrary.load` is a
+  dict lookup on a normalised key, never a path join, pinned by
+  `test_a_name_cannot_escape_the_skills_directory`.
+- Every production entry point supplies an authorizer: `agent_runner` builds a desk or away
+  one, `agent_subagents` builds its own with `allow_confirm=False`.
+
+> ⚠️ **ONE LATENT RISK, RECORDED NOT CHANGED — your call.** `agent_core.run_agent_loop`
+> treats `authorize=None` as `Decision(True)`: **governance is skipped entirely when no
+> authorizer is passed.** No current caller does that, so it is not a live defect — but it is
+> fail-OPEN by construction, and this project has already been bitten by exactly that shape
+> once (*"the shelf had never been wired in production"*, §6.8). It also runs against the
+> house rule set by the `contact_events` ruling: unset should read as OFF, not as allow.
+> The cheap fix is to keep the default but log loudly when it is used; the strict fix is to
+> deny by default and make the harnesses pass an explicit permissive authorizer. **Not done
+> unasked** — it changes the contract every existing agent harness relies on.
 
 ### ⏭ NOT REVIEWED — this is where a continuation starts
 
