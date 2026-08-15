@@ -21,7 +21,17 @@ export default function NotchView() {
     };
 
     socket.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+      // A frame that is not JSON must cost that frame, not the handler. An
+      // uncaught throw here aborts onmessage and the view silently stops
+      // updating while the socket stays open — indistinguishable from an idle
+      // assistant.
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        console.warn('[NotchView] dropped a frame that was not JSON');
+        return;
+      }
 
       // Mirror the status lifecycle from the main App so the orb animates.
       if (data.status) {

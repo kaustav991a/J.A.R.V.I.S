@@ -26,7 +26,14 @@ export default function SidecarView() {
     socket.current.onopen = () => setStatus('online');
 
     socket.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+      // See NotchView: a non-JSON frame must cost that frame, not the handler.
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        console.warn('[SidecarView] dropped a frame that was not JSON');
+        return;
+      }
 
       // Track status for visual cues.
       if (data.status) {

@@ -394,42 +394,74 @@ class GestureDaemon:
                   flush=True)
             time.sleep(30.0)
             return
-        gesture_state["camera"] = str(fs.source)
-        if len(sources) > 1:
-            print(f"[GESTURE] camera auto-select: chose {fs.source} "
-                  f"from {sources}", flush=True)
-
-        landmarker = None
+        # ── everything from here to the main loop must release the camera ────
+        # `make_frame_source` has already opened a cv2.VideoCapture AND started a
+        # reader thread, but the try/finally that releases it does not begin until
+        # the loop below. Between the two sit model loads and file reads that can
+        # raise — FaceGate pulls in face recognition, gesture_calibration.load()
+        # touches disk. A raise in that window leaked the capture and left its
+        # reader thread calling read() forever, so the NEXT session opened a second
+        # capture on a device the first one still held. That degrades over
+        # sessions, which is the shape F-08 kept presenting as and never
+        # reproduced on demand.
+        # `make_frame_source` has ALREADY opened a cv2.VideoCapture and started a
+        # reader thread, but the try/finally that releases it does not begin until
+        # the main loop below. Between the two sit a model load and a disk read
+        # that can raise — FaceGate pulls in face recognition, and
+        # gesture_calibration.load() touches a file. A raise anywhere in that
+        # window leaked the capture and left its reader thread calling read()
+        # forever, so the NEXT session opened a second capture on a device the
+        # first one still held. That degrades across sessions rather than failing
+        # once, which is the shape F-08 kept presenting as and was never
+        # reproduced on demand.
         try:
-            import mediapipe as mp
-            from mediapipe.tasks.python import BaseOptions, vision
-            landmarker = vision.HandLandmarker.create_from_options(
-                vision.HandLandmarkerOptions(
-                    base_options=BaseOptions(model_asset_path=MODEL_PATH),
-                    running_mode=vision.RunningMode.VIDEO,
-                    num_hands=1,
-                    # G5.4: lower these (env) to lock onto a faint distant hand
-                    min_hand_detection_confidence=_envf("JARVIS_HAND_DET_CONF", 0.5),
-                    min_hand_presence_confidence=_envf("JARVIS_HAND_PRESENCE_CONF", 0.5),
-                    min_tracking_confidence=_envf("JARVIS_HAND_TRACK_CONF", 0.5)))
-            mp_image_fmt = mp.ImageFormat.SRGB
-            mp_image = mp.Image
-        except Exception as e:  # noqa: BLE001
-            print(f"[GESTURE] hand model unavailable ({e}) — presence-only mode", flush=True)
+            gesture_state["camera"] = str(fs.source)
+            if len(sources) > 1:
+                print(f"[GESTURE] camera auto-select: chose {fs.source} "
+                      f"from {sources}", flush=True)
 
-        engine = GestureEngine(GestureConfig.from_env())
-        pointer = PointerBackend()
-        gate = FaceGate()
-        motion = MotionDetector()
-        absence = AbsenceTracker(absent_after_s=self.absent_after)
-        # one off-axis check must not fire an intruder alert on the owner
-        stranger = StrangerConfirmer(
-            needed=_envf("JARVIS_STRANGER_CONFIRM", 3.0),
-            window_s=_envf("JARVIS_STRANGER_WINDOW_S", 3.0))
-        mirror = gesture_calibration.load().get(
-            "mirror", os.getenv("JARVIS_CAM_MIRROR", "1") == "1")
-        roi_enabled = os.getenv("JARVIS_GESTURE_ROI", "1") == "1"  # G5.4 distance ROI
-        roi = gesture_roi.RoiTracker.from_env()
+            landmarker = None
+            try:
+                import mediapipe as mp
+                from mediapipe.tasks.python import BaseOptions, vision
+                landmarker = vision.HandLandmarker.create_from_options(
+                    vision.HandLandmarkerOptions(
+                        base_options=BaseOptions(model_asset_path=MODEL_PATH),
+                        running_mode=vision.RunningMode.VIDEO,
+                        num_hands=1,
+                        # G5.4: lower these (env) to lock onto a faint distant hand
+                        min_hand_detection_confidence=_envf("JARVIS_HAND_DET_CONF", 0.5),
+                        min_hand_presence_confidence=_envf("JARVIS_HAND_PRESENCE_CONF", 0.5),
+                        min_tracking_confidence=_envf("JARVIS_HAND_TRACK_CONF", 0.5)))
+                mp_image_fmt = mp.ImageFormat.SRGB
+                mp_image = mp.Image
+            except Exception as e:  # noqa: BLE001
+                print(f"[GESTURE] hand model unavailable ({e}) — presence-only mode", flush=True)
+
+            engine = GestureEngine(GestureConfig.from_env())
+            pointer = PointerBackend()
+            gate = FaceGate()
+            motion = MotionDetector()
+            absence = AbsenceTracker(absent_after_s=self.absent_after)
+            # one off-axis check must not fire an intruder alert on the owner
+            stranger = StrangerConfirmer(
+                needed=_envf("JARVIS_STRANGER_CONFIRM", 3.0),
+                window_s=_envf("JARVIS_STRANGER_WINDOW_S", 3.0))
+            mirror = gesture_calibration.load().get(
+                "mirror", os.getenv("JARVIS_CAM_MIRROR", "1") == "1")
+            roi_enabled = os.getenv("JARVIS_GESTURE_ROI", "1") == "1"  # G5.4 distance ROI
+            roi = gesture_roi.RoiTracker.from_env()
+        except BaseException:
+            # Release and re-raise: the retry shell still sees the real fault, but
+            # it no longer inherits a camera nobody owns.
+            print("[GESTURE] session setup failed — releasing the camera before "
+                  "the retry, so the next attempt is not fighting this one.",
+                  flush=True)
+            try:
+                fs.release()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
 
         seq = 0
         try:

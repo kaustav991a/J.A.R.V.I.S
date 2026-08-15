@@ -81,8 +81,25 @@ const Widget = ({
   const [isMoveMode, setIsMoveMode] = useState(false);
   const nodeRef = useRef(null);
 
-  const savedPos = localStorage.getItem(`widget_pos_v3_${title}`);
-  const initialPos = savedPos ? JSON.parse(savedPos) : defaultPos;
+  // Parsed defensively, and the key is dropped when it will not parse. This runs
+  // during RENDER, so a throw here takes the whole tree down to a white screen —
+  // and because the value lives in localStorage it survives a restart, so the app
+  // would come back broken every time with no way for him to fix it.
+  // The clamp below already treats unrecoverable saved position as a hazard; this
+  // is the same hazard one step earlier.
+  const posKey = `widget_pos_v3_${title}`;
+  const readSavedPos = () => {
+    const raw = localStorage.getItem(posKey);
+    if (!raw) return defaultPos;
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : defaultPos;
+    } catch {
+      localStorage.removeItem(posKey);   // it will never parse; stop carrying it
+      return defaultPos;
+    }
+  };
+  const initialPos = readSavedPos();
 
   // Keep the widget inside the viewport — a position saved on a big monitor must
   // not render off-screen (unrecoverable) on a smaller one. Leaves >=60px on-screen.

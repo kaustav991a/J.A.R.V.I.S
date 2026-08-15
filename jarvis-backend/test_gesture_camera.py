@@ -414,7 +414,78 @@ def test_dead_only_after_reopen_attempts_are_exhausted():
         fs.release()
 
 
+# ── pre-Electron review, 2026-08-15 ──────────────────────────────────────────
+# `_session` opened the frame source (a cv2.VideoCapture AND a reader thread)
+# roughly 45 lines before the try/finally that releases it. In between sat a
+# mediapipe model load, a FaceGate construction that pulls in face recognition,
+# and gesture_calibration.load() reading a file — every one of which can raise.
+# A raise there leaked the capture and left its reader thread calling read()
+# forever, so the NEXT session opened a second capture on a device the first one
+# still held. It degrades across sessions rather than failing once, which is the
+# shape F-08 kept presenting as and was never reproduced on demand.
+#
+# STRUCTURAL, and said plainly: this asserts the release is REACHABLE on the
+# setup failure path, not that a real camera was handed back. Driving the true
+# path needs mediapipe, a camera and a forced fault — it belongs in the §7 gate,
+# where "run the daemon 5+ minutes" (row 21.3) is the test that would catch it.
+
+def _session_ast():
+    import ast as _ast
+    src = (HERE / "gesture_daemon.py").read_text(encoding="utf-8", errors="replace") \
+        if "HERE" in globals() else \
+        __import__("pathlib").Path(__file__).resolve().parent.joinpath(
+            "gesture_daemon.py").read_text(encoding="utf-8", errors="replace")
+    tree = _ast.parse(src)
+    return _ast, next((n for n in _ast.walk(tree)
+                       if isinstance(n, _ast.FunctionDef) and n.name == "_session"), None)
+
+
+def test_a_failed_session_setup_releases_the_camera():
+    _ast, fn = _session_ast()
+    check(fn is not None, "_session found in gesture_daemon.py")
+    if fn is None:
+        return
+    # the line the capture is created on
+    opened = min((n.lineno for n in _ast.walk(fn)
+                  if isinstance(n, _ast.Call)
+                  and getattr(n.func, "id", None) == "make_frame_source"), default=None)
+    check(opened is not None, "make_frame_source call located")
+
+    # a handler that runs AFTER it and calls fs.release()
+    guarded = False
+    for node in _ast.walk(fn):
+        if not isinstance(node, (_ast.ExceptHandler, _ast.Try)):
+            continue
+        bodies = node.finalbody if isinstance(node, _ast.Try) else node.body
+        for sub in bodies:
+            for call in _ast.walk(sub):
+                if (isinstance(call, _ast.Call)
+                        and getattr(call.func, "attr", None) == "release"
+                        and getattr(getattr(call.func, "value", None), "id", None) == "fs"
+                        and call.lineno > (opened or 0)):
+                    guarded = True
+    check(guarded,
+          "an exception/finally path after the camera is opened calls fs.release()")
+
+
+def test_the_setup_failure_path_re_raises():
+    """Releasing must not also swallow the fault — the retry shell needs it."""
+    _ast, fn = _session_ast()
+    if fn is None:
+        check(False, "_session found")
+        return
+    reraises = any(
+        isinstance(h, _ast.ExceptHandler)
+        and any(isinstance(s, _ast.Raise) and s.exc is None for s in _ast.walk(h))
+        for h in _ast.walk(fn)
+    )
+    check(reraises,
+          "the setup handler re-raises, so a real fault still reaches the retry shell")
+
+
 TESTS = [
+    test_a_failed_session_setup_releases_the_camera,
+    test_the_setup_failure_path_re_raises,
     test_parse_comma_list_order_and_types, test_parse_dedup_preserves_first,
     test_parse_blank_entries_dropped, test_parse_env_overrides_legacy,
     test_parse_falls_back_to_legacy, test_parse_all_empty_defaults_index0,
