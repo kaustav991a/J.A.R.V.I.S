@@ -166,7 +166,8 @@ Only `GROQ_API_KEYS` (or `GROQ_API_KEY`) is required; everything else is optiona
 GROQ_API_KEYS=key1,key2,key3        # comma-separated for rotation (or GROQ_API_KEY=single)
 
 # --- LLM routing (optional) ---
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=llama-3.1-8b-instant     # cheap routing/chat turns
+GROQ_TOOL_MODEL=openai/gpt-oss-120b # agentic tool turns need a stronger model
 JARVIS_LLM_MODE=cloud_first         # cloud_first | local_first
 OLLAMA_URL=http://localhost:11434
 OLLAMA_VISION_MODEL=llava

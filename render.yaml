@@ -15,8 +15,12 @@ services:
     envVars:
       - key: CLOUD_GATEWAY_MODE
         value: webhook
+      # `llama-3.3-70b-versatile` was decommissioned by Groq on 2026-08-16. The
+      # code default moved in a943582; this declared value did not, and a value
+      # set here WINS over the code default — so the gateway's Groq leg would
+      # have started 404ing on the 16th while every harness stayed green.
       - key: GROQ_MODEL
-        value: llama-3.3-70b-versatile
+        value: openai/gpt-oss-120b
       # Which brain answers what. `groq` everywhere is the configuration that has
       # been in production; set any of these to `gemini` to switch that capability
       # alone. A switch needs no deploy, and every Gemini failure falls back to

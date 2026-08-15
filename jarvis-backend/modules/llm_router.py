@@ -458,12 +458,22 @@ def _call_gemini(messages, temperature, max_tokens, stream, json_mode, timeout):
 OPENROUTER_URL = os.getenv("OPENROUTER_URL", "https://openrouter.ai/api/v1/chat/completions")
 # Individual :free models get rate-limited upstream or retired without notice,
 # so the provider walks this list (comma-separated, env-overridable) in order.
-# Verified available 2026-07-11.
+#
+# RE-VERIFIED 2026-08-15 against the live catalogue, and THREE OF THE FOUR WERE
+# GONE: `openai/gpt-oss-120b:free`, `qwen/qwen3-next-80b-a3b-instruct:free` and
+# `meta-llama/llama-3.3-70b-instruct:free` no longer exist as `:free` variants —
+# the paid base ids do, which is why a casual look says they are fine. Only the
+# nemotron tail survived. This is the LAST leg of the cascade, so a dead list
+# here is invisible until Groq and Gemini have both already failed.
+#
+# Every id below was confirmed present AND answered a real request on this
+# account today. The `:free` suffix is mandatory: the account is free-tier, so a
+# paid id fails at request time rather than at start-up.
 OPENROUTER_MODELS = [m.strip() for m in os.getenv(
     "OPENROUTER_MODELS",
-    "openai/gpt-oss-120b:free,"
-    "qwen/qwen3-next-80b-a3b-instruct:free,"
-    "meta-llama/llama-3.3-70b-instruct:free,"
+    "nvidia/nemotron-3.5-lightning:free,"      # 1M context, quick
+    "openai/gpt-oss-20b:free,"                 # different vendor, familiar family
+    "google/gemma-4-26b-a4b-it:free,"
     "nvidia/nemotron-nano-9b-v2:free",  # small but reliably uncongested tail
 ).split(",") if m.strip()]
 
@@ -567,11 +577,23 @@ def _call_openrouter_model(model, messages, temperature, max_tokens, stream, jso
 
 # Free tool-capable models on OpenRouter, walked in order like OPENROUTER_MODELS.
 # Kept SEPARATE because plenty of good free chat models reject `tools` outright.
+#
+# This list was WHOLLY DEAD when re-checked on 2026-08-15 — all three `:free`
+# variants had been withdrawn, so the tool cascade's last leg could not have
+# answered anything. Nothing surfaced it because it only runs once Groq and
+# Gemini have both failed.
+#
+# Each id below was sent a real one-tool request today and emitted a correct
+# `tool_calls` for it. Ordering follows the rule that picked gpt-oss-120b over
+# qwen on Groq: prefer the models that returned the argument VERBATIM
+# ("notepad"), because tool arguments feed target matching and a model that
+# title-cases them ("Notepad") makes every downstream lookup fuzzier.
 OPENROUTER_TOOL_MODELS = [m.strip() for m in os.getenv(
     "OPENROUTER_TOOL_MODELS",
-    "openai/gpt-oss-120b:free,"
-    "qwen/qwen3-next-80b-a3b-instruct:free,"
-    "meta-llama/llama-3.3-70b-instruct:free",
+    "nvidia/nemotron-3.5-lightning:free,"      # verbatim args, 1M context
+    "openai/gpt-oss-20b:free,"                 # verbatim; same family as the Groq primary
+    "nvidia/nemotron-3-super-120b-a12b:free,"  # verbatim, stronger, 262k
+    "nvidia/nemotron-nano-9b-v2:free",         # the one survivor of the old list
 ).split(",") if m.strip()]
 
 
