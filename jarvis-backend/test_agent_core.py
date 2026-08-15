@@ -465,7 +465,12 @@ def test_none_turn_is_handled():
 def test_events_are_emitted_for_the_hud():
     events = []
     script = Script(turn_with(call(args={"path": "a"})), answer("Done."))
+    # Authorized on purpose. This asserts the event stream of an ORDINARY run,
+    # and an ordinary run is governed — production has an authorizer on every
+    # branch. Left ungoverned, it also picked up the `ungoverned` warning event,
+    # which is a true statement about the run and a false one about the HUD.
     run(ac.run_agent_loop("x", TOOLS, lambda c: "ok", call_model=script,
+                          authorize=lambda c: ac.Decision(True),
                           on_event=lambda k, d: events.append(k)))
     assert events == ["model_turn", "tool_start", "tool_ok", "model_turn", "answer"]
 

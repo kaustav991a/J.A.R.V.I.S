@@ -387,6 +387,9 @@ async def run_agent_loop(
     consecutive_errors = 0
     denials = 0
     steps = 0
+    #: Once per run, not once per call — an ungoverned run says so, loudly, and
+    #: then gets on with it rather than shouting on every tool.
+    _ungoverned_warned = False
 
     async def run_tool(call: ToolCall):
         """Execute one tool with the engine lock held for exactly that long.
@@ -521,6 +524,26 @@ async def run_agent_loop(
             # human at the HUD, and holding the engine lock through that would
             # freeze every other command in the process.
             if authorize is None:
+                # UNGOVERNED, AND IT SAYS SO. This default is fail-OPEN by
+                # construction: no authorizer means every tool runs, including
+                # CONFIRM-tier ones. No production caller does it —
+                # `run_agent_command` assigns a desk or away authorizer on both
+                # branches of its only if/else, and `test_agent_governed.py`
+                # pins that — and the harnesses that do it are testing the loop's
+                # mechanics rather than its governance.
+                #
+                # Left permissive rather than flipped to deny-by-default because
+                # flipping it changes the contract every existing harness relies
+                # on. But it is not left SILENT: this project has already been
+                # bitten once by a gate that was never wired ("the shelf had never
+                # been wired in production", §6.8), and the thing that made that
+                # expensive was that nothing said so at the time.
+                if not _ungoverned_warned:
+                    _ungoverned_warned = True
+                    print("[AGENT] ⚠ running with NO authorizer — governance is "
+                          "not being consulted for any tool call. This is only "
+                          "correct in a harness.", flush=True)
+                    await emit("ungoverned", tool=call.name)
                 decision = Decision(True)
             else:
                 decision = await _maybe_await(authorize, call)
