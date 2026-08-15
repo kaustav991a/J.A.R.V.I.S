@@ -130,6 +130,25 @@ seal-before-parse, the parameterised SQL, decrypt-failure never reading as absen
 logging flags failing towards off, recipient resolution, and inbound Telegram auth were
 all checked and are correct.
 
+### ▶ C2 IS FIXED. THE OTHER THREE HIGH ONES ARE NOT — START THERE.
+
+`_photo_command` in `modules/telegram_bot.py`: the vision description is now fenced
+evidence rather than the command. The owner's caption is the instruction, the
+description sits between markers it cannot forge (`<<<`/`>>>` are substituted out of
+the body), and the model is told the block is DATA and not to act on anything inside
+it — the wording `partner_contact` already uses for her messages. Truncated at 1200
+chars so a photo of a wall of text cannot push the caption out of attention.
+
+⚠️ **C2 HAS NO HARNESS YET — that is owed.** It was verified by hand only (a `]`-prefixed
+injection stays inside the fence, and the warning is present). Suite is 75/75, 2101,
+so nothing else broke, but this fix does not yet have a test that fails if it regresses.
+**Write that test first next session**, before touching anything else.
+
+**Still open and unfixed: M1, M2, C1** — plus every medium. See the table above and
+`review-findings.json`. M2 is the cheapest of the three (`modules/fact_outbox.py:227-235`,
+stop counting an attempt the desk merely HELD, and spill dead-letters to a file instead
+of dropping them).
+
 ### ⏭ WHERE TO RESTART
 
 `REVIEW_PLAN.md` has the batching rules and the area order. **Batch 2 (memory + comms)
