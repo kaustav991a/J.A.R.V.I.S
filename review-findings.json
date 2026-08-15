@@ -200,11 +200,12 @@
       "file": "action_engine.py:2508",
       "root_cause": "C",
       "severity": "medium",
-      "verified": false,
-      "status": "OPEN",
+      "verified": true,
+      "status": "FIXED",
       "reachable_by": "close_app with any model-supplied name; exe_targets falls back to f'{app_lower.replace(\" \",\"\")}.exe' for anything unknown",
       "failure": "close_app('python') resolves to python.exe and kills the JARVIS backend itself mid-action -- no shutdown, pending confirmations and working memory lost. The only guard is a one-entry blocklist for explorer.exe. terminal_agent keeps the real list (lsass, csrss, wininit, winlogon, services, smss, svchost) and DELEGATES here, documenting 'no bypass possible' -- but the direct close_app action never passes that list. Blocked today only by AccessDenied on a non-elevated run; a packaged app launched elevated for GUI automation loses even that.",
-      "fix": "import terminal_agent._PROTECTED_PROCESSES plus the current process image name and refuse them in _close_app, so the list lives at the sink it is delegated to"
+      "fix": "import terminal_agent._PROTECTED_PROCESSES plus the current process image name and refuse them in _close_app, so the list lives at the sink it is delegated to",
+      "commit": "4d8c765"
     },
     {
       "id": "R15",
@@ -212,11 +213,12 @@
       "file": "action_engine.py:1189",
       "root_cause": "D",
       "severity": "low",
-      "verified": false,
-      "status": "OPEN",
+      "verified": true,
+      "status": "FIXED",
       "reachable_by": "send_email, still in the one-shot catalogue (brain.py:182/388) as the legacy path",
       "failure": "'boss@x.com | Q3 invoice | Please pay by Friday | thanks, Kaustav' splits into four parts; parts[2] is used as the whole body, so everything after the third pipe is dropped silently -- after the owner approved the full string at the CONFIRM prompt. The corrected twin _gmail_send uses split('|', 2).",
-      "fix": "target.split('|', 2), matching _gmail_send"
+      "fix": "target.split('|', 2), matching _gmail_send",
+      "commit": "4d8c765"
     },
     {
       "id": "R16",
@@ -224,23 +226,12 @@
       "file": "action_engine.py:2760",
       "root_cause": "D",
       "severity": "low",
-      "verified": false,
-      "status": "OPEN",
+      "verified": true,
+      "status": "FIXED",
       "reachable_by": "remember_fact from the one-shot catalogue, contract target='Category: fact details' (the agent-tool path is safe -- _remember_target always prepends a category)",
       "failure": "'router login: admin/hunter2' -> category 'router login' fails the valid_cats test and falls back to 'Fact', but the fact STORED is only 'admin/hunter2'. The subject is gone from long-term memory and memory_recall later reads back a value with no referent. The code detects the mis-parse and still commits the truncated half.",
-      "fix": "when the prefix is not a valid category, store the ORIGINAL target as the fact rather than the post-split remainder"
-    },
-    {
-      "id": "R17",
-      "title": "a HUD reload permanently orphans the wake-word loop",
-      "file": "main.py:2556",
-      "root_cause": "E",
-      "severity": "medium",
-      "verified": false,
-      "status": "OPEN",
-      "reachable_by": "reloading the HUD while JARVIS is idle -- i.e. parked in wait_for_wake_word, where the owner connection spends nearly all its time",
-      "failure": "the old connection holds _VOICE_LOOP_OWNER and is blocked in the mic thread, so its finally: _release_voice_loop cannot run. The new connection makes ONE claim attempt, loses it, and parks in a view-only receive() loop with no re-claim path -- after telling the user 'SYSTEM OFFLINE // STANDBY FOR VOICE INPUT'. After a reload the first wake word is swallowed by the dying loop and every one after is heard by nobody. The code comment asserts the opposite.",
-      "fix": "make the view-only branch re-attempt the claim, and make the claim evict a socket whose client_state is no longer CONNECTED"
+      "fix": "when the prefix is not a valid category, store the ORIGINAL target as the fact rather than the post-split remainder",
+      "commit": "4d8c765"
     }
   ],
   "verified_sound": [
@@ -263,8 +254,20 @@
     "web_agent._init_browser short-circuits on self._playwright alone, so a page/browser that dies mid-session leaves non-None dead handles and every web_* call errors until web_close is called."
   ],
   "summary": {
-    "total": 17,
-    "fixed": 11,
-    "open": 6
-  }
+    "total": 16,
+    "fixed": 14,
+    "open": 2
+  },
+  "still_open": [
+    {
+      "id": "R5",
+      "severity": "medium",
+      "title": "One HUD reload permanently orphans the wake-word loop"
+    },
+    {
+      "id": "R13",
+      "severity": "medium",
+      "title": "the close_app retry closes every window whose TITLE contains the target"
+    }
+  ]
 }

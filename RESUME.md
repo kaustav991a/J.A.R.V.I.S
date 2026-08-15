@@ -6,7 +6,93 @@
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
 > bookmark, not a plan.
 
-## ▶▶ 2026-08-16 — START HERE. Six commits, UNPUSHED. Suite 73/73, 1967 checks.
+## ▶▶▶ 2026-08-16 (session 2) — REVIEW BATCH 1 DONE, 15 OF 16 FIXED. Suite 75/75, 2101.
+
+**Read `review-findings.json` and `REVIEW_PLAN.md` first — they are the working state.**
+
+Batch 1 covered the three highest-blast-radius areas: `action_engine.py`, `main.py`,
+and the four I/O agents (~6 800 lines). **16 findings, 15 fixed**, each with a harness
+that drives the real code. Commits `67a0ad6` · `9b12df6` · `4d8c765` · `a495807`.
+
+### The four that mattered most
+
+| # | What |
+|---|---|
+| **R1** | a desk "yes" approved **whatever was pending process-wide** |
+| **R2** | `/api/backdoor` answered `{"status":"success"}` **out of its own except block** |
+| **R3** | the workspace sandbox contained **the code that does the enforcing** |
+| **R11** | the GUI save path **never asked the protected-file list** |
+
+**R1 is the one to remember.** The approval intercept armed on
+`governance_manager.has_pending()` — true whenever ANY action is pending anywhere —
+and then called `consume_pending(None)`, which governance resolves as *"the most
+recently pended action, whoever staged it"*. The comment above it claimed the
+protection it did not have: *"so this 'yes' can never run an action pended by a remote
+channel."* **The fallback was exactly what made it possible.** Telegram or the
+overnight worker stages a CONFIRM action, the owner says "yes" about something else,
+and that remote payload runs with `governance_bypass=True`. Both paths now arm on the
+desk's own pinned id and resolve by id only; `governance_manager.pending_id()` is new
+so a desk prompt cannot become unapprovable.
+
+**R3's shape is worth carrying:** `workspace_patch` is CONFIRM-tier and the workspace
+roots include this repo, so an approved edit could rewrite `governance.json`,
+`url_safety.py` or `shell_safety.py`. New `ENFORCEMENT_FILES` +
+`enforcement_write_problem`, deliberately **separate** from `PROTECTED_FILES` — those
+are secrets and refuse reading too; these are in git and refuse **writing only**, so
+JARVIS explaining its own rules stays a feature.
+
+### The eleven others, in one line each
+
+`R4` lockdown said "all external ports have been secured" and secured nothing ·
+`R6` `/api/autopilot` wrote into a caller-chosen absolute directory with no governance ·
+`R7` the **body-less** POST routes (`/api/listen`, both cancels) were callable by any
+web page — a CORS *simple request* runs the handler and only withholds the reply, so a
+page could open the desk microphone · `R8` `patch_file` round-tripped through a lossy
+decode, silently rewriting every non-UTF-8 byte while the diff could not show it ·
+`R9` `create_note` destroyed an existing note and reported it created · `R10` a model
+id went straight into a CSS selector · `R12` `sleep_protocol` returned a sentinel
+nobody consumes, narrated as success · `R13` the `close_app` retry closed **every
+window whose title contained the target** — your whole Chrome window for a Notion tab ·
+`R14` `close_app` had no protected-process list, so `close_app("python")` killed the
+backend itself · `R15` `_send_email` truncated the body at the next pipe **after** the
+owner approved the whole string · `R16` `_remember_fact` stored half of any fact
+containing a colon.
+
+### ⏳ STILL OPEN — one finding
+
+**R5 — a HUD reload permanently orphans the wake-word loop.** The old connection holds
+`_VOICE_LOOP_OWNER` blocked inside the mic thread, so its `finally` cannot run; the new
+one makes a single claim attempt, loses, and parks view-only — after telling the user
+`SYSTEM OFFLINE // STANDBY FOR VOICE INPUT`. **After a reload the mic is dead and the
+HUD says it is listening.** Fix: re-attempt the claim, and evict an owner whose
+`client_state` is no longer CONNECTED. Deliberately not rushed at the end of a budget.
+
+### 🔁 THE PATTERN, NOW FIVE DEEP — this is the useful part
+
+Findings 6 · 10 · 14 · 17 · 18 · R11 are **one road found six times**: writing the key
+files, reading them through a URL, through every other spelling of localhost, through
+the one-shot door, through a file send, through the Save As dialog. R1, R3, R13, R14
+and R17 are a second: **a rule enforced on one caller's side is a rule the other caller
+does not have.**
+
+> Before fixing any protected-resource defect, ask: **which OTHER verb reaches this
+> resource, and which other door reaches that verb?** Then fix it at the SINK —
+> `shell_safety.py`, `url_safety.py`, `local_origin.py` are what that looks like.
+
+### ⏭ WHERE TO RESTART
+
+`REVIEW_PLAN.md` has the batching rules and the area order. **Batch 2 (memory + comms)
+was launched and may not have reported — check `review-findings.json` for whether its
+findings landed.** Then: `agent-support`, `agent-runner`, `brain`, `perception`,
+`frontend`. **Run 2–3 areas at a time, never ten** — the first attempt at ten returned
+nothing and cost 38% of a quota.
+
+⚠️ **`run_evals.py` went into `9b12df6` by accident** (a `git add -A` swept it up). It
+is the change that excludes six follow-up prompts from the live eval score, raising the
+reported number by dropping 15% of the set. **Still owed a decision.** Back it out with
+`git restore --source=9b12df6~1 -- jarvis-backend/run_evals.py`.
+
+## ▶▶ 2026-08-16 — Six commits, UNPUSHED. Suite 73/73, 1967 checks.
 
 **Packaging was started and then STOPPED, on Kaustav's call, and he was right.**
 The review is not finished and the §7 gate has run 15 of 192 rows, so an installer
