@@ -361,6 +361,122 @@ def test_a_fact_containing_a_colon_is_stored_whole():
         memory_manager.add_memory = original
 
 
+def test_the_close_app_fallback_will_not_shut_your_browser():
+    """Review finding R13. `close_app("notion")` finds no notion.exe because it
+    is a browser TAB, trips a failure phrase, and the title fallback fires. It
+    used to WM_CLOSE every window whose title merely CONTAINED "notion" — i.e.
+    the Chrome window titled "Roadmap - Notion - Google Chrome", taking every
+    other tab with it. That is exactly what the primary path refuses to do, in
+    as many words. And it reported "Retry successful."
+
+    Windows-only API, so this drives the real method with the ctypes surface
+    faked: the property under test is WHICH titles are selected, not that
+    PostMessage works.
+    """
+    import types
+    import action_engine as ae
+
+    WINDOWS = [
+        "Roadmap - Notion - Google Chrome",     # a tab: must survive
+        "Notion",                                # the real desktop app
+        "Notionally Speaking - Notepad",         # substring, not a token
+        "Inbox - Microsoft Edge",
+    ]
+    closed = []
+
+    class _FakeUser32:
+        # 1-BASED handles on purpose: ctypes converts HWND(0) to None, so a
+        # zero handle is silently skipped inside the callback — which once made
+        # this very test pass for the wrong reason.
+        @staticmethod
+        def EnumWindows(cb, _l):
+            for i, _ in enumerate(WINDOWS, start=1):
+                cb(i, 0)
+            return True
+
+        @staticmethod
+        def GetWindowTextLengthW(hwnd):
+            return len(WINDOWS[hwnd - 1])
+
+        @staticmethod
+        def GetWindowTextW(hwnd, buff, _n):
+            buff.value = WINDOWS[hwnd - 1]
+            return len(WINDOWS[hwnd - 1])
+
+        @staticmethod
+        def PostMessageW(hwnd, *_a):
+            closed.append(WINDOWS[hwnd - 1])
+            return True
+
+    import ctypes
+    real_windll = ctypes.windll
+    ctypes.windll = types.SimpleNamespace(user32=_FakeUser32)
+    try:
+        engine = ae.ActionEngine.__new__(ae.ActionEngine)
+        out = engine._attempt_fallback("close_app", "notion", "not found")
+    finally:
+        ctypes.windll = real_windll
+
+    check("Roadmap - Notion - Google Chrome" not in closed,
+          f"the browser window was NOT closed; closed={closed}")
+    check("Notionally Speaking - Notepad" not in closed,
+          "a substring match is not enough — whole tokens only")
+    check("Notion" in closed, "the real desktop app WAS closed")
+    check(out is not None and "Retry successful" in out,
+          f"and it reports honestly: {str(out)[:60]}")
+
+
+def test_a_browser_only_target_says_so_instead_of_claiming_success():
+    import types
+    import action_engine as ae
+
+    WINDOWS = ["Roadmap - Notion - Google Chrome"]
+    closed = []
+
+    class _FakeUser32:
+        # 1-based: HWND(0) becomes None in the callback. See the note above.
+        @staticmethod
+        def EnumWindows(cb, _l):
+            cb(1, 0)
+            return True
+
+        @staticmethod
+        def GetWindowTextLengthW(hwnd):
+            return len(WINDOWS[hwnd - 1])
+
+        @staticmethod
+        def GetWindowTextW(hwnd, buff, _n):
+            buff.value = WINDOWS[hwnd - 1]
+            return len(WINDOWS[hwnd - 1])
+
+        @staticmethod
+        def PostMessageW(hwnd, *_a):
+            closed.append(WINDOWS[hwnd - 1])
+            return True
+
+    import ctypes
+    real_windll = ctypes.windll
+    ctypes.windll = types.SimpleNamespace(user32=_FakeUser32)
+    try:
+        engine = ae.ActionEngine.__new__(ae.ActionEngine)
+        out = engine._attempt_fallback("close_app", "notion", "not found")
+    finally:
+        ctypes.windll = real_windll
+
+    check(closed == [], f"nothing was closed; got {closed}")
+    check(out is not None and "browser" in out.lower(),
+          f"and it explains why rather than failing mutely: {str(out)[:70]}")
+    check("Retry successful" not in str(out), "...and does not claim success")
+
+
+def test_a_one_character_target_cannot_sweep_the_desktop():
+    import action_engine as ae
+
+    engine = ae.ActionEngine.__new__(ae.ActionEngine)
+    check(engine._attempt_fallback("close_app", "x", "not found") is None,
+          "a one-character target is refused outright")
+
+
 TESTS = sorted(
     (fn for name, fn in list(globals().items())
      if name.startswith("test_") and callable(fn)),

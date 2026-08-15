@@ -1046,21 +1046,70 @@ class ActionEngine:
                 WM_CLOSE = 0x0010
                 closed_count = 0
                 
+                # ── Review finding R13 ────────────────────────────────────────
+                # This used to close EVERY top-level window whose title merely
+                # CONTAINED the target — an unbounded substring, no minimum
+                # length, no cap.
+                #
+                # `close_app("notion")` is the case: not in _WEB_ONLY_SERVICES,
+                # no notion.exe running because it is a browser tab, so the
+                # primary path fails with a _FAILURE_PHRASES hit and this
+                # fallback fires. It then WM_CLOSEs the Chrome window titled
+                # "Roadmap – Notion – Google Chrome", taking every other tab with
+                # it — which is precisely what the primary path refuses to do,
+                # in as many words: "attempting to do so would risk terminating
+                # the user's entire Chrome/Edge session". And it reported
+                # "Retry successful."
+                #
+                # Three limits, each closing one half of that:
+                #   1. never close a BROWSER window — the whole point of the
+                #      refusal upstream;
+                #   2. match a whole title TOKEN, not a substring, and require a
+                #      real word (2+ chars), so "vs" cannot sweep the desktop;
+                #   3. cap the count — a fallback that closes eleven windows has
+                #      misunderstood the request, whatever the titles say.
+                _BROWSER_HINTS = ("google chrome", "microsoft edge", "mozilla firefox",
+                                  "opera", "brave", "vivaldi", "chromium")
+                _MAX_FALLBACK_CLOSES = 3
+                _needle = str(target).strip().lower()
+                _skipped_browser = False
+
+                if len(_needle) < 2:
+                    return None
+
                 @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
                 def _enum_callback(hwnd, lParam):
-                    nonlocal closed_count
+                    nonlocal closed_count, _skipped_browser
+                    if closed_count >= _MAX_FALLBACK_CLOSES:
+                        return True
                     length = GetWindowTextLength(hwnd)
                     if length > 0:
                         buff = ctypes.create_unicode_buffer(length + 1)
                         GetWindowText(hwnd, buff, length + 1)
-                        if target.lower() in buff.value.lower():
+                        title = buff.value.lower()
+                        if any(b in title for b in _BROWSER_HINTS):
+                            # A tab is not an application. Closing the window
+                            # would take every other tab with it.
+                            if _needle in title:
+                                _skipped_browser = True
+                            return True
+                        # Whole-token match: "notion" matches "Notion — Notes",
+                        # not "Notionally".
+                        tokens = re.split(r"[^a-z0-9]+", title)
+                        if _needle in tokens:
                             PostMessage(hwnd, WM_CLOSE, 0, 0)
                             closed_count += 1
                     return True
-                
+
                 EnumWindows(_enum_callback, 0)
                 if closed_count > 0:
                     return f"Retry successful. Closed {closed_count} window(s) matching '{target}' by title."
+                if _skipped_browser:
+                    return (f"'{target}' is open in your browser rather than as an "
+                            f"application, Sir. I haven't closed it — that would "
+                            f"have shut the whole browser window and every other "
+                            f"tab in it. Close the tab yourself, or tell me to "
+                            f"close the browser.")
             except Exception:
                 pass
         
