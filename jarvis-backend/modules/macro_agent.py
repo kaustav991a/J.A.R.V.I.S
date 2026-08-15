@@ -173,8 +173,19 @@ class MacroAgent:
                 f"Available macros: {known}."
             )
 
-        # Temporarily override dev URL if provided
+        # Temporarily override dev URL if provided — but only if it is a WEB url.
+        # This override reaches `_open_url`, i.e. `start "" <url>`, which hands a
+        # `file://` or any other scheme to whatever program Windows has
+        # registered for it. Same rule and same function as `web_browse` and
+        # `open_link`; see modules/url_safety.py (findings 10, 14, 17).
         if url_override:
+            from modules import url_safety
+            refusal = url_safety.refuse_or_none(url_override,
+                                                what="that page for the macro")
+            if refusal:
+                print(f"[MACRO AGENT] url override refused: {url_override[:60]}",
+                      flush=True)
+                return refusal
             self._dev_url = url_override
 
         try:

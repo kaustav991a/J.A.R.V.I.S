@@ -212,6 +212,83 @@ def test_the_precondition_is_actually_attached_to_all_three_tools():
 # `run_harnesses.py` had this same bug at the suite level and was converted to
 # discovery for the same reason. Definition order is preserved so the output
 # still reads top-to-bottom with the file.
+def test_the_engine_refuses_too_not_only_the_agent_layer():
+    """Finding 17, 2026-08-16 — the precondition guarded ONE of two doors.
+
+    `web_browse` and `open_link` are in the ONE-SHOT catalogue as well
+    (`action_router.py`, `brain.py`), and that path — the ordinary
+    conversational one — never reaches a tool-layer precondition. So the hole
+    finding 10 closed was still open through the door nobody had walked through.
+
+    `_web_browse` is the bad one: Playwright RENDERS what it is given and the
+    page text comes back as the action result, which the model then reads.
+
+    Driven against the real methods with a WebAgent that records whether it was
+    ever reached — asserting on the refusal string alone would pass even if the
+    fetch had already happened.
+    """
+    import asyncio
+    import action_engine as ae
+
+    engine = ae.ActionEngine.__new__(ae.ActionEngine)   # no __init__: no hardware
+
+    reached = []
+
+    class SpyWeb:
+        async def browse(self, url):
+            reached.append(url)
+            return "PAGE CONTENTS"
+
+    engine.web_agent = SpyWeb()
+
+    for bad in ("file:///F:/work/JARVIS-Project/jarvis-backend/.env",
+                "http://127.0.0.1:8000/api/agent/confirm",
+                "http://2130706433:8000/api/agent/confirm"):
+        out = asyncio.run(engine._web_browse(bad))
+        check("won't open" in out, f"engine refused web_browse: {bad[:40]}")
+    check(reached == [], f"the browser must never have been driven; got {reached}")
+
+    out = asyncio.run(engine._web_browse("https://example.com"))
+    check(out == "PAGE CONTENTS" and reached == ["https://example.com"],
+          "an ordinary page still goes through")
+
+
+def test_open_link_refuses_at_the_engine():
+    import action_engine as ae
+
+    engine = ae.ActionEngine.__new__(ae.ActionEngine)
+    opened = []
+    original = ae.webbrowser.open
+    ae.webbrowser.open = lambda u: opened.append(u)
+    try:
+        for bad in ("file:///C:/secret.txt", "http://localhost:8000/api/telemetry",
+                    "javascript:alert(1)"):
+            out = engine._open_link(bad)
+            check("won't open" in out, f"engine refused open_link: {bad[:34]}")
+        check(opened == [], f"nothing must have reached the browser; got {opened}")
+        engine._open_link("example.com")
+        check(opened == ["https://example.com"],
+              "a bare domain still opens, with https added as documented")
+    finally:
+        ae.webbrowser.open = original
+
+
+def test_the_macro_url_override_is_refused_at_the_macro():
+    """`os_macro`'s "deep_work:<url>" override reaches `start "" <url>`, which
+    hands any scheme to whatever Windows has registered for it."""
+    from modules import macro_agent as ma
+
+    agent = ma.MacroAgent.__new__(ma.MacroAgent)
+    agent._dev_url = ma.MacroAgent.DEFAULT_DEV_URL
+    agent.MACRO_REGISTRY = {"deep_work": lambda: "ran"}
+
+    out = agent.run("deep_work:file:///c:/secret.txt")
+    check("won't open" in out, "macro refused a file:// override")
+    check(agent._dev_url == ma.MacroAgent.DEFAULT_DEV_URL,
+          "...and the override never stuck")
+    check(agent.run("deep_work") == "ran", "an ordinary macro still runs")
+
+
 TESTS = sorted(
     (fn for name, fn in list(globals().items())
      if name.startswith("test_") and callable(fn)),

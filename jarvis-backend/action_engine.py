@@ -37,6 +37,10 @@ from modules.tv_agent import TVAgent
 # Phase 8.2 – OS Macro Engine
 from modules.macro_agent import MacroAgent
 from modules.web_agent import WebAgent
+# Stdlib only, no circular risk — and it is imported at module level rather than
+# at the call sites (the way `shell_safety` is) precisely because a guard that
+# has to be remembered at each site is the thing findings 10 and 17 were about.
+from modules import url_safety
 
 # --- TV Control & Network Imports ---
 from zeroconf import Zeroconf, ServiceBrowser, ServiceStateChange
@@ -2562,6 +2566,13 @@ class ActionEngine:
             return f"Deletion protocol failed: {e}"
 
     def _open_link(self, url: str) -> str:
+        # Enforced HERE, at the sink, not only in the agent layer's precondition.
+        # `open_link` is in the one-shot catalogue too, and that path never
+        # reaches a tool precondition — see modules/url_safety.py.
+        refusal = url_safety.refuse_or_none(url, what="that address")
+        if refusal:
+            print(f"[ACTION ENGINE] open_link refused: {url[:60]}", flush=True)
+            return refusal
         print(f"[ACTION ENGINE] Navigating to: {url}")
         try:
             if not url.startswith("http"):
@@ -2572,7 +2583,19 @@ class ActionEngine:
             return f"Browser glitch: {e}"
 
     async def _web_browse(self, target: str) -> str:
-        """Agentic web browsing via Playwright."""
+        """Agentic web browsing via Playwright.
+
+        The URL check is at this sink deliberately. This is the worst of the
+        three: Playwright RENDERS whatever it is given and the page text comes
+        back as the action result, so a `file://` here is a read of any file on
+        the disk — around `workspace_read`, and around the protected-file list,
+        which guards writing and deleting but says nothing about reading.
+        """
+        refusal = url_safety.refuse_or_none(target, what="that page")
+        if refusal:
+            print(f"[ACTION ENGINE] web_browse refused: {str(target)[:60]}",
+                  flush=True)
+            return refusal
         return await self.web_agent.browse(target)
 
     def _tavily_search(self, query: str) -> str:
