@@ -147,9 +147,14 @@ def report(db_path: Path) -> dict:
 
 
 def take_backup() -> bool:
-    print("taking a fresh backup first...\n")
+    """Snapshot the DATABASE before touching it — see migrate_memory_encryption.
+
+    `--no-secrets`, because without it this is the line that put a plaintext
+    `.env` into JARVIS-BACKUPS on every migration.
+    """
+    print("taking a fresh backup first (secrets excluded)...\n")
     proc = subprocess.run(
-        [sys.executable, str(BACKEND_DIR / "backup_memory.py")],
+        [sys.executable, str(BACKEND_DIR / "backup_memory.py"), "--no-secrets"],
         cwd=BACKEND_DIR, text=True,
     )
     return proc.returncode == 0

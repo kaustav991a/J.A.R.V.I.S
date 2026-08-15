@@ -373,11 +373,84 @@ def test_the_harness_wrote_only_inside_its_temp_directory():
         assert path.parent == _TMP, f"{path.name} is not redirected into the temp dir"
 
 
+# ── pre-Electron review, 2026-08-15 ──────────────────────────────────────────
+
+def test_a_corrupt_key_file_reads_as_LOCKED_not_as_a_crash():
+    """A key that cannot be parsed is the same situation as one that is missing.
+
+    `_read_json` raised MemoryLockedError for a missing file and let
+    json.JSONDecodeError escape for a truncated one — so a caller catching
+    "keystore unavailable" got an unhandled traceback on the voice path instead
+    of an honest refusal. `_write_private` writes atomically precisely because
+    half-written key files are possible.
+    """
+    bad = _TMP / "corrupt_key.json"
+    bad.write_text('{"wrap": "abc', encoding="utf-8")     # truncated JSON
+    try:
+        mc._read_json(bad)
+        assert False, "a corrupt key file must not read successfully"
+    except mc.MemoryLockedError as exc:
+        assert "unreadable" in str(exc)
+    finally:
+        bad.unlink(missing_ok=True)
+
+
+def test_a_missing_key_file_still_reads_as_LOCKED():
+    try:
+        mc._read_json(_TMP / "definitely_absent.json")
+        assert False, "a missing key file must raise"
+    except mc.MemoryLockedError as exc:
+        assert "missing" in str(exc)
+
+
+def test_a_valid_key_file_still_parses():
+    good = _TMP / "good_key.json"
+    good.write_text('{"wrap": "abc"}', encoding="utf-8")
+    try:
+        assert mc._read_json(good) == {"wrap": "abc"}
+    finally:
+        good.unlink(missing_ok=True)
+
+
+def test_every_automated_backup_excludes_the_plaintext_env():
+    """The `.env`-in-backups leak was recurring because nothing passed the flag.
+
+    `backup_memory.py` has had `--no-secrets` all along. The three scripts that
+    take a MANDATORY snapshot before rewriting the live store never passed it, so
+    every migration minted another plaintext copy of every API key — which is why
+    shredding them never stayed done.
+
+    A backup run BY HAND still includes secrets. That case is deliberate and is
+    deliberately not covered here.
+    """
+    import ast
+    import pathlib
+    here = pathlib.Path(__file__).resolve().parent
+    for script in ("migrate_memory_encryption.py", "migrate_memory_source.py",
+                   "retire_jarvis_memory_db.py"):
+        tree = ast.parse((here / script).read_text(encoding="utf-8", errors="replace"))
+        calls = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            first = node.args[0]
+            if not isinstance(first, ast.List):
+                continue
+            parts = [ast.unparse(e) for e in first.elts]
+            if any("backup_memory.py" in p for p in parts):
+                calls.append(parts)
+        assert calls, f"{script}: no backup_memory.py invocation found"
+        for parts in calls:
+            assert any("--no-secrets" in p for p in parts), \
+                f"{script}: backup taken WITHOUT --no-secrets -> plaintext .env copied"
+
+
 if __name__ == "__main__":
     import traceback
 
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
+
     failed = 0
     try:
         for name, fn in tests:

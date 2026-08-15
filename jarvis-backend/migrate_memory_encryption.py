@@ -111,9 +111,19 @@ def report(db_path: Path) -> dict:
 
 
 def take_backup() -> bool:
-    print("taking a fresh backup first...\n")
+    """Snapshot the DATABASE before touching it — not the credentials.
+
+    `--no-secrets` matters here. Without it every migration wrote a fresh
+    plaintext `.env` into JARVIS-BACKUPS, which is how six copies of every API
+    key came to exist: shredding them is a chore that regenerates itself on the
+    next migration. This snapshot exists to protect the store, and the live
+    `.env` is untouched either way, so skipping it costs nothing that a restore
+    actually needs. A backup run BY HAND still includes secrets — that case is
+    deliberate and is left alone.
+    """
+    print("taking a fresh backup first (secrets excluded)...\n")
     proc = subprocess.run(
-        [sys.executable, str(BACKEND_DIR / "backup_memory.py")],
+        [sys.executable, str(BACKEND_DIR / "backup_memory.py"), "--no-secrets"],
         cwd=BACKEND_DIR, text=True,
     )
     return proc.returncode == 0

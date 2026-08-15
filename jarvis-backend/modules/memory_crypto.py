@@ -239,7 +239,16 @@ def _write_private(path: Path, payload: dict) -> None:
 def _read_json(path: Path) -> dict:
     if not path.exists():
         raise MemoryLockedError(f"key file missing: {path.name}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    # A CORRUPT key file is the same situation as a missing one — the key cannot
+    # be had — so it must arrive as the same exception. It did not: callers catch
+    # MemoryLockedError to mean "keystore unavailable" and a truncated file threw
+    # JSONDecodeError straight past them, turning an honest refusal into an
+    # unhandled traceback on the voice path. `_write_private` writes atomically
+    # precisely because half-written files are possible.
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise MemoryLockedError(f"key file unreadable: {path.name} ({exc})") from exc
 
 
 # ── the ceremony ────────────────────────────────────────────────────────────

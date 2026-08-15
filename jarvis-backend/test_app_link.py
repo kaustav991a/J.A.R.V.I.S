@@ -683,6 +683,86 @@ def test_push_registration_is_gated_by_the_pairing_token():
                        headers=good).status_code == 400
 
 
+# ── Expo's answer is per-token, and it used to be thrown away ────────────────
+# Pre-Electron review, 2026-08-15. `_push_all` printed 400 characters of Expo's
+# reply and moved on. Expo returns HTTP 200 even when it accepted nothing — the
+# verdict is in `data[i].status`, in the order the tokens were sent — so a push
+# that reached nobody was logged exactly like one that worked. It matters most
+# on the one path that cannot afford it: the desk-watch alert is a 30-second
+# window on whether the machine locks itself.
+
+def _push_replying(tickets):
+    """Stub Expo, returning the given per-token tickets."""
+    def _fake(tokens, title, body, data, channel="general"):
+        return {"data": tickets}
+    return _fake
+
+
+def _run_push(tickets, targets):
+    saved = []
+    orig_expo, orig_save = cg._expo_push_blocking, cg._save_push_targets
+    cg._expo_push_blocking = _push_replying(tickets)
+    cg._save_push_targets = lambda: saved.append(dict(cg._push_targets))
+    cg._push_targets.clear()
+    cg._push_targets.update(targets)
+    cg._last_push_at = 0.0
+    try:
+        asyncio.run(cg._push_all("t", "b", force=True))
+    finally:
+        cg._expo_push_blocking, cg._save_push_targets = orig_expo, orig_save
+    return saved
+
+
+def test_an_unregistered_push_target_is_pruned_not_pushed_forever():
+    # A reinstall issues a new Expo token and the old one answers
+    # DeviceNotRegistered for the rest of time. Unpruned, the registry grows on
+    # every reinstall and each push pays for an address that cannot answer.
+    saved = _run_push(
+        [{"status": "ok", "id": "1"},
+         {"status": "error", "details": {"error": "DeviceNotRegistered"}}],
+        {"ExponentPushToken[live]": "android",
+         "ExponentPushToken[dead]": "android"},
+    )
+    assert "ExponentPushToken[dead]" not in cg._push_targets
+    assert "ExponentPushToken[live]" in cg._push_targets
+    assert saved, "the pruned registry must be persisted, not just held in memory"
+
+
+def test_a_transient_push_error_does_not_prune_the_target():
+    # Only DeviceNotRegistered is permanent. A rate-limit or a server fault must
+    # not cost the address — that would turn a bad minute into a silent phone.
+    _run_push(
+        [{"status": "error", "details": {"error": "MessageRateExceeded"}}],
+        {"ExponentPushToken[live]": "android"},
+    )
+    assert "ExponentPushToken[live]" in cg._push_targets
+
+
+def test_an_unreadable_expo_reply_prunes_nothing():
+    # Unparseable is not a verdict. Pruning on it would delete every target the
+    # first time Expo returned an error page.
+    orig = cg._expo_push_blocking
+    cg._expo_push_blocking = lambda *a, **k: {"_unparsed": "<html>502</html>"}
+    cg._push_targets.clear()
+    cg._push_targets["ExponentPushToken[live]"] = "android"
+    cg._last_push_at = 0.0
+    try:
+        asyncio.run(cg._push_all("t", "b", force=True))
+    finally:
+        cg._expo_push_blocking = orig
+    assert "ExponentPushToken[live]" in cg._push_targets
+
+
+def test_expo_blocking_returns_a_decoded_reply_not_a_truncated_string():
+    # The truncation was the bug: 400 characters of JSON cannot be read for a
+    # per-token status, so the caller had nothing to check even if it wanted to.
+    import inspect
+    src = inspect.getsource(cg._expo_push_blocking)
+    assert "[:400]" not in src.split("_unparsed")[0], \
+        "the success path must not truncate Expo's reply"
+    assert "json.loads" in src
+
+
 if __name__ == "__main__":
     import traceback
 

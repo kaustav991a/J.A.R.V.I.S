@@ -163,7 +163,11 @@ def apply(keep_all: bool = False) -> int:
     data = report(keep_all)
 
     print("\n── backup ──────────────────────────────────────────────")
-    proc = subprocess.run([sys.executable, str(BACKEND_DIR / "backup_memory.py")],
+    # --no-secrets: this snapshot protects the STORE. Without the flag every run
+    # wrote another plaintext .env into JARVIS-BACKUPS, which is why that leak
+    # kept coming back after being shredded.
+    proc = subprocess.run([sys.executable, str(BACKEND_DIR / "backup_memory.py"),
+                           "--no-secrets"],
                           cwd=BACKEND_DIR, capture_output=True, text=True)
     if proc.returncode != 0:
         print("backup FAILED — refusing to retire. Nothing was changed.")

@@ -1535,8 +1535,15 @@ def _save_push_targets() -> None:
 
 
 def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
-                        channel: str = "general") -> str:
-    """POST one batch to Expo. Blocking on purpose — the caller threads it."""
+                        channel: str = "general") -> dict:
+    """POST one batch to Expo. Blocking on purpose — the caller threads it.
+
+    Returns the DECODED reply, not a truncated string. Expo answers HTTP 200 even
+    when it accepted nothing: the verdict is per token, in `data[i].status`, in
+    the order the tokens were sent. Reading only the status code — or printing
+    400 characters of it — reports a push that reached nobody as a push that
+    worked, which is this project's recurring failure shape.
+    """
     payload = json.dumps([
         # The channel must be one the app created at startup (`general` or
         # `desk-watch`); Android drops a notification addressed to a channel that
@@ -1550,7 +1557,13 @@ def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
         EXPO_PUSH_URL, data=payload,
         headers={"Content-Type": "application/json", "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
-        return resp.read().decode("utf-8", "replace")[:400]
+        raw = resp.read().decode("utf-8", "replace")
+    try:
+        out = json.loads(raw)
+        return out if isinstance(out, dict) else {"data": out}
+    except Exception:  # noqa: BLE001
+        # Unparseable is not "delivered" — say so rather than returning {}.
+        return {"_unparsed": raw[:400]}
 
 
 async def _push_all(title: str, body: str, data: Optional[dict] = None,
@@ -1570,13 +1583,53 @@ async def _push_all(title: str, body: str, data: Optional[dict] = None,
         print("[CLOUD] push suppressed - inside the quiet gap", flush=True)
         return
     _last_push_at = now
+    sent = list(_push_targets)
     try:
         out = await asyncio.to_thread(
-            _expo_push_blocking, list(_push_targets), title, body, data or {}, channel)
-        print(f"[CLOUD] push -> {len(_push_targets)} target(s): {out}", flush=True)
+            _expo_push_blocking, sent, title, body, data or {}, channel)
     except Exception as e:  # noqa: BLE001
         # a push that cannot be delivered must never take the desk link down
         print(f"[CLOUD] push failed: {e}", flush=True)
+        return
+
+    # Expo answers 200 with a per-token verdict, in the order the tokens went out.
+    # Read it: a token belonging to an uninstalled or replaced app comes back
+    # DeviceNotRegistered forever, and every push after that was being counted as
+    # delivered. It matters most on the one path that cannot afford it — the desk
+    # watch, whose alert is a 30-second window on whether the machine locks.
+    tickets = out.get("data") if isinstance(out, dict) else None
+    if not isinstance(tickets, list):
+        print(f"[CLOUD] push -> {len(sent)} target(s), but Expo's reply was not "
+              f"readable, so DELIVERY IS UNCONFIRMED: {out}", flush=True)
+        return
+
+    ok, dead, failed = 0, [], []
+    for token, ticket in zip(sent, tickets):
+        status = (ticket or {}).get("status") if isinstance(ticket, dict) else None
+        if status == "ok":
+            ok += 1
+            continue
+        detail = ((ticket or {}).get("details") or {}).get("error", "") \
+            if isinstance(ticket, dict) else ""
+        if detail == "DeviceNotRegistered":
+            dead.append(token)
+        else:
+            failed.append(detail or "unknown")
+    if dead:
+        # Pruned, or the registry grows by one on every reinstall and each push
+        # pays for addresses that can never answer.
+        for token in dead:
+            _push_targets.pop(token, None)
+        _save_push_targets()
+        print(f"[CLOUD] pruned {len(dead)} unregistered push target(s) - "
+              f"{len(_push_targets)} remain.", flush=True)
+    if ok:
+        print(f"[CLOUD] push delivered to {ok}/{len(sent)} target(s).", flush=True)
+    else:
+        # The loud case on purpose: nothing arrived, and the caller has no other
+        # way to find out.
+        print(f"[CLOUD] PUSH REACHED NOBODY - {len(sent)} target(s), "
+              f"{len(dead)} unregistered, errors={failed}", flush=True)
 
 
 async def _broadcast_app(payload: dict) -> None:
