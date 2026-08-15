@@ -583,17 +583,28 @@ def _call_openrouter_model(model, messages, temperature, max_tokens, stream, jso
 # answered anything. Nothing surfaced it because it only runs once Groq and
 # Gemini have both failed.
 #
-# Each id below was sent a real one-tool request today and emitted a correct
-# `tool_calls` for it. Ordering follows the rule that picked gpt-oss-120b over
-# qwen on Groq: prefer the models that returned the argument VERBATIM
-# ("notepad"), because tool arguments feed target matching and a model that
-# title-cases them ("Notepad") makes every downstream lookup fuzzier.
+# Each id below was sent real tool requests today against a six-tool shelf with
+# close neighbours (close_app vs native_app_launcher vs tv_launch_app) and had to
+# pick correctly, pass the argument through verbatim, AND call nothing when
+# nothing fitted. Measured, not assumed:
+#
+#   nemotron-3-super-120b-a12b:free   4/4   median 3.8s
+#   nemotron-nano-9b-v2:free          4/4   median 5.0s
+#   openai/gpt-oss-20b:free           4/4   median 12.8s
+#   nemotron-3.5-lightning:free       3/4   median 1.3s   <- fastest, but see below
+#
+# ORDERED BY CORRECTNESS, NOT SPEED, and that is deliberate. Lightning is three
+# times quicker and would be the obvious head of the list — it also answered
+# "shut down VS Code on the pc" with `close_app(app_name="code")`, inventing a
+# target that was never said. This leg only ever runs when Groq AND Gemini have
+# both already failed, so it is reached in a degraded state where a wrong action
+# costs more than a slow one. Latency is Groq's job; this list's job is to be right.
 OPENROUTER_TOOL_MODELS = [m.strip() for m in os.getenv(
     "OPENROUTER_TOOL_MODELS",
-    "nvidia/nemotron-3.5-lightning:free,"      # verbatim args, 1M context
-    "openai/gpt-oss-20b:free,"                 # verbatim; same family as the Groq primary
-    "nvidia/nemotron-3-super-120b-a12b:free,"  # verbatim, stronger, 262k
-    "nvidia/nemotron-nano-9b-v2:free",         # the one survivor of the old list
+    "nvidia/nemotron-3-super-120b-a12b:free,"  # 4/4, 262k context
+    "nvidia/nemotron-nano-9b-v2:free,"         # 4/4, the one survivor of the old list
+    "openai/gpt-oss-20b:free,"                 # 4/4, different vendor, familiar family
+    "nvidia/nemotron-3.5-lightning:free",      # 3/4 but 1.3s — a fast last resort
 ).split(",") if m.strip()]
 
 
