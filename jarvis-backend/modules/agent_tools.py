@@ -654,10 +654,91 @@ def _macro_target(args: dict) -> str:
 # never looks at the argument. And since §6.8 the argument can come from a page
 # the model was told to read.
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
-_BLOCKED_HOST_PREFIXES = (
-    "localhost", "127.", "0.0.0.0", "::1", "[::1]",
-    "10.", "192.168.", "169.254.",          # private + link-local (cloud metadata)
-)
+
+#: Host NAMES that mean this machine. Names only — every numeric spelling is
+#: handled by `_host_address` below, which is the half a prefix list gets wrong.
+_LOCAL_HOST_NAMES = ("localhost",)
+_LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".home.arpa")
+
+#: How long a DNS lookup may take before the guard gives up on it. Short on
+#: purpose: this runs inside the authorizer, ahead of every `web_browse`, and a
+#: stalled resolver must not stall the agent loop.
+_DNS_TIMEOUT_S = 2.0
+
+
+def _host_address(host: str):
+    """The IP a host literally IS, in ANY spelling. None if it is a name.
+
+    THIS is the function the original prefix list stood in for, and the reason
+    it had to be replaced: `startswith("127.")` only recognises ONE way of
+    writing the loopback address. All of these are the same machine, and none of
+    them start with "127.":
+
+        http://2130706433/     decimal          http://0x7f000001/   hex
+        http://0177.0.0.1/     octal            http://0/            unspecified
+        http://[::ffff:127.0.0.1]/  v4-mapped v6
+
+    `inet_aton` is what actually parses the packed forms — the same parser the
+    socket layer uses when it connects, which is the point: the guard has to
+    read the address the way the connection will, not the way it is spelled.
+    """
+    import ipaddress
+    import socket
+
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    try:
+        return ipaddress.ip_address(socket.inet_ntoa(socket.inet_aton(host)))
+    except (OSError, ValueError):
+        return None
+
+
+def _is_local_address(ip) -> bool:
+    """Does this address point at this machine, this network, or nowhere public?"""
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:          # ::ffff:127.0.0.1 is loopback; ipaddress says no
+        ip = mapped
+    return bool(ip.is_loopback or ip.is_private or ip.is_link_local
+                or ip.is_reserved or ip.is_unspecified or ip.is_multicast)
+
+
+def _resolves_locally(host: str) -> bool:
+    """Does this NAME resolve to a local address?
+
+    The literal check above cannot see `localtest.me`, `127.0.0.1.nip.io` or any
+    other public name whose A record is 127.0.0.1 — a free redirect back to the
+    desk's unauthenticated API. So the name is resolved once, in a worker thread
+    under a hard timeout.
+
+    A lookup that fails or times out returns False, and that is not fail-open: a
+    name this machine cannot resolve is a name the fetch cannot reach either.
+    """
+    import concurrent.futures
+    import socket
+
+    def lookup():
+        return socket.getaddrinfo(host, None)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            infos = pool.submit(lookup).result(timeout=_DNS_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — timeout, NXDOMAIN, no network
+        return False
+    import ipaddress
+    for info in infos:
+        try:
+            if _is_local_address(ipaddress.ip_address(info[4][0])):
+                return True
+        except (ValueError, IndexError):
+            continue
+    return False
+
+
+_LOCAL_ADDRESS_REFUSAL = (
+    "That address is on this machine or this network, not the web. "
+    "I don't fetch those — ask me directly for what you need instead.")
 
 
 def _url_problem(raw: Any) -> str | None:
@@ -679,21 +760,24 @@ def _url_problem(raw: Any) -> str | None:
         return (f"I only open http and https addresses, and that one is "
                 f"'{scheme or 'no scheme'}'. If you need a file from the disk, "
                 "use `workspace_read` — it is the tool that is allowed to.")
-    host = (parsed.hostname or "").lower()
+    try:
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        # urlparse defers malformed-IPv6 errors to .hostname
+        return f"'{text[:60]}' is not a URL I can parse."
     if not host:
         return "That URL has no host."
-    if any(host == p.rstrip(".") or host.startswith(p) for p in _BLOCKED_HOST_PREFIXES):
-        return ("That address is on this machine or this network, not the web. "
-                "I don't fetch those — ask me directly for what you need instead.")
-    # 172.16.0.0/12 needs a range check rather than a prefix
-    if host.startswith("172."):
-        try:
-            second = int(host.split(".")[1])
-            if 16 <= second <= 31:
-                return ("That address is on this network, not the web. I don't "
-                        "fetch those.")
-        except (IndexError, ValueError):
-            pass
+
+    address = _host_address(host)
+    if address is not None:
+        # A literal address, in whatever spelling. Classified, not pattern-matched.
+        return _LOCAL_ADDRESS_REFUSAL if _is_local_address(address) else None
+
+    # A name. The obvious ones by name, then what it actually resolves to.
+    if host in _LOCAL_HOST_NAMES or host.endswith(_LOCAL_HOST_SUFFIXES):
+        return _LOCAL_ADDRESS_REFUSAL
+    if _resolves_locally(host):
+        return _LOCAL_ADDRESS_REFUSAL
     return None
 
 

@@ -78,6 +78,68 @@ def test_this_machine_and_this_network_are_refused():
         check(at._url_problem(bad) is not None, f"refused: {bad[:44]}")
 
 
+def test_every_spelling_of_this_machine_is_refused():
+    """2026-08-16, finding 14 — the first fix only recognised ONE spelling.
+
+    The original guard matched host prefixes: `startswith("127.")`, `"localhost"`,
+    `"0.0.0.0"`. Six other ways of writing the same address walked straight past
+    it, including the one that matters most — `http://2130706433:8000/` is
+    127.0.0.1 in decimal, and 8000 is the desk's unauthenticated API, the one
+    that approves governance prompts.
+
+    A blocklist over the SPELLINGS of an address can never be complete, in
+    exactly the way F-09's blocklist over mutation VERBS could not be. So the
+    host is now parsed by the same code the socket layer uses to connect, and
+    classified.
+    """
+    for bad, why in (
+        ("http://2130706433:8000/api/agent/confirm", "decimal 127.0.0.1"),
+        ("http://0x7f000001:8000/", "hex 127.0.0.1"),
+        ("http://0177.0.0.1:8000/", "octal 127.0.0.1"),
+        ("http://127.1:8000/", "short-form 127.0.0.1"),
+        ("http://0:8000/", "0 = unspecified, connects locally"),
+        ("http://[::ffff:127.0.0.1]:8000/", "v4-mapped v6 loopback"),
+        ("http://[0:0:0:0:0:0:0:1]:8000/", "expanded ::1"),
+        ("http://3232235777/", "decimal 192.168.1.1"),
+        ("http://2852039166/", "decimal 169.254.169.254 (cloud metadata)"),
+    ):
+        check(at._url_problem(bad) is not None, f"refused ({why}): {bad[:40]}")
+
+
+def test_a_name_that_resolves_to_this_machine_is_refused():
+    """The literal check cannot see a PUBLIC name whose A record is 127.0.0.1.
+
+    `localtest.me` and the `nip.io` family exist precisely to do that, and they
+    are a free redirect back to the desk API. Resolution runs once, in a worker
+    thread under a hard timeout, so a stalled resolver cannot stall the loop.
+
+    Written to tolerate no network: if the name does not resolve here, there is
+    nothing to assert — a name this machine cannot resolve is one the fetch
+    cannot reach either.
+    """
+    import socket
+    for host in ("localtest.me", "127.0.0.1.nip.io"):
+        try:
+            socket.getaddrinfo(host, None)
+        except OSError:
+            print(f"SKIP  {host} does not resolve here — nothing to prove")
+            continue
+        check(at._url_problem(f"http://{host}:8000/api/telemetry") is not None,
+              f"refused: {host} resolves to loopback")
+
+
+def test_the_name_check_does_not_punish_ordinary_hostnames():
+    # `.local`/`.internal` are refused by name; a real public domain that merely
+    # starts with digits must not be. "10.com" is a registered domain, and the
+    # old prefix list refused it.
+    check(at._url_problem("https://10.com/") is None,
+          "10.com is a domain, not 10.0.0.0/8")
+    check(at._url_problem("http://printer.local/") is not None,
+          ".local is this network")
+    check(at._url_problem("http://db.internal/") is not None,
+          ".internal is this network")
+
+
 def test_a_public_address_in_the_172_range_is_still_allowed():
     # 172.16/12 is private; 172.15 and 172.32 are not. A prefix match on "172."
     # alone would wrongly refuse real public addresses.
@@ -141,17 +203,20 @@ def test_the_precondition_is_actually_attached_to_all_three_tools():
               f"...and it is the URL one ({attached.get(tool)})")
 
 
-TESTS = [
-    test_local_file_urls_are_refused,
-    test_other_dangerous_schemes_are_refused,
-    test_this_machine_and_this_network_are_refused,
-    test_a_public_address_in_the_172_range_is_still_allowed,
-    test_ordinary_web_addresses_still_work,
-    test_a_bare_domain_is_allowed_because_open_link_documents_it,
-    test_empty_is_refused_with_a_useful_sentence,
-    test_the_macro_url_is_optional_but_checked_when_present,
-    test_the_precondition_is_actually_attached_to_all_three_tools,
-]
+# DISCOVERED, not hand-listed. This file used to carry an explicit `TESTS = [...]`
+# and it cost exactly what that shape always costs: three tests were added for
+# finding 14, the harness reported "43 passed, 0 failed" — the identical number
+# as before — and none of the three had run. A green count that does not move is
+# the most convincing possible way to not notice.
+#
+# `run_harnesses.py` had this same bug at the suite level and was converted to
+# discovery for the same reason. Definition order is preserved so the output
+# still reads top-to-bottom with the file.
+TESTS = sorted(
+    (fn for name, fn in list(globals().items())
+     if name.startswith("test_") and callable(fn)),
+    key=lambda fn: fn.__code__.co_firstlineno,
+)
 
 
 def main():
