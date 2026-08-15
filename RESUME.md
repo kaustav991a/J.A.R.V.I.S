@@ -1,4 +1,4 @@
-# RESUME — pick up here
+﻿# RESUME — pick up here
 
 > Written 2026-07-30, rewritten 2026-08-02, cleanup checklist cleared 2026-08-08.
 > Read this first, then `JARVIS_MASTER_ROADMAP.md` (the single source of truth).
@@ -8,8 +8,8 @@
 
 ## ▶▶ 2026-08-15 — START HERE. Four commits pushed, and the suite runs again.
 
-**HEAD `62c2e60` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **65/65 harnesses,
-1673 checks, 0 failed** — and that number matters, because *the suite had been
+**HEAD `b27f351` on `feat/cloud-gateway`, pushed, `0 0`.** Suite **66/66 harnesses,
+1721 checks, 0 failed** — and that number matters, because *the suite had been
 unrunnable since the office-PC push and nobody knew* (it was 64/1562 when that was
 found; F-16 below added the 65th harness).
 
@@ -200,9 +200,80 @@ Backend **13 → 2**. Frontend **3 → 0** (`npm audit` reports `found 0 vulnera
 - **`chromadb` 1.5.9 — PYSEC-2026-311, no fix version exists.** 1.5.9 *is* the latest
   release on PyPI. Nothing to move to until upstream ships one.
 
+## ▶▶ PRE-ELECTRON CODE REVIEW — **STARTED 2026-08-15, NOT FINISHED**
+
+**Deliberately brought FORWARD, ahead of the §7 gate**, reversing the step-6 ordering
+below. The reason is this file's own rule: **a row only passes against the tree it passed
+on.** Reviewing *after* the gate means every fix it produces invalidates rows already paid
+for with a desk day — session 1 already lost 7 rows that way. The two passes barely
+overlap anyway: the gate finds behavioural bugs, a review finds structural ones.
+
+**Scope of the target:** `main...HEAD` is **174 commits, 232 files, 53,725 insertions** —
+**26,373 of which are real code** across 122 files (the rest is docs, harnesses, assets,
+lockfiles). This is too large to read line by line. It is being done in **prioritised
+passes by blast radius, and what has NOT been covered is listed below.**
+
+### ✅ Finding 1 — FIXED (`b27f351`): the model's words reached a shell, three times
+
+    action_engine.py    os.system(f'start "" "{target}"')
+    action_engine.py    os.system(f'taskkill /IM "{target_exe}" /F 2>nul')
+    human_gui_agent.py  subprocess.Popen(f'start "" "{app_name}"', shell=True)
+
+A target of `x" & calc & "` closes the quote, runs a second command, and reopens one so
+the tail parses. **Governance could not have stopped it:** it approves an action by TYPE,
+and `close_app` is a harmless type — `tier_allows` never inspects the argument. Since the
+§6.8 tool layer the model acts on text it did not write (web results, indexed documents,
+MCP replies), so **prompt injection in any of those reached cmd.exe**.
+
+Worst of the three is `close_app`: `exe_targets` falls through to
+`f"{app_lower.replace(' ', '')}.exe"` for unknown names — spaces stripped, quotes and
+ampersands untouched. The `launch_app` one is a **straggler**: the primary launch path
+moved to `os.startfile` in May 2026 for this exact reason and the retry fallback was left
+behind.
+
+Fixed with `modules/shell_safety.py` (refuse the input) **and** argument lists with
+`shell=False` (build no command line at all) — either alone is one forgotten call site
+from being bypassed. `terminal_agent` is deliberately excluded and pinned as such.
+`test_shell_safety.py` (48) asserts the property **structurally**: an AST walk proving no
+`os.system`/`shell=True` call in those files takes an f-string at all.
+
+### 🟡 Pass 2 — a spot-check, NOT a clearance
+
+A reviewer swept `cloud_gateway.py`, `agent_tools/runner/core`, `mcp_client/bridge` and
+`main.py` for auth, injection, governance bypass, fail-open and hang defects, and
+**reported none**. What it positively confirmed: `hmac.compare_digest` on **all four**
+auth paths (webhook, desk-link, app-link, Bearer), auth validated **before** accept,
+MCP commands as lists never strings, governance **before** execute in `agent_core`, and
+`MAX_LINE_BYTES` bounding `mcp_client`'s reads.
+
+⚠️ **Treat that as encouraging, not proven.** It was 11 tool calls over ~7,500 lines —
+a pattern spot-check, not a reading. `cloud_gateway.py` alone is 2,160 new lines and is
+the only internet-facing surface in the tree.
+
+### ⏭ NOT YET REVIEWED — start here
+
+Nothing below has been looked at, by anyone:
+
+- **`cloud_gateway.py` properly** — read it, do not pattern-match it. Highest value in the tree.
+- `modules/gesture_engine.py` (776), `gesture_daemon.py` (607), `gesture_camera.py` (358),
+  `cursor_overlay.py` (548) — the G5 hardware stack.
+- `modules/llm_router.py` (501), `presence_probe.py` (426), `agent_search.py` (425),
+  `agent_files.py` (367) — **`agent_files` writes to disk from model-chosen paths; check
+  traversal**, the same shape as finding 1.
+- `modules/memory_crypto.py` (540), `fact_seal.py` (309), `fact_outbox.py` (298) — crypto.
+- `brain.py` (590), `memory_manager.py` (321), `action_parser.py` (332).
+- The whole **frontend** (`App.jsx` 287 + components) — untouched so far.
+- `backup_memory.py`, `migrate_*.py` — they move real data.
+
+**The lesson finding 1 generalises:** governance gates the *verb*, never the *argument*.
+Anywhere a model-supplied string reaches a shell, a path, or a query, the tier check is
+not protecting it. `agent_files` is the next place to look for that shape.
+
 ### ⏭ Next, in order
 
-1. **§7 gate session 2** — `21.3` FIRST (5 min, 34 rows depend on it), then the seven
+1. **Finish this review** — `cloud_gateway.py` first, then `agent_files.py` for path
+   traversal. Then the gate.
+2. **§7 gate session 2** — `21.3` FIRST (5 min, 34 rows depend on it), then the seven
    re-runs, then `4.4`, then `6.5`. See `LIVE_GATE_CHECKLIST.md`, which opens with the
    session-2 order. A4's four LLM-routing rows now exercise Gemini-first, so the gate
    tests the config actually intended for shipping. **Add an F-16 row while you are
