@@ -179,6 +179,128 @@ def test_terminal_agent_is_deliberately_out_of_scope():
           "it has its own blocklist, which is a weaker shape and known to be")
 
 
+# ── the SAME bug, a second shell: ADB ────────────────────────────────────────
+# Found in the same review. tv_agent and action_engine build ADB shell commands
+# for the television with the model's `query` in them, mitigated only by
+# `.replace(" ", "%s")` / `.replace(" ", "%20")`. Swapping spaces does nothing
+# about `;`, `$()`, backticks or `&&`, so `netflix:x";reboot;echo"` rebooted the
+# TV. The correct pattern was already in the same file at the YouTube branch —
+# `shlex.quote(video_url)` — and had simply not been applied to the others.
+
+def _shell_commands_in(line: str) -> int:
+    """How many commands a POSIX shell would see in `line`.
+
+    The honest oracle for this bug: not "does the string look escaped" but
+    "does the payload create a SECOND command". Tracks quote state so a
+    separator inside quotes is data, exactly as /bin/sh treats it.
+    """
+    count, quote, i = 1, None, 0
+    in_backtick = False
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == quote:
+                quote = None
+            elif quote == '"' and ch == "\\":
+                i += 1
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\\":
+            i += 1
+        elif ch in ";\n":
+            count += 1
+        elif ch in "&|" and i + 1 < len(line) and line[i + 1] == ch:
+            count += 1
+            i += 1
+        elif ch == "`":
+            # a PAIR of backticks is one substitution, not two commands
+            if not in_backtick:
+                count += 1
+            in_backtick = not in_backtick
+        elif ch == "$" and i + 1 < len(line) and line[i + 1] == "(":
+            count += 1
+        i += 1
+    return count
+
+
+def _drive_tv(target: str) -> list:
+    """Run tv_play_media against a stubbed television, return the ADB commands."""
+    import time as _time
+    from modules import tv_agent as _tv
+
+    sent: list = []
+    agent = _tv.TVAgent.__new__(_tv.TVAgent)          # no device, no network
+    agent._shell = lambda cmd, **kw: (sent.append(cmd), (True, ""))[1]
+    agent._keyevent = lambda code: (True, "")
+    real_sleep, _time.sleep = _time.sleep, lambda *_a: None
+    try:
+        agent.tv_play_media(target)
+    finally:
+        _time.sleep = real_sleep
+    return sent
+
+
+ADB_PAYLOADS = [
+    'netflix:x";reboot;echo"',
+    'netflix:x`reboot`',
+    'netflix:x$(reboot)',
+    'spotify:x";reboot;echo"',
+    'hotstar:x;reboot',
+    'hotstar:x`id`',
+    'prime:x;reboot',
+    'prime:x&&reboot',
+]
+
+
+def test_the_oracle_itself_detects_an_unquoted_separator():
+    # A test whose oracle is broken proves nothing, so prove the oracle first.
+    check(_shell_commands_in('input text x;reboot') == 2,
+          "oracle sees an unquoted ';' as a second command")
+    check(_shell_commands_in("input text 'x;reboot'") == 1,
+          "oracle sees a QUOTED ';' as data")
+    check(_shell_commands_in('am start -d "u" && reboot') == 2,
+          "oracle sees unquoted '&&'")
+    check(_shell_commands_in('input text `id`') == 2,
+          "oracle sees a backtick substitution")
+
+
+def test_no_adb_payload_can_open_a_second_command_on_the_tv():
+    for payload in ADB_PAYLOADS:
+        cmds = _drive_tv(payload)
+        check(bool(cmds), f"drove the TV path for {payload[:28]!r}")
+        for cmd in cmds:
+            check(_shell_commands_in(cmd) == 1,
+                  f"one command only, from {payload[:28]!r}: {cmd[:60]!r}")
+
+
+def test_the_tv_still_plays_an_ordinary_request():
+    # The guard is worthless if it also breaks "play the crown on netflix".
+    for target, expect in (("netflix:The Crown", "netflix://search"),
+                           ("spotify:Pink Floyd", "spotify://search"),
+                           ("hotstar:Kaun Banega", "input text")):
+        cmds = _drive_tv(target)
+        check(any(expect in c for c in cmds),
+              f"{target!r} still issues its {expect!r} command")
+        check(all(_shell_commands_in(c) == 1 for c in cmds),
+              f"...and does so as a single command ({target!r})")
+
+
+def test_the_space_swaps_are_gone_from_the_tv_path():
+    src = _src("modules/tv_agent.py")
+    check('query.replace(" ", "%20")' not in src,
+          "the %20 space-swap is replaced by real percent-encoding")
+    check("urllib.parse.quote(query" in src,
+          "...with urllib.parse.quote, which also encodes & # ?")
+    check(src.count("shlex.quote") >= 4,
+          f"every ADB interpolation is shlex.quote'd (found {src.count('shlex.quote')})")
+
+
+def test_action_engine_tv_typing_is_quoted_too():
+    src = _src("action_engine.py")
+    check('_shlex.quote(text.replace(" ", "%s"))' in src,
+          "_tv_type quotes the model-supplied text before it reaches adb shell")
+
+
 TESTS = [
     test_every_break_out_is_refused,
     test_ordinary_app_names_still_pass,
@@ -188,6 +310,11 @@ TESTS = [
     test_the_two_action_engine_sites_consult_the_guard,
     test_human_gui_agent_consults_the_guard,
     test_terminal_agent_is_deliberately_out_of_scope,
+    test_the_oracle_itself_detects_an_unquoted_separator,
+    test_no_adb_payload_can_open_a_second_command_on_the_tv,
+    test_the_tv_still_plays_an_ordinary_request,
+    test_the_space_swaps_are_gone_from_the_tv_path,
+    test_action_engine_tv_typing_is_quoted_too,
 ]
 
 

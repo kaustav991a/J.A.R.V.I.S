@@ -1979,8 +1979,11 @@ class ActionEngine:
         print(f"[ACTION ENGINE] Typing on TV: {text}")
         if not self._connect_tv(): return "I am unable to reach the TV, sir."
         
-        # ADB requires spaces to be formatted as %s
-        formatted_text = text.replace(" ", "%s")
+        # ADB requires spaces to be formatted as %s. That alone is NOT escaping:
+        # `text` is model-supplied, so `x;reboot` reached the TV's shell as two
+        # commands. shlex.quote makes it a single argument.
+        import shlex as _shlex
+        formatted_text = _shlex.quote(text.replace(" ", "%s"))
         try:
             self.adb_device.shell(f"input text {formatted_text}")
             self.adb_device.shell("input keyevent 66") # Press Enter automatically

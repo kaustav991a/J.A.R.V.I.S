@@ -484,7 +484,10 @@ class TVAgent:
         app, query = target.split(":", 1)
         app = app.lower().strip()
         query = query.strip()
-        formatted_query = query.replace(" ", "%20")
+        # Percent-encode properly rather than swapping spaces. `.replace(" ", "%20")`
+        # left &, #, ? and every shell metacharacter untouched — which broke the URI
+        # semantically AND let the query out of its quotes into the TV's shell.
+        formatted_query = urllib.parse.quote(query, safe="")
         
         self._keyevent(224) # KEYCODE_WAKEUP
         time.sleep(1.0)
@@ -494,7 +497,9 @@ class TVAgent:
             # Hotstar TV ignores SEARCH/query payloads on many builds — open search UI then type.
             self._shell(f'am start -a android.intent.action.SEARCH -p {package_hotstar}')
             time.sleep(4.0)
-            safe_query = query.replace(" ", "%s")
+            # %s is the ADB idiom for a space in `input text`; shlex.quote then
+            # makes the whole thing one argument so ; $() ` && cannot escape it.
+            safe_query = shlex.quote(query.replace(" ", "%s"))
             self._shell(f"input text {safe_query}")
             time.sleep(1.5)
             self._shell("input keyevent 20")  # DPAD_DOWN
@@ -504,17 +509,19 @@ class TVAgent:
             self._shell("input keyevent 66")  # ENTER — select/play focus
             return f"Opening Hotstar and searching for {query}, Sir."
         elif "netflix" in app:
-            self._shell(f'am start -a android.intent.action.VIEW -d "netflix://search?q={formatted_query}" -f 0x10800000')
+            uri_q = shlex.quote(f"netflix://search?q={formatted_query}")
+            self._shell(f'am start -a android.intent.action.VIEW -d {uri_q} -f 0x10800000')
             return f"Launching Netflix and searching for {query}, sir."
         elif "prime" in app or "amazon" in app:
             self._shell('am start -a android.intent.action.VIEW -d "amzn://apps/android?p=com.amazon.avod.thirdpartyclient" -n com.amazon.avod.thirdpartyclient/.LauncherActivity')
             time.sleep(3.0)
-            formatted_text = query.replace(" ", "%s")
+            formatted_text = shlex.quote(query.replace(" ", "%s"))
             self._shell(f"input text {formatted_text}")
             self._shell("input keyevent 66") # Enter
             return f"Opening Prime Video and searching for {query}, sir."
         elif "spotify" in app:
-            self._shell(f'am start -a android.intent.action.VIEW -d "spotify://search/{formatted_query}"')
+            uri_q = shlex.quote(f"spotify://search/{formatted_query}")
+            self._shell(f'am start -a android.intent.action.VIEW -d {uri_q}')
             return f"Opening Spotify to search for {query}, sir."
         elif "youtube" in app:
             package = "com.google.android.youtube.tv"
