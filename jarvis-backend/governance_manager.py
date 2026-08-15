@@ -257,6 +257,19 @@ class GovernanceManager:
         self._expire_stale()
         return self._pending_slot is not None
 
+    def pending_id(self) -> Optional[str]:
+        """The id of the single pending slot, or None.
+
+        Exists so a caller that stages a confirmation can PIN the id it is
+        responsible for, instead of later approving "whatever is pending" — see
+        the desk-approval path in main.py. `check()` always mints an id, but the
+        sentinel it travels in (`GOVERNANCE_CONFIRM:<atype>:<cid>`) is parsed by
+        string split at the far end, so a caller that lost the id needs a way to
+        ask for it rather than falling back to the slot.
+        """
+        self._expire_stale()
+        return self._pending_slot["id"] if self._pending_slot else None
+
     def consume_pending(self, confirmation_id: Optional[str] = None) -> Optional[dict]:
         """
         Retrieve AND remove the pending payload (call this when user approves).

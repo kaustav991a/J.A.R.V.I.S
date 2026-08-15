@@ -141,7 +141,7 @@ class WorkspaceAgent:
         Overwrites an existing file. Creates a new file if it does not exist.
         Returns a success or error string.
         """
-        safe = self._resolve_safe(filepath)
+        safe = self._resolve_safe_for_write(filepath)
         if safe is None:
             return f"Access denied: '{filepath}' is outside the permitted workspace roots."
 
@@ -192,7 +192,7 @@ class WorkspaceAgent:
 
         Returns a diff summary or an error string.
         """
-        safe = self._resolve_safe(filepath)
+        safe = self._resolve_safe_for_write(filepath)
         if safe is None:
             return f"Access denied: '{filepath}' is outside the permitted workspace roots."
 
@@ -316,6 +316,32 @@ class WorkspaceAgent:
         return "\n".join(lines) if lines else "No workspace files found."
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _resolve_safe_for_write(self, raw: str) -> Optional[Path]:
+        """`_resolve_safe`, plus the rules that may not rewrite themselves.
+
+        Review finding R3, 2026-08-16. `_resolve_safe` refuses the key store and
+        the encrypted memory, and the comment in `protected_paths` says the
+        backend directory is deliberately not a jail — right for notes and
+        scratch code, and wrong for one specific set of files. The workspace
+        roots include this repo, so a CONFIRM-tier `workspace_patch` could
+        rewrite `governance.json`, `url_safety.py` or `shell_safety.py`. Every
+        other guard in the project is downstream of those.
+
+        Separate from `_resolve_safe` because these files are not secret and
+        READING them is fine — JARVIS explaining its own rules is a feature.
+        Only writing is refused.
+        """
+        resolved = self._resolve_safe(raw)
+        if resolved is None:
+            return None
+        from modules.protected_paths import enforcement_write_problem
+
+        if enforcement_write_problem(str(resolved)) is not None:
+            print(f"[WORKSPACE] refused a write to enforcement code: "
+                  f"{resolved.name}", flush=True)
+            return None
+        return resolved
 
     def _resolve_safe(self, raw: str) -> Optional[Path]:
         """

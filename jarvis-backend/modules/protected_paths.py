@@ -67,6 +67,65 @@ PROTECTED_FILES = frozenset(
 PROTECTED_FOLDERS = (BACKEND_DIR.parent.parent / "JARVIS-BACKUPS",)
 
 
+#: The code that DOES the enforcing. Refused for WRITING only — reading these is
+#: harmless (they are in git, they hold no secret) and JARVIS answering questions
+#: about its own rules is a feature.
+#:
+#: Review finding R3, 2026-08-16. The comment above says the backend directory is
+#: deliberately not a jail, and that is still right for notes and scratch code.
+#: But it lumped one specific thing in with the rest: `workspace_patch` is
+#: CONFIRM-tier and the workspace roots include this repo, so an approved edit
+#: could rewrite `governance.json`, this file, `url_safety.py` or
+#: `shell_safety.py`. Every other guard in the project is downstream of those.
+#:
+#: The step that makes it more than theoretical is that the CONFIRM prompt names
+#: the action TYPE and not the argument — "'workspace_patch' is a CONFIRM-tier
+#: action, reply 'confirm'" — so approving an edit is not the same as having seen
+#: which file it touches. (Finding 15 began fixing that for the agent loop's own
+#: prompt; this is the belt to that braces.)
+#:
+#: Note the same reachability applies to any module a hot path imports lazily:
+#: rewriting one is executed by the next AUTO action that imports it. Rather than
+#: chase every such module, this list covers the rules themselves — the things
+#: whose failure is silent rather than noisy.
+ENFORCEMENT_FILES = frozenset(
+    p.resolve() if p.exists() else p
+    for p in (
+        BACKEND_DIR / "governance.json",        # the tier ruleset itself
+        BACKEND_DIR / "governance_manager.py",  # and the code that reads it
+        BACKEND_DIR / "modules" / "protected_paths.py",   # this file
+        BACKEND_DIR / "modules" / "url_safety.py",        # findings 10/14/17
+        BACKEND_DIR / "modules" / "shell_safety.py",      # finding 1
+        BACKEND_DIR / "modules" / "agent_tools.py",       # tiers + preconditions
+        BACKEND_DIR / "modules" / "terminal_agent.py",    # the shell sandbox
+        BACKEND_DIR / "modules" / "backdoor_gate.py",     # the auth gate
+    )
+)
+
+
+def enforcement_write_problem(target_path):
+    """Refuse a WRITE to the code that enforces everything else. None if fine.
+
+    Deliberately separate from `protected_path_problem`: that one refuses reads
+    too, because its files are secrets. These are not secret — they are refused
+    only for writing, because a rule that edits itself is not a rule.
+    """
+    if not isinstance(target_path, str) or not target_path.strip():
+        return None            # the caller's own path check owns that complaint
+    if "\x00" in target_path:
+        return "That path is malformed, Sir — I won't act on it."
+    try:
+        path = Path(target_path).resolve()
+    except (OSError, ValueError):
+        return "That path could not be resolved, Sir."
+    if path in ENFORCEMENT_FILES:
+        return (f"I won't modify {path.name}, Sir — that file is part of how I "
+                "decide what I'm allowed to do. Changing it has to be a "
+                "deliberate edit you make yourself, not one I make on your "
+                "behalf.")
+    return None
+
+
 def protected_path_problem(target_path,
                            files=PROTECTED_FILES,
                            folders=PROTECTED_FOLDERS):

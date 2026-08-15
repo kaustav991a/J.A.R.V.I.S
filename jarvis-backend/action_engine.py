@@ -279,6 +279,19 @@ class ActionEngine:
                 alt_base, _ = os.path.splitext(alternative_filename)
                 action_word = f"Saved as {alt_base}"
 
+            # The overwrite leg — re-checked, not trusted from the first call.
+            # This is the one that actually clobbers: the staged decision is
+            # process state, and `force_overwrite=True` here means the Save As
+            # dialog will not stop to ask. See the same check in `execute()`'s
+            # `ghost_save_file` branch (review finding R11).
+            _resolved_problem = self._protected_path_problem(
+                os.path.join(target_dir, filename_to_use))
+            if _resolved_problem:
+                self._pending_save_decision = None
+                print(f"[ACTION ENGINE] pending save refused: "
+                      f"{filename_to_use} is protected.", flush=True)
+                return _resolved_problem
+
             self._refresh_launch_session_target()
             res = self.human_gui_agent.ghost_save_file(
                 target_dir, filename_to_use, force_overwrite=force,
@@ -561,6 +574,27 @@ class ActionEngine:
                     filename = target
                 target_dir_clean = target_dir.strip()
                 filename_clean   = filename.strip()
+                # Review finding R11, 2026-08-16 — the GUI-save subsystem was the
+                # one write path that never asked the protected-file list.
+                #
+                # `protected_path_problem` is wired on `_delete_file`,
+                # `_workspace_write`, `_telegram_send_file` and
+                # `WorkspaceAgent._resolve_safe`. Not here. A target of
+                # "F:/…/jarvis-backend|.env" — or a filename with enough `..` in
+                # it, since the two are joined and abspath'd — puts that path in
+                # the Save As dialog, and "overwrite" writes the focused app's
+                # buffer over the DEK wrap or every API key.
+                #
+                # This branch deliberately verbalizes no paths ("NO PATHS
+                # verbalized" below) and the CONFIRM prompt names only the action
+                # type, so the owner approving it is never shown which file.
+                _save_target = os.path.join(target_dir_clean, filename_clean)
+                _save_problem = self._protected_path_problem(_save_target)
+                if _save_problem:
+                    print(f"[ACTION ENGINE] ghost_save_file refused: "
+                          f"{os.path.basename(_save_target)} is protected.",
+                          flush=True)
+                    return _save_problem
                 # Default behaviour: do NOT force-overwrite. Let the agent's pre-check
                 # detect existing files and bubble FILE_EXISTS back so we can ask.
                 self._refresh_launch_session_target()

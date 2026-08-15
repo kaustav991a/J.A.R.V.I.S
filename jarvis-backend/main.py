@@ -1826,7 +1826,22 @@ async def backdoor_command(req: BackdoorRequest):
     # If a CONFIRM-tier action is waiting in the pending slot AND this command
     # looks like an approval/denial (short, no Jarvis-command words), resolve it
     # immediately BEFORE any other intercept layer.
-    if governance_manager.has_pending() or _DESK_PENDING["cid"] is not None:
+    # ARMED ON THE DESK'S OWN PENDING ID, NOT ON has_pending().
+    #
+    # Review finding R1, 2026-08-16. This used to arm whenever ANY action was
+    # pending anywhere in the process, and then call `consume_pending(None)` when
+    # no desk id was pinned — which governance resolves as "the most recently
+    # pended action, whoever staged it". The comment here claimed the opposite
+    # ("this yes can never run an action pended by a remote channel"); the
+    # fallback was precisely what made it possible.
+    #
+    # The path: Telegram or the overnight worker stages a CONFIRM-tier action, so
+    # the single slot fills and `has_pending()` is true process-wide. The desk id
+    # is still None. The owner's next "yes" at the desk — about something else
+    # entirely — executed that remote payload with governance_bypass=True.
+    #
+    # An approval must only ever resolve the prompt the approver was shown.
+    if _DESK_PENDING["cid"] is not None:
         _gov_lower = _cmd_lower
         _is_approval = any(w in _gov_lower for w in _APPROVAL_WORDS)
         _is_denial   = any(w in _gov_lower for w in _DENIAL_WORDS)
@@ -1835,9 +1850,7 @@ async def backdoor_command(req: BackdoorRequest):
 
         if (_is_approval or _is_denial) and _looks_short and _no_cmd_words:
             if _is_approval:
-                # Phase 4 item 4: resolve the DESK's own confirmation id (falls
-                # back to the single slot only when no id was pinned) so this
-                # "yes" can never run an action pended by a remote channel.
+                # By id, always. Never `None` — see the block comment above.
                 approved_payload = governance_manager.consume_pending(_DESK_PENDING["cid"])
                 _DESK_PENDING["cid"] = None
                 if approved_payload:
@@ -2310,7 +2323,14 @@ async def backdoor_command(req: BackdoorRequest):
                         # Phase 4 item 4: remember WHICH confirmation the desk was
                         # asked about, so the approval resolves this id and not
                         # whatever last landed in the global pending slot.
-                        _DESK_PENDING["cid"] = parts[2] if len(parts) > 2 else None
+                        # The sentinel carries the id, but it is reassembled by a
+                        # string split — so if it ever arrives without one, ask
+                        # governance directly rather than leaving the id unset.
+                        # Since the approval path now resolves BY ID ONLY (finding
+                        # R1), an unset id would make the desk's own prompt
+                        # unapprovable, which is a safe failure but a useless one.
+                        _DESK_PENDING["cid"] = (parts[2] if len(parts) > 2 and parts[2]
+                                                else governance_manager.pending_id())
                         title = "Madam" if active_user == "MOUSUMI" else "Sir"
                         msg = _partner_confirm_text(conf_action, _DESK_PENDING["cid"], title) or (
                             f"Authorisation required, {title}. I would like to execute ‘{conf_action}’. "
@@ -2485,6 +2505,20 @@ async def backdoor_command(req: BackdoorRequest):
             print(f"[ERROR] Could not write to error.log: {log_err}", flush=True)
         await safe_send_all({"status": "error", "message": f"EXECUTION FAULT: {e}"})
         asyncio.create_task(speaker.speak_text(f"I encountered an execution fault, Sir."))
+        # Review finding R2, 2026-08-16. This used to fall out of the `except`
+        # into the unconditional `return {"status": "success"}` below, so a
+        # command that CRASHED the dispatcher was reported to the HTTP caller as
+        # having worked — while the WebSocket said "error" and JARVIS said
+        # "execution fault" out loud. Three channels, two of them honest.
+        #
+        # It also silently inverted the regression suite:
+        # `run_phase1_regression.py` sets `http_ok = (status == "success")` and
+        # then scores a SECURITY row as "the model correctly refused" when
+        # `http_ok and not new_traces`. A crash with no traces satisfies both, so
+        # every security row that faulted was recorded as a PASS, and the
+        # suite's own "system crash" branch was unreachable.
+        return JSONResponse(status_code=500,
+                            content={"status": "error", "detail": str(e)})
 
     return {"status": "success"}
 
@@ -2904,7 +2938,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                     continue
 
                             # ── Phase 6: GOVERNANCE CONFIRMATION INTERCEPT (voice / WS path) ──
-                            if governance_manager.has_pending() or _DESK_PENDING["cid"] is not None:
+                            # Armed on the desk's own pinned id, never on
+                            # `has_pending()` — see the same fix on the /api/backdoor
+                            # path above (review finding R1). A spoken "yes" must
+                            # resolve the prompt the speaker was shown, not whatever
+                            # Telegram or the overnight worker staged a moment ago.
+                            if _DESK_PENDING["cid"] is not None:
                                 _gov_lower = command_lower
                                 _is_approval = any(w in _gov_lower for w in _APPROVAL_WORDS)
                                 _is_denial = any(w in _gov_lower for w in _DENIAL_WORDS)
@@ -2912,7 +2951,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 _no_cmd_words = not any(w in _gov_lower for w in _jarvis_command_words)
                                 if (_is_approval or _is_denial) and _looks_short and _no_cmd_words:
                                     if _is_approval:
-                                        # Phase 4 item 4: resolve the desk's own pinned id.
+                                        # By id, always. Never `None`.
                                         approved_payload = governance_manager.consume_pending(_DESK_PENDING["cid"])
                                         _DESK_PENDING["cid"] = None
                                         if approved_payload:
@@ -3161,7 +3200,13 @@ async def websocket_endpoint(websocket: WebSocket):
                                                 parts = result.split(":", 2)
                                                 conf_action = parts[1] if len(parts) > 1 else "unknown"
                                                 # Phase 4 item 4: pin the desk's confirmation id.
-                                                _DESK_PENDING["cid"] = parts[2] if len(parts) > 2 else None
+                                                # Falls back to asking governance directly if the
+                                                # sentinel arrived without one — the approval path
+                                                # resolves BY ID ONLY now (finding R1), so an unset
+                                                # id would leave this prompt unapprovable.
+                                                _DESK_PENDING["cid"] = (
+                                                    parts[2] if len(parts) > 2 and parts[2]
+                                                    else governance_manager.pending_id())
                                                 title = "Madam" if active_user == "MOUSUMI" else "Sir"
                                                 msg = _partner_confirm_text(conf_action, _DESK_PENDING["cid"], title) or (
                                                     f"Authorisation required, {title}. I would like to execute ‘{conf_action}’. "
