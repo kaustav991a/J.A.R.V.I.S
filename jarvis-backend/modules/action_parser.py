@@ -201,36 +201,84 @@ def _close_truncated(s: str) -> str:
     return s + suffix
 
 
-def heal_and_load(span: str) -> Optional[Any]:
+def heal_and_load(span: str, report: bool = False):
     """json.loads with progressive repair for the failure modes 8B/70B models
     actually produce: trailing commas and truncation (unclosed strings/brackets).
-    Returns the parsed object, or None if unrecoverable."""
+    Returns the parsed object, or None if unrecoverable.
+
+    With `report=True` returns `(obj, truncated)` instead, where `truncated` is
+    True only when the value had to be CLOSED to parse — i.e. the model was cut
+    off mid-value. Callers need that distinction because a healed truncation
+    changes what a value MEANS, where a stripped trailing comma does not.
+    """
+    def _out(obj, truncated=False):
+        return (obj, truncated) if report else obj
+
     if not span:
-        return None
+        return _out(None)
 
     obj = _try_load(span)
     if obj is not _SENTINEL:
-        return obj
+        return _out(obj)
 
     # 1) Strip trailing commas before a closer:  {"a":1,}  →  {"a":1}
+    #    Lossless: nothing about any value changes.
     fixed = re.sub(r",\s*([}\]])", r"\1", span)
     obj = _try_load(fixed)
     if obj is not _SENTINEL:
-        return obj
+        return _out(obj)
 
     # 2) Truncation repair — close the unterminated string and every open
     #    bracket at the exact depth the model was cut off at.
+    #    NOT lossless: the value that was being written is now whatever prefix
+    #    survived. See `_TRUNCATION_UNSAFE` for why that is reported upward.
     obj = _try_load(_close_truncated(fixed))
     if obj is not _SENTINEL:
-        return obj
+        return _out(obj, True)
 
     # 3) Same, but first drop a dangling trailing comma / partial key fragment.
     trimmed = re.sub(r",\s*$", "", fixed.rstrip())
     obj = _try_load(_close_truncated(trimmed))
     if obj is not _SENTINEL:
-        return obj
+        return _out(obj, True)
 
-    return None
+    return _out(None)
+
+
+# Actions whose TARGET is a thing in the world that gets destroyed or replaced.
+# A truncated target is not a broken target — it is a DIFFERENT, valid one, and
+# for a path it is a PARENT:
+#
+#     {"action_type":"delete_file","target":"C:\\Users\\K\\Docs\\Project\\a.txt
+#
+# cut off by max_tokens heals to  ...\\Docs\\Project"  — and `_delete_file`
+# calls shutil.rmtree on a directory. The action succeeds, reports success, and
+# removed the wrong thing. That is the failure shape this project keeps finding:
+# indistinguishable from working.
+#
+# So these are refused when, and only when, the JSON had to be CLOSED to parse.
+# A trailing-comma repair is lossless and stays allowed, as does a truncated
+# non-destructive action — speaking a half-finished search is harmless.
+_TRUNCATION_UNSAFE = frozenset({
+    "delete_file", "workspace_write", "workspace_patch", "ghost_save_file",
+    "close_app", "kill_process", "move_file", "rename_file", "empty_recycle_bin",
+})
+
+
+def _drop_unsafe_truncated(actions: list) -> list:
+    """Remove destructive actions whose JSON was repaired from a truncation."""
+    kept = []
+    for a in actions:
+        atype = str((a or {}).get("action_type") or "").lower()
+        # the named set, plus anything that reads as a removal — the registry
+        # grows and a list nobody updates is the thing that fails quietly
+        if atype in _TRUNCATION_UNSAFE or "delete" in atype or "remove" in atype:
+            print(f"[ACTION PARSER] refusing truncated '{atype}': the reply was cut "
+                  "off mid-value, so its target is a prefix of what was meant.",
+                  flush=True)
+            continue
+        kept.append(a)
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -295,8 +343,13 @@ def parse(raw: str) -> ParsedReply:
         if not span:
             return ParsedReply(actions=[], preamble=text)
 
-        obj = heal_and_load(span)
+        obj, truncated = heal_and_load(span, report=True)
         actions = normalize_to_actions(obj)
+        if truncated and actions:
+            # The reply was cut off mid-value. Anything destructive is now
+            # pointing at a prefix of its real target, so it is dropped rather
+            # than executed — an empty list is spoken, never actioned.
+            actions = _drop_unsafe_truncated(actions)
 
         # Prose the model wrote before the JSON block (rare but happens when
         # json_mode is off). Cleaned of the fence markers already.
