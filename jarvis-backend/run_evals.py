@@ -33,6 +33,7 @@ project ends up believing its agent is better than it is.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -91,6 +92,22 @@ def score_retrieval(tasks: list, top_n: int = 3) -> dict:
     return summarise(results, "retrieval")
 
 
+# A prompt whose subject was named in an EARLIER turn. `that file`, `that
+# thread`, `the latest one`. Deliberately narrow: it matches a demonstrative
+# attached to a noun, not the word "that" as a conjunction ("tell me that it
+# worked"), and not "remember that i prefer tea", which is self-contained.
+_FOLLOW_UP_RE = re.compile(
+    r"\b(that|those|this)\s+(file|thread|one|report|config|email|message|note|"
+    r"document|folder|page|link|song|video|task)\b"
+    r"|\bthe\s+latest\s+one\b|\bthe\s+same\s+one\b|\bit\s+again\b",
+    re.IGNORECASE,
+)
+
+
+def _refers_to_earlier_turn(prompt: str) -> bool:
+    return bool(_FOLLOW_UP_RE.search(str(prompt or "")))
+
+
 # ── live: does the MODEL choose it, and does the run finish? ────────────────
 
 def score_live(tasks: list, limit: int | None = None) -> dict:
@@ -114,6 +131,18 @@ def score_live(tasks: list, limit: int | None = None) -> dict:
         result = asyncio.run(agent_runner.run_agent_command(
             task["prompt"], engine, tool_set="files", send=send,
             presence="at_desk" if task.get("confirm") else "unknown"))
+        # Five of the forty prompts are FOLLOW-UPS — "read me the latest one in
+        # full", "reply to that thread", "change the timeout in that config
+        # file". They are run here as standalone prompts with no prior
+        # conversation, so nothing has ever established what "that file" IS.
+        # Scoring them as misses blames the model for a question the harness
+        # asked without its antecedent, and drags the reported accuracy down by
+        # 12.5% before the model has done anything wrong.
+        #
+        # They are reported separately rather than deleted: a follow-up IS a
+        # real thing users say, and wiring the eval to seed the prior turn is
+        # the actual fix. Until then the number should not pretend otherwise.
+        needs_context = _refers_to_earlier_turn(task["prompt"])
 
         # What the run ACTUALLY called, read from its own audit trail.
         #
@@ -140,8 +169,9 @@ def score_live(tasks: list, limit: int | None = None) -> dict:
             "rank": None, "top": called[:3], "expect": task["expect"],
             "ok": bool(result.ok), "stop": result.stop_reason,
             "denied": [r.name for r in runs if getattr(r, "denied", False)],
+            "needs_context": needs_context,
         })
-        mark = "✓" if hit else "✗"
+        mark = "✓" if hit else ("–" if needs_context else "✗")
         denied = [r.name for r in runs if getattr(r, "denied", False)]
         note = f" (denied: {denied})" if denied else ""
         print(f"  {task['id']:12} {mark} called={called}{note}", flush=True)
@@ -152,19 +182,27 @@ def score_live(tasks: list, limit: int | None = None) -> dict:
 
 
 def summarise(results: list, mode: str) -> dict:
+    # A follow-up prompt run without its antecedent is unanswerable, not failed.
+    # It is excluded from the SCORE and counted on its own line, so the headline
+    # number measures the model rather than the harness. Offline retrieval sets
+    # no such flag, so its arithmetic is unchanged.
+    scored = [r for r in results if not r.get("needs_context")]
+    unscorable = [r for r in results if r.get("needs_context")]
+
     by_category: dict = {}
-    for row in results:
+    for row in scored:
         agg = by_category.setdefault(row["category"], {"n": 0, "loaded": 0})
         agg["n"] += 1
         agg["loaded"] += 1 if row["loaded"] else 0
     return {
         "mode": mode,
-        "tasks": len(results),
-        "found": sum(1 for r in results if r["hit"]),
-        "loaded": sum(1 for r in results if r["loaded"]),
-        "accuracy": round(sum(1 for r in results if r["loaded"]) / len(results), 3)
-        if results else None,
-        "misses": [r for r in results if not r["loaded"]],
+        "tasks": len(scored),
+        "found": sum(1 for r in scored if r["hit"]),
+        "loaded": sum(1 for r in scored if r["loaded"]),
+        "accuracy": round(sum(1 for r in scored if r["loaded"]) / len(scored), 3)
+        if scored else None,
+        "misses": [r for r in scored if not r["loaded"]],
+        "unscorable": unscorable,
         "by_category": by_category,
     }
 
@@ -175,6 +213,12 @@ def report(summary: dict) -> int:
     for category, agg in sorted(summary["by_category"].items()):
         mark = "" if agg["loaded"] == agg["n"] else "   <-- "
         print(f"  {category:10} {agg['loaded']}/{agg['n']}{mark}")
+    if summary.get("unscorable"):
+        print(f"\nNOT SCORED — {len(summary['unscorable'])} follow-up prompt(s) run "
+              f"without the turn they refer back to:")
+        for row in summary["unscorable"]:
+            print(f"  {row['id']:12} expected {row['expect']}, got {row['top']}")
+        print("  (unanswerable standalone — seed the prior turn to score these)")
     if summary["misses"]:
         print("\nMISSES — each one is a description, an alias or a ranking bug:")
         for miss in summary["misses"]:

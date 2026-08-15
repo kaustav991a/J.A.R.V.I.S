@@ -1125,7 +1125,7 @@ async def agent_pending():
 
 
 @app.post("/api/listen")
-async def request_listen():
+async def request_listen(request: Request):
     """Click-to-talk: the HUD mic button asks the SERVER microphone to listen.
 
     The HUD captures no audio — the mic is here — and both loops in wakeword.py
@@ -1138,6 +1138,17 @@ async def request_listen():
     Offline, this is equivalent to SAYING "wake up" — it boots through the same
     biometric path. It is never the admin bypass; a button must not grant admin.
     """
+    # This route takes NO BODY, which makes it a CORS "simple request": any page
+    # in the owner's browser can POST it with no preflight, and the middleware
+    # only withholds the reply. Opening the desk microphone is not something a
+    # page gets to do. See modules/local_origin.py (review finding R7).
+    from modules import local_origin
+
+    if _problem := local_origin.cross_site_problem(request):
+        print(f"[API] /api/listen refused: {_problem}", flush=True)
+        return JSONResponse(status_code=403,
+                            content={"ok": False, "reason": "cross_site"})
+
     from wakeword import is_shutting_down, listen_request
 
     if is_shutting_down.is_set():
@@ -1237,8 +1248,17 @@ async def governance_status():
         return {"rules_loaded": 0, "has_pending": False, "pending_action": None, "error": str(e)}
 
 @app.post("/api/governance/cancel")
-async def governance_cancel():
+async def governance_cancel(request: Request):
     """Allows the frontend to programmatically cancel a pending CONFIRM-tier action."""
+    # Body-less, so a cross-origin page can call it with no preflight. Dropping
+    # the owner's pending confirmation is a denial-of-service on his own
+    # approvals — see modules/local_origin.py (review finding R7).
+    from modules import local_origin
+
+    if _problem := local_origin.cross_site_problem(request):
+        print(f"[API] /api/governance/cancel refused: {_problem}", flush=True)
+        return JSONResponse(status_code=403, content={"cancelled": False,
+                                                      "reason": "cross_site"})
     cancelled = governance_manager.cancel_pending()
     return {"cancelled": cancelled}
 
@@ -1261,8 +1281,15 @@ async def list_tasks(status: str | None = None, limit: int = 50):
     return {"tasks": items, "count": len(items)}
 
 @app.post("/api/tasks/{task_id}/cancel")
-async def cancel_task(task_id: str):
+async def cancel_task(task_id: str, request: Request):
     """Cancel a pending or running task."""
+    # Body-less; same reason as the two routes above (review finding R7).
+    from modules import local_origin
+
+    if _problem := local_origin.cross_site_problem(request):
+        print(f"[API] /api/tasks/cancel refused: {_problem}", flush=True)
+        return JSONResponse(status_code=403, content={"cancelled": False,
+                                                      "reason": "cross_site"})
     cancelled = await asyncio.to_thread(task_queue.cancel, task_id)
     return {"cancelled": cancelled}
 
@@ -1275,6 +1302,27 @@ class AutopilotRequest(BaseModel):
 @app.post("/api/autopilot")
 async def start_autopilot(req: AutopilotRequest):
     """Launch the LangGraph Figma→code pipeline as a background task (never blocks the loop)."""
+    # Review finding R6, 2026-08-16. `out_dir` went straight through to
+    # `os.makedirs(...)` + `open(join(out_dir, basename(fname)), "w")` in
+    # agent_worker. The per-file `basename()` stops traversal INSIDE the
+    # directory and nothing constrained the directory itself, so an out_dir
+    # pointing at the Startup folder created it and wrote LLM-authored files
+    # there — filenames model-chosen too.
+    #
+    # The same work reached through the `run_autopilot` ACTION is tiered in
+    # governance.json. This route was its ungoverned twin: no gate, no engine,
+    # no governance call. Confined to the workspace roots, which is the same
+    # confinement `workspace_write` already applies.
+    from modules.workspace_agent import WorkspaceAgent
+
+    _resolved = WorkspaceAgent._resolve_within_roots(req.out_dir)
+    if _resolved is None:
+        return {"success": False,
+                "error": (f"Refused: '{req.out_dir}' is outside the permitted "
+                          f"workspace roots. Autopilot writes generated code, so "
+                          f"it only writes where you already let me write.")}
+    _out_dir = str(_resolved)
+
     try:
         from modules import agent_worker  # lazy: keeps langgraph out of startup path
     except Exception as e:
@@ -1287,7 +1335,7 @@ async def start_autopilot(req: AutopilotRequest):
         await speaker.speak_text(text)
 
     agent_worker.launch_autopilot(
-        req.file_key, out_dir=req.out_dir, token=req.token, broadcast=_bcast, speak=_speak
+        req.file_key, out_dir=_out_dir, token=req.token, broadcast=_bcast, speak=_speak
     )
     return {"success": True, "message": "Overnight Autopilot launched in the background, Sir."}
 
@@ -3020,10 +3068,28 @@ async def websocket_endpoint(websocket: WebSocket):
                             lockdown_phrases = ["initiate lockdown", "house party protocol", "clean slate protocol", "security override"]
                             if any(phrase in command_text.lower() for phrase in lockdown_phrases):
                                 await safe_send({"status": "security_override", "message": "SECURITY OVERRIDE ACCEPTED. INITIATING PROTOCOL."})
-                                lockdown_msg = "Security override accepted. Initiating lockdown protocols. All external ports have been secured, sir."
+                                # Review finding R4, 2026-08-16. This used to say
+                                # "All external ports have been secured, sir." No
+                                # firewall call, no engine action, no state change
+                                # — the branch ends in `continue`. The comment
+                                # below described state that did not exist.
+                                #
+                                # It is not a harmless flourish: the same
+                                # `security_override` frame is raised for a real
+                                # intruder by background_monitor, so in context
+                                # the sentence reads as a report rather than as
+                                # theatre. A security control the owner believes
+                                # is in force and is not is worse than no control.
+                                #
+                                # Says what it does: the display changes.
+                                lockdown_msg = ("Security override accepted, sir. "
+                                                "Lockdown display engaged. I have "
+                                                "not changed any firewall or "
+                                                "network setting — say the word "
+                                                "and I will tell you what I can "
+                                                "actually do here.")
                                 await asyncio.sleep(0.5)
                                 asyncio.create_task(speaker.speak_text(lockdown_msg))
-                                # Keep it locked until reboot or override
                                 continue
 
                             # --- INTRODUCTION CEREMONY: Natural Voice Trigger ---

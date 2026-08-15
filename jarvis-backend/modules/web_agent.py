@@ -4,6 +4,35 @@ from bs4 import BeautifulSoup
 import markdownify
 from playwright.async_api import async_playwright
 
+
+#: Review finding R10, 2026-08-16. `click` and `type_text` interpolate the id
+#: straight into a CSS attribute selector:
+#:
+#:     selector = f"[data-jarvis-id='{element_id}']"
+#:
+#: An id of `1'], a[href^='http` closes the quote and appends a second selector,
+#: so Playwright acts on the first element matching EITHER — and both tools are
+#: AUTO tier, with `element_id` declared as a free string in the schema.
+#:
+#: That matters more than an ordinary injection would, because the numbered map
+#: from `_mark_and_extract_dom` is both the contract for what the agent may act
+#: on AND the audit record of what it did. A page whose text steers the model can
+#: escape the map and click something that never appeared in it.
+#:
+#: The ids are integers assigned by `_mark_and_extract_dom`, so the check is
+#: exact rather than an escaping scheme — there is no legitimate id this refuses.
+_ELEMENT_ID_RE = re.compile(r"^\d+$")
+
+
+def _element_id_problem(element_id) -> str | None:
+    """Refuse anything that is not one of the integer ids we handed out."""
+    if not _ELEMENT_ID_RE.match(str(element_id or "").strip()):
+        return (f"'{str(element_id)[:40]}' is not an element id. Use one of the "
+                "numbers from the element list in the most recent page output — "
+                "they are plain integers.")
+    return None
+
+
 class WebAgent:
     def __init__(self):
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -147,6 +176,9 @@ class WebAgent:
 
     async def click(self, element_id: str) -> str:
         print(f"[WEB AGENT] Clicking element {element_id}")
+        problem = _element_id_problem(element_id)
+        if problem:
+            return problem
         try:
             await self._init_browser()
             selector = f"[data-jarvis-id='{element_id}']"
@@ -172,6 +204,9 @@ class WebAgent:
 
     async def type_text(self, element_id: str, text: str) -> str:
         print(f"[WEB AGENT] Typing into {element_id}: '{text}'")
+        problem = _element_id_problem(element_id)
+        if problem:
+            return problem
         try:
             await self._init_browser()
             selector = f"[data-jarvis-id='{element_id}']"

@@ -205,10 +205,33 @@ class FileAgent:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         full_content = f"--- Note created by J.A.R.V.I.S. on {timestamp} ---\n\n{content}\n"
         
+        # Review finding R9, 2026-08-16 — this used to open with mode "w" and
+        # report "has been created" either way, so a second note whose title
+        # collapsed to the same filename DESTROYED the first one silently.
+        #
+        # Two things compound to make that easy to hit: the title is split off at
+        # the first colon (so "Budget: Q3" and "Budget: Q4" are both "Budget"),
+        # and spaces are stripped from the filename. Both siblings in this
+        # project already refuse to clobber — `organize_downloads` uniquifies in
+        # a `while dest.exists()` loop and `TerminalAgent._safe_rename_dest` does
+        # the same — so this was the odd one out, not a house style.
+        #
+        # Refuse rather than uniquify: a note is something he will look for by
+        # name later, and quietly writing "Budget2.txt" when he said "Budget" is
+        # a smaller version of the same problem.
+        if filepath.exists():
+            return (f"A note called '{safe_title}' already exists, sir — I "
+                    f"haven't touched it. Give me a different title, or say to "
+                    f"replace it and I will.")
         try:
-            with open(filepath, "w", encoding="utf-8") as f:
+            with open(filepath, "x", encoding="utf-8") as f:
                 f.write(full_content)
             return f"Note '{title}' has been created at {filepath}, sir."
+        except FileExistsError:
+            # Lost a race between the check above and the open. Still not a
+            # silent overwrite.
+            return (f"A note called '{safe_title}' already exists, sir — I "
+                    f"haven't touched it.")
         except Exception as e:
             return f"I couldn't create that note: {e}"
     

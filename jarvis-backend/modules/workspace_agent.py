@@ -206,8 +206,28 @@ class WorkspaceAgent:
         search_string  = search_string.replace("\\n", "\n")
         replace_string = replace_string.replace("\\n", "\n")
 
+        # Review finding R8, 2026-08-16 — this used to read with
+        # `errors="replace"` and write the result back as UTF-8. A patch is a
+        # ROUND TRIP, so on a cp1252 or latin-1 file every byte that would not
+        # decode became U+FFFD and was then written back as one: changing a
+        # single ASCII line silently rewrote every accented character, dash and
+        # curly quote in the rest of the file.
+        #
+        # The diff below cannot show that, structurally — it compares `original`
+        # against `patched`, and both are already mojibake — so the reply said
+        # "Patched X: 1 replacement(s)" over a file that had been damaged
+        # throughout. That is the same class as a truncated result read as
+        # complete: the report is honest about the edit and silent about the harm.
+        #
+        # Reading STRICTLY is also the real binary check this module's docstring
+        # claims. `_BLOCKED_EXTENSIONS` is a name list; a decode is a fact.
         try:
-            original = safe.read_text(encoding="utf-8", errors="replace")
+            original = safe.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as e:
+            return (f"Patch refused: {safe.name} is not valid UTF-8 (byte "
+                    f"{e.start}). Patching it would rewrite every character I "
+                    f"could not decode, which is a change you did not ask for "
+                    f"and the diff could not show you.")
         except Exception as e:
             return f"Read error before patch: {e}"
 
@@ -251,8 +271,12 @@ class WorkspaceAgent:
         effective_count = occurrences if (replace_all or count <= 0) else count
         patched = original.replace(search_string, replace_string, effective_count)
 
+        # Bytes out, as bytes in. `write_text` translates "\n" to the platform
+        # line ending, so on Windows a one-line patch to an LF file rewrote every
+        # line ending in it — the second half of finding R8, and equally invisible
+        # in the diff.
         try:
-            safe.write_text(patched, encoding="utf-8")
+            safe.write_bytes(patched.encode("utf-8"))
         except Exception as e:
             return f"Write error after patch: {e}"
 

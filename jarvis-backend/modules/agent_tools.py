@@ -509,6 +509,23 @@ def hud_frames(result: Any, tool: str | None = None) -> list[dict]:
     if isinstance(result, str) and result.strip() == HUD_MEDIA_CLOSE:
         return [{"status": "close_search", "message": "Clearing HUD media."},
                 {"status": "toggle_browser", "visible": False}]
+    # Review finding R12, 2026-08-16. `sleep_protocol` (AUTO, and a registered
+    # agent tool) pauses PC media and then returns the literal string
+    # "UI_WIDGET_TOGGLE:close_display". NOTHING consumes that string — main.py
+    # branches on `action_type`, not on it, and it appears nowhere else in the
+    # backend. So the raw sentinel went back to the model as a tool RESULT and
+    # was read as success: "displays cleared and media paused", with the
+    # displays untouched.
+    #
+    # Exactly the case the block comment at the top of this section says must
+    # not exist ("a run that reports 'playing now' while nothing plays"). Mapped
+    # to the two frames main.py sends for the same action, so it either happens
+    # or it fails honestly with NO_DISPLAY.
+    if isinstance(result, str) and result.strip().startswith("UI_WIDGET_TOGGLE:"):
+        if result.strip().split(":", 1)[1].strip() == "close_display":
+            return [{"status": "close_search", "message": "Clearing display."},
+                    {"status": "toggle_browser", "visible": False}]
+        return []
     if not isinstance(result, dict):
         return []
     kind = result.get("action_type")
@@ -547,6 +564,10 @@ def describe_hud_frames(frames: list[dict]) -> str:
                 f"({first.get('url')}). You have NOT seen it — describe it only "
                 f"from the title, or use `read_screen` if what it shows matters.")
     if first.get("status") == "close_search":
+        if first.get("message") == "Clearing display.":
+            return ("Cleared the panels on the desk display and paused whatever "
+                    "was playing on the machine. Nothing was closed at the "
+                    "operating-system level.")
         return ("Stopped the HUD's own player. Nothing was closed at the "
                 "operating-system level — that player is part of the display, "
                 "not an application.")
