@@ -389,6 +389,12 @@ def make_desk_authorizer(registry, send, confirms=None, timeout: float | None = 
         await send({
             "type": CONFIRM_FRAME, "confirmation_id": pending.id,
             "tool": entry.action_type, "target": target, "question": question,
+            # WHAT he is actually approving. `question` is capped at 120
+            # characters, and the HUD rendered nothing else — so a `gmail_send`
+            # prompt showed the recipient and about forty characters of the body,
+            # with APPROVE autofocused and bound to `Y`. See
+            # `agent_confirm.describe_arguments`.
+            "details": agent_confirm.describe_arguments(call.arguments),
             "status": "awaiting_confirmation", "message": question,
         })
         outcome = await confirms.wait(pending, timeout)
@@ -445,6 +451,9 @@ def make_away_authorizer(registry, send, goal: str, *, parked: list,
         await send({
             "type": PARKED_FRAME, "task_id": park.id, "short": park.short,
             "tool": entry.action_type, "target": target,
+            # Same reason as the desk path: approving from the phone must show
+            # what is being approved, not the first 120 characters of it.
+            "details": agent_confirm.describe_arguments(call.arguments),
             "status": "awaiting_confirmation", "message": park.message,
         })
         return Decision(False, agent_yield.refusal_reason(park, entry.action_type))

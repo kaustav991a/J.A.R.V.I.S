@@ -148,6 +148,46 @@ $panel-bg: rgba(6, 10, 14, 0.9);
     color: $violet;
   }
 
+  // What is actually being approved. Scrolls rather than growing — a file
+  // write is a legitimate argument, and the buttons must stay on screen.
+  &__details {
+    margin: 0;
+    padding: 0 12px 8px;
+    max-height: 168px;
+    overflow-y: auto;
+    font-family: "Share Tech Mono", monospace;
+    font-size: 0.68rem;
+    line-height: 1.45;
+  }
+
+  &__row {
+    display: grid;
+    grid-template-columns: 68px 1fr;
+    gap: 8px;
+    padding: 3px 0;
+
+    dt {
+      color: rgba(180, 140, 255, 0.75);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 0.6rem;
+      padding-top: 1px;
+    }
+
+    dd {
+      margin: 0;
+      color: rgba(232, 226, 245, 0.92);
+      // A model-written body arrives with newlines and can be one long token.
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  &__more {
+    color: rgba(255, 180, 120, 0.9);
+    font-style: normal;
+  }
+
   &__actions {
     display: flex;
     gap: 8px;

@@ -242,6 +242,86 @@ def test_at_desk_confirm_approves_and_continues_in_place():
     assert prompts[-1]["resolved"] == acf.APPROVED
 
 
+def test_the_confirm_prompt_carries_what_is_actually_being_approved():
+    """Pre-Electron review, finding 15.
+
+    The HUD rendered `question` and nothing else, and `question_for` caps at 120
+    characters. So approving a `gmail_send` meant seeing the recipient, the
+    subject, and about forty characters of the body — with APPROVE autofocused
+    and bound to `Y`. `gmail_send` was already recorded as owed on exactly this
+    point: "a human approves every send and that approval IS the control."
+
+    Drives the REAL at-desk path and asserts on the frame the HUD receives.
+    """
+    body = "Line one of the file.\n" + ("payload-marker " * 8)
+    hud, engine, reg = FakeHud(), FakeEngine("written"), registry()
+    confirms = acf.ConfirmRegistry()
+
+    async def main():
+        task = asyncio.create_task(ar.run_agent_command(
+            "write it", engine, registry=reg, tool_set="authoring",
+            send=hud, presence="at_desk", confirms=confirms,
+            call_model=script(tool_turn("workspace_write", path=r"F:\work\a.py",
+                                        content=body),
+                              final("Written, Sir."))))
+        for _ in range(200):
+            await asyncio.sleep(0.005)
+            if confirms.outstanding():
+                confirms.resolve(confirms.outstanding()[0]["confirmation_id"], True)
+                break
+        return await asyncio.wait_for(task, timeout=2.0)
+
+    run(main())
+    prompt = hud.of_type(ar.CONFIRM_FRAME)[0]
+    rows = {r["label"]: r for r in prompt["details"]}
+    assert "path" in rows and "content" in rows, \
+        f"the prompt must name every argument, got {sorted(rows)}"
+    assert rows["path"]["value"] == r"F:\work\a.py"
+    # The WHOLE body, not the first hundred characters of it.
+    assert rows["content"]["value"] == body
+    assert rows["content"]["truncated"] is False
+    # And the headline is still the headline.
+    assert prompt["question"].startswith("JARVIS wants to run workspace_write")
+
+
+def test_a_long_argument_is_elided_and_says_how_much_is_hidden():
+    """A 40 000-line write must not push the buttons off the screen — but the
+    prompt has to say that something is hidden, or the elision is the same
+    silence the truncation was."""
+    huge = "x" * (acf.FIELD_PREVIEW + 500)
+    rows = {r["label"]: r
+            for r in acf.describe_arguments({"path": "p", "content": huge})}
+    assert rows["content"]["truncated"] is True
+    assert rows["content"]["full_length"] == len(huge)
+    assert len(rows["content"]["value"]) == acf.FIELD_PREVIEW + 1  # + the ellipsis
+    assert rows["path"]["truncated"] is False
+
+
+def test_the_mail_prompt_reads_back_recipient_subject_and_body_separately():
+    """The specific case the review recorded as owed.
+
+    Built from the model's ARGUMENTS, so the prompt never has to re-parse the
+    pipe-joined target — the parsing this project has already been bitten by
+    twice (`_mail_target`, `_git_commit_precondition`).
+    """
+    rows = {r["label"]: r["value"] for r in acf.describe_arguments({
+        "to": "rajat@example.com",
+        "subject": "Re: Q3 | final",
+        "body": "Hi Rajat,\n\nI will call tomorrow.\n\nKaustav",
+    })}
+    assert rows["to"] == "rajat@example.com"
+    assert rows["subject"] == "Re: Q3 | final", "a pipe in the subject survives"
+    assert "call tomorrow" in rows["body"]
+
+
+def test_describe_arguments_survives_a_non_string_argument():
+    rows = {r["label"]: r["value"] for r in acf.describe_arguments(
+        {"count": 5, "data": [{"x": 1}], "flag": True, "nothing": None})}
+    assert rows["count"] == "5" and rows["flag"] == "true"
+    assert "x" in rows["data"]
+    assert acf.describe_arguments(None) == []
+
+
 def test_at_desk_denial_is_fed_back_so_the_model_can_reroute():
     hud, engine, reg = FakeHud(), FakeEngine(), registry()
     confirms = acf.ConfirmRegistry()

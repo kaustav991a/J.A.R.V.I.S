@@ -150,10 +150,72 @@ confirms = ConfirmRegistry()
 
 
 def question_for(tool: str, target: str) -> str:
-    """The sentence the HUD shows. Short, specific, and names the real target."""
+    """The HEADLINE the HUD shows. Short, specific, and names the real target.
+
+    Deliberately still capped at 120 characters — it is one line in a trace
+    panel. What the owner APPROVES on is `describe_arguments` below; this is the
+    label above it.
+    """
     shown = (target or "").strip()
     if len(shown) > 120:
         shown = shown[:117] + "…"
     if shown:
         return f"JARVIS wants to run {tool} on {shown} — approve?"
     return f"JARVIS wants to run {tool} — approve?"
+
+
+#: How much of one field the prompt shows. Generous: the whole point is that the
+#: owner can read what he is approving, and a mail body or a file write is the
+#: case that matters. Still bounded — a 40 000-line file write must not push the
+#: buttons off the screen.
+FIELD_PREVIEW = 600
+
+
+def describe_arguments(arguments: dict | None, limit: int = FIELD_PREVIEW) -> list[dict]:
+    """The approval prompt's BODY: the model's own arguments, labelled.
+
+    WHY THIS EXISTS — found 2026-08-16, pre-Electron review, finding 15.
+
+    The HUD rendered `question` and nothing else, and `question_for` truncates at
+    120 characters. For `gmail_send` the target is
+    `{"to": …, "subject": …, "body": …}`, so the prompt read
+
+        JARVIS wants to run gmail_send on {"to": "x@y.com", "subject": "Invoice
+        for August", "body": "Hi Rajat, I've attach…  — approve?
+
+    Recipient and subject survived. The BODY did not. The owner was approving a
+    recipient, not a message — with APPROVE autofocused and `Y` bound to it. Same
+    for `workspace_write` (`path|content`) and `edit_file`: about a hundred
+    characters of whatever is being written.
+
+    `gmail_send` was already recorded as owed: "It is CONFIRM tier, so a human
+    approves every send and that approval IS the control. Check that the
+    confirmation prompt actually reads back the recipient — if it does not, the
+    control is theatre." The recipient does read back, so it is not theatre. It
+    was half of one.
+
+    Built from the model's ARGUMENTS, never by re-parsing the composed target.
+    The target is a pipe- or colon-joined string, and re-splitting it here would
+    add a fourth place that has to agree about the separator — this file already
+    records what that costs (`_mail_target`, `_git_commit_precondition`).
+    """
+    rows: list[dict] = []
+    for key, value in (arguments or {}).items():
+        text = value if isinstance(value, str) else json_ish(value)
+        truncated = len(text) > limit
+        rows.append({
+            "label": str(key),
+            "value": (text[:limit] + "…") if truncated else text,
+            "truncated": truncated,
+            "full_length": len(text),
+        })
+    return rows
+
+
+def json_ish(value: Any) -> str:
+    """A non-string argument as something a person can read."""
+    import json
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)

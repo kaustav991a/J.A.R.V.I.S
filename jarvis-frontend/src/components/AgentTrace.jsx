@@ -143,6 +143,35 @@ export default function AgentTrace({ steps = [], confirm = null, onAnswered }) {
               <ShieldQuestion size={15} strokeWidth={1.9} />
               <span>{confirm.question}</span>
             </div>
+
+            {/*
+              WHAT is being approved, not just which tool. `question` is capped
+              at 120 characters upstream, and for a while this panel rendered
+              nothing else — so approving a `gmail_send` meant seeing the
+              recipient, the subject, and roughly forty characters of the body,
+              with APPROVE autofocused and bound to `Y`.
+
+              Scrolls rather than growing: a file write is a legitimate argument
+              and must not push the buttons off the screen.
+            */}
+            {Array.isArray(confirm.details) && confirm.details.length > 0 && (
+              <dl className="agent-confirm__details">
+                {confirm.details.map((row) => (
+                  <div className="agent-confirm__row" key={row.label}>
+                    <dt>{row.label}</dt>
+                    <dd>
+                      {row.value}
+                      {row.truncated && (
+                        <em className="agent-confirm__more">
+                          {" "}… {row.full_length - row.value.length + 1} more characters
+                        </em>
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+
             <div className="agent-confirm__actions">
               <button
                 type="button"
