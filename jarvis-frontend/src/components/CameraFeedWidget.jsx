@@ -26,7 +26,21 @@ function labelFor(det) {
     const emo = det.emotion ? ` · ${det.emotion}` : "";
     return `${who.toUpperCase()}${emo}`;
   }
-  return `${det.label.toUpperCase()} ${Math.round((det.conf || 0) * 100)}%`;
+  return `${String(det.label || "OBJECT").toUpperCase()} ${Math.round((det.conf || 0) * 100)}%`;
+}
+
+// Review batch 9: a detection whose `box` is missing or the wrong shape used to
+// reach `const [x1, y1, x2, y2] = det.box` and throw — and a render-time throw
+// in React unmounts the whole tree, so ONE malformed frame from the vision
+// daemon white-screened the HUD. That is finding 8's shape (a corrupt saved
+// widget position did exactly this) arriving down the live wire instead of out
+// of localStorage. Anything unusable is skipped; the rest of the frame still
+// draws.
+function usableBox(det) {
+  const b = det && det.box;
+  if (!Array.isArray(b) || b.length !== 4) return null;
+  if (!b.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+  return b;
 }
 
 export default function CameraFeedWidget() {
@@ -118,7 +132,9 @@ export default function CameraFeedWidget() {
             preserveAspectRatio="xMidYMid meet"
           >
             {detections.map((det, i) => {
-              const [x1, y1, x2, y2] = det.box;
+              const box = usableBox(det);
+              if (!box) return null;          // skip it, never crash the panel
+              const [x1, y1, x2, y2] = box;
               const c = colorFor(det);
               const w = x2 - x1;
               const h = y2 - y1;

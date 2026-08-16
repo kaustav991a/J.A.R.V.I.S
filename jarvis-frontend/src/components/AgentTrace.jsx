@@ -77,12 +77,32 @@ export default function AgentTrace({ steps = [], confirm = null, onAnswered }) {
   };
 
   // Keyboard: Y/N while a prompt is open, so an approval is one keystroke.
+  //
+  // Review batch 9, 2026-08-16. This listener is on `window`, so it fired for
+  // EVERY keystroke anywhere on the page — including one typed into the command
+  // input. A CONFIRM prompt open while the owner types "yes, later" put a `y`
+  // through this handler and APPROVED the action, from a keystroke that was
+  // never meant as an answer. `autoFocus` on APPROVE hides it most of the time;
+  // clicking back into the input is all it takes to expose it.
+  //
+  // Same family as finding 15 and C1: an approval must be an answer to the
+  // question that was asked, not a side effect of doing something else. Denial
+  // is left reachable from anywhere, because refusing by accident is safe and
+  // Escape should always work.
   useEffect(() => {
     if (!confirm) return undefined;
+    const isTyping = (el) => {
+      if (!el) return false;
+      const tag = (el.tagName || "").toLowerCase();
+      return tag === "input" || tag === "textarea" || tag === "select"
+        || el.isContentEditable === true;
+    };
     const onKey = (e) => {
       const k = e.key.toLowerCase();
+      if (k === "escape") return answer(false);       // always available
+      if (isTyping(e.target)) return;                 // they are writing, not answering
       if (k === "y") answer(true);
-      if (k === "n" || k === "escape") answer(false);
+      if (k === "n") answer(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

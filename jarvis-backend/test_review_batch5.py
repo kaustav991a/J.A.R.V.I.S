@@ -378,6 +378,67 @@ def test_the_accel_curve_cannot_divide_by_zero_either():
     check(True, "and _precision_gain survives its own degenerate config")
 
 
+FRONTEND = HERE.parent / "jarvis-frontend" / "src"
+
+
+def test_a_keystroke_meant_for_a_text_field_cannot_approve_an_action():
+    """Batch 9. AgentTrace's Y/N handler is bound to `window`, so it fired for
+    EVERY keystroke on the page — including one typed into the command input. A
+    CONFIRM prompt open while the owner types "yes, later" put a `y` through it
+    and APPROVED the action. Same family as finding 15 and C1: an approval must
+    be an ANSWER to the question, not a side effect of doing something else."""
+    src = (FRONTEND / "components" / "AgentTrace.jsx").read_text(
+        encoding="utf-8", errors="replace")
+    handler = src.split("const onKey =", 1)[1].split("window.addEventListener", 1)[0]
+    check("isTyping(e.target)" in handler,
+          "the handler ignores keys aimed at a text field")
+    check(handler.index("isTyping(e.target)") < handler.index('k === "y"'),
+          "...and checks that BEFORE it reads the approve key")
+    check('k === "escape"' in handler and
+          handler.index('k === "escape"') < handler.index("isTyping(e.target)"),
+          "Escape still refuses from anywhere — declining by accident is safe")
+
+
+def test_one_malformed_detection_cannot_white_screen_the_hud():
+    """Batch 9. `const [x1, y1, x2, y2] = det.box` throws when box is missing or
+    the wrong shape, and a render-time throw in React unmounts the whole tree —
+    so ONE bad frame from the vision daemon took the HUD down. Finding 8's shape
+    arriving down the live wire instead of out of localStorage."""
+    src = (FRONTEND / "components" / "CameraFeedWidget.jsx").read_text(
+        encoding="utf-8", errors="replace")
+    check("function usableBox(" in src, "detections are validated before use")
+    # Comments stripped first: the guard's own docstring quotes the old line to
+    # explain what it replaced, and a substring test would match the explanation
+    # rather than the code. Exactly the false positive the batch-8 timeout sweep
+    # produced twice.
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith(("//", "*", "/*")))
+    check("const [x1, y1, x2, y2] = det.box" not in code,
+          "the unguarded destructure is gone from the CODE")
+    check("if (!box) return null" in src,
+          "an unusable detection is skipped, and the rest of the frame draws")
+    guard = src.split("function usableBox(", 1)[1].split("\n}", 1)[0]
+    for prop in ("Array.isArray", "length !== 4", "Number.isFinite"):
+        check(prop in guard, f"the guard checks {prop}")
+
+
+def test_the_frontend_has_no_html_injection_sink():
+    """Swept in batch 8, pinned here: React escapes by default, and the only way
+    to lose that is to ask for it. `eval` was already replaced by a safe parser
+    in CalculatorWidget — this is what stops either coming back."""
+    sinks = ("dangerouslySetInnerHTML", "innerHTML", "eval(", "new Function",
+             "document.write")
+    hits = []
+    for path in sorted(FRONTEND.rglob("*.jsx")) + sorted(FRONTEND.rglob("*.js")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        code = "\n".join(ln for ln in text.splitlines()
+                         if not ln.strip().startswith(("//", "*", "/*")))
+        for sink in sinks:
+            if sink in code:
+                hits.append(f"{path.name}:{sink}")
+    check(not hits, f"no HTML/eval injection sink in the frontend; found {hits}")
+
+
 TESTS = sorted(
     (fn for name, fn in list(globals().items())
      if name.startswith("test_") and callable(fn)),
