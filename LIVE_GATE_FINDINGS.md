@@ -536,3 +536,442 @@ an `invalid_grant`.
 
 **Environment restored:** `JARVIS_AMBIENT_VISION` was set to `0` for one boot and should be
 **unset** in session 2 — it saved no RAM and disables intruder detection (`12.2`).
+
+---
+---
+
+# SESSION 2 — 2026-08-16, from 16:43
+
+> Baseline: `298ac3c`, clean. Suite **80/80 harnesses, 2407 checks, 0 failed** re-run at session
+> start, so every failure below is a real-hardware finding, not a regression.
+>
+> `JARVIS_AMBIENT_VISION` confirmed **unset** — `[AMBIENT VISION] Daemon started in background.`
+> The session-1 housekeeping item is satisfied.
+
+## ✅ THE BLOCKER IS GONE — `21.3` PASSES
+
+**F-08 is fixed on real hardware.** The gesture daemon ran a **381-second** unbroken window with
+a face scan partway through: **zero** `session fault: camera stream died`.
+
+```
+[GESTURE] camera auto-select: chose http://192.168.0.106:8080/video
+          from ['…10.171.25.26…', '…192.168.0.105…', '…192.168.0.106…', '…192.168.0.103…', 0]
+[VISION]  camera source: http://192.168.0.106:8080/video (shared with gesture daemon)
+[VISION]  ✅ MATCH: KAUSTAV
+```
+
+**This unblocks the ~34 camera rows (A18–A21).**
+
+## Row results — 12 passed
+
+| Row | Verdict | Evidence |
+|---|---|---|
+| `0.1` | ✅ | Watchdog banner, uvicorn up in 8s, no traceback. **No `⚠️ CONFIG NOT LOADED`** — instead `[PREFLIGHT] ✅ All REQUIRED config present`. **F-03 confirmed live** |
+| `0.2` | ✅ | `[GOVERNANCE] Ruleset loaded - 104 action types indexed`; `[BRIDGE] ✅ Linked to cloud front door` and **no** `[TELEGRAM] ✅ Gateway online` — exactly one consumer per token; `[ROUTINES]`, `[OVERWATCH]`, `[AMBIENT VISION]`, `[SUPERVISOR] watching 4 daemon(s)` |
+| `0.3` | ✅ | HUD renders from the packaged build. **Row wording is stale — see F-18** |
+| `0.4` | ✅ | `cloud_first`, numeric `TELEGRAM_USER_ID`, token set |
+| `0.5` | ✅ | `watchdog: alive` (8009); `/health` → `{"status":"ok","hud":true}` (8000) |
+| `2.1` | ✅ | `[STT] Heard: 'wake up'` → `[BOOT SEQUENCE INITIATED VIA: wake up]` |
+| `2.2` | ✅ | Boot sequence + comprehensive briefing ran |
+| `2.3` owner half | ✅ | `[VISION] ✅ MATCH: KAUSTAV` against the 12-sample set. Reject half still owed (Group C) |
+| `2.4` | ✅ | Transcribed correctly |
+| `16.1` camera half | ✅ | Auto-select **skipped two dead sources** and chose the live one. **F-07 confirmed live** |
+| `21.3` 🛑 | ✅ | See above — 381s, zero faults |
+| **R5** | ✅ | HUD hard-reloaded while idle, then the wake word — **he heard it** |
+
+**F-11 confirmed live.** After the reload: `[WAKE] Standing down — this connection no longer owns
+the microphone.` Every `[VAD]`/`[STT]` line appeared **once**, not twice. The re-run list's
+`2.1`/`2.2`/`2.4` are discharged.
+
+**F-10 confirmed live.** `[BRAIN] New day detected -> delivering Comprehensive **Afternoon**
+Briefing` at 04:49 PM. The period is computed from the real hour.
+
+## ❌ Failed — 2
+
+| Row | Why |
+|---|---|
+| `10.9` **briefing** | F-10's half is fixed; **F-09 is REOPENED** — the briefing narrates four data sources it never read. See below |
+| `4.1` **workspace write to Desktop** | **F-22** — wrote to `F:\work\desktop\add.py` and said *"File created, Sir."* The user's Desktop is not a workspace root and its absence is silent |
+
+## Findings — 9 new this session
+
+| ID | Sev | One line |
+|---|---|---|
+| **F-17** | 🔴 | Gemini leg of the cascade is dead on 4 system-only call sites; rotation misreports a payload error as 5 key failures |
+| **F-19** | 🔴 | Owner declared an intruder 4 min after a successful match; escalated to lockdown; oscillating on the 60s poll |
+| **F-20** | 🔴 | Lockdown overlay latches forever — the security barrier disables the only channel that can clear it |
+| **F-25** | 🔴 | Desk soft-lock trapped the owner: its only advertised exit is the camera, and the camera is why it fired |
+| **F-22** | 🔴 | `workspace_write` silently re-roots an unresolvable location and reports success |
+| **F-23** | 🔴 | Owner refused by face, then locked out because STT ended capture at *"my name is"* |
+| **F-21** | 🟠 | *"Initiating lockdown protocols"* secures nothing — root cause #4, second door |
+| **F-09** | 🟠 | REOPENED and wider — unevidenced **state** claims, not just action claims |
+| **F-18** | 🔵 | Row wording: `0.3` points at `/` not `/hud/`; `4.1` omits the CONFIRM prompt |
+| **F-24** | 🔵 | Intent classification falls back silently on malformed JSON |
+
+**The pattern is the same one session 1 named, and it is now the dominant theme:** *a failure the
+user cannot distinguish from normal operation.* A dead provider leg that answers anyway (F-17), a
+file "created" somewhere else (F-22), a briefing sourced from nothing (F-09), a lockdown that
+secures nothing (F-21). Four of the nine are the same shape.
+
+**A second theme has now appeared three times, and it is the more dangerous one:** *a security
+barrier whose only exit depends on the subsystem whose failure raised it.* The HUD lockdown that
+only a non-proactive message can clear, while everything that would clear it is proactive (F-20).
+The failed face scan whose voice fallback terminates the interaction (F-23). The desk soft-lock
+whose screen names the camera as the way out, when a blind camera is what armed it (F-25). In all
+three the owner is locked out **by** the mechanism meant to protect him, and in two of them the
+only real exit was to kill the process.
+
+---
+
+## F-17 — 🔴 HIGH · The Gemini leg of the cascade is dead, and key rotation hides it
+
+**Found by:** row `2.2`'s briefing.
+
+```
+[ROUTER] Gemini key #1/5 failed (TypeError) — rotating.      (…#2, #3, #4, #5 identically)
+[ROUTER] 'gemini' route failed (TypeError: contents must not be empty). Escalating…
+```
+
+**The same error on all five keys is not a key problem.** It is a payload bug, and the rotation
+layer misreports it as five key failures.
+
+**Root cause — reproduced offline, deterministically:**
+
+```
+_split_messages_for_gemini([{'role':'system','content':'You are JARVIS'}])
+  -> ('You are JARVIS', [])          # system hoisted correctly, nothing left to send
+```
+
+`_split_messages_for_gemini` (`modules/llm_router.py:399`) hoists system text into
+`system_instruction` — correct for Gemini — but when the caller passes **only** system messages,
+`contents` comes back empty and the SDK rejects the call.
+
+**Four call sites do exactly that, so all four are permanently broken on Gemini:**
+
+| Site | Path |
+|---|---|
+| `brain.py:2030` | synthesis |
+| `brain.py:2298` | synthesis |
+| `brain.py:2819` | **the briefing** |
+| `modules/episodic_memory.py:123` | memory summarisation |
+
+**Why it matters.** Gemini is the *separate-quota* fallback for when Groq runs dry. On these four
+paths it is not in the cascade at all — every call falls through to OpenRouter, whose `:free` list
+is documented in this repo as rotting silently. **The cascade is one leg shorter than believed,
+exactly where it was relied upon.** Cost: 5 wasted round-trips per call, and total invisibility —
+the user hears a normal answer from the next provider.
+
+**Fix, two parts — the bug and the mask:**
+1. `_split_messages_for_gemini` — when `contents` is empty but system text exists, emit one user
+   turn rather than nothing.
+2. `_run_with_gemini_rotation` (`llm_router.py:375`) catches bare `Exception`. A deterministic
+   client-side error (`TypeError`/`ValueError`) must raise immediately instead of burning the
+   pool, so the real error surfaces the first time.
+
+## F-09 — 🟠 REOPENED, and far wider than the row implies
+
+The row asks whether the briefing claims an **action** it did not perform. The live answer is
+worse: **it narrates four separate data sources it did not actually read.** Kaustav confirmed
+each of these at the desk, against the real world:
+
+| Briefing said | Truth |
+|---|---|
+| *"you've marked today's date in your calendar"* | **He has not.** Nothing marked |
+| *"your email inbox … contains **201 unread** messages"* | **"totally wrong"** |
+| *"vital signs … appear to be **stable**, with a heart rate of **zero**"* | `0` is a no-data sentinel, sold as reassurance **about his body** |
+| *"the room's reduced volume and the **TV's muted status**"* + lights dim | **TV was not powered on.** No such state was set |
+
+**This is not one bad sentence — it is a whole briefing of confident, unsourced assertion.** The
+existing guard was deliberately kept narrow to protect the persona, and it only catches claims
+about *actions it did not run*. It does not catch a claim about *state it never read*.
+
+**Open lead, not yet a conclusion.** `[GMAIL AGENT]` printed a **fresh OAuth authorization URL**
+at boot (log L59) — the Google token was invalid this session, exactly as in session 1
+(`invalid_grant`). Calendar and Fitness initialised *after* it (L65, L127). So the candidate cause
+is: **an auth failure that degrades to empty/zero data, which the LLM then narrates as fact.**
+Verify each source directly before writing the cause down — do not assume.
+
+**Where the fix belongs:** the briefing compiler (`brain.py:2689`, prompt built at `2819`) must
+pass *absence* to the model as absence, and the guard must reject unevidenced **state** claims,
+not just unevidenced **action** claims.
+
+## F-18 — 🔵 LOW · `0.3`'s wording sends you to the wrong URL
+
+The row says "open the HUD in the browser" without a path. `GET /` returns
+`{"status":"J.A.R.V.I.S. Backend is Online"}` — JSON, by design. The HUD is mounted at **`/hud/`**
+(`main.py:974`, `html=True`), trailing slash included. Cost a live minute; fix the row text.
+
+---
+
+## F-19 — 🔴 HIGH · The owner was declared an intruder, and it escalated to lockdown
+
+**Found by:** sitting still. Kaustav was in his chair the whole time.
+
+Four minutes after a successful `[VISION] ✅ MATCH: KAUSTAV`, on the proactive agent's 60-second
+cycle (timestamps exactly 60s apart — it is the poll, not an event):
+
+```
+16:51  [PROACTIVE AGENT] I detect an unrecognized presence in the room. Please identify yourself.
+16:52  [JARVIS] Security alert. I am detecting an unrecognized individual in the room.
+                Initiating lockdown protocols.
+16:53  [PROACTIVE AGENT] Welcome back, sir. I've been monitoring the systems in your absence.
+```
+
+*"In your absence."* He never left.
+
+**Two distinct paths fired, and identity is flapping between them:**
+
+| Path | Site | Trigger |
+|---|---|---|
+| greeting branch | `background_monitor.py:231` | detected `person` is not `KAUSTAV`/`MOUSUMI`/`KINSHUK` → "unrecognized presence" |
+| security branch | `background_monitor.py:79` | `shared_optical_cache["intruder_detected"]` → the lockdown alert |
+
+Then `:224` matched `person == "KAUSTAV"` and greeted him. So the ambient identity resolver
+returns UNKNOWN and KAUSTAV for the same seated person on consecutive cycles.
+
+**Row `12.2` fails in the false-positive direction, which is the worse direction.** A security
+alarm that cries wolf at its owner is one that gets ignored on the day it is right. It also
+reached the phone (`_alert_phone`, `:85`).
+
+## F-20 — 🔴 HIGH · The lockdown overlay latches forever — the barrier seals its own exit
+
+`App.jsx:450`:
+
+```js
+if (data.is_proactive && !hasWokenUpRef.current) {
+  return;                       // bails BEFORE the status handler below
+}
+...
+if (data.status === "offline" || data.status.startsWith("security_")) {
+  setHasWokenUp(false);         // <-- the lockdown sets this
+}
+if (data.status === "security_override") setIsLockdown(true);
+else setIsLockdown(false);      // <-- now unreachable
+```
+
+1. `security_override` arrives while awake → passes the gate → sets `hasWokenUp = false` **and**
+   `isLockdown = true`.
+2. Every message that would clear it — `"Welcome back"`, and `_trigger_event`'s `online` /
+   `SYSTEM ONLINE // STANDBY` revert (`background_monitor.py:342`) — carries
+   `is_proactive: true`, so it hits the early `return` and **never reaches `setIsLockdown(false)`**.
+
+**The security barrier disables the only channel that can lift it.** Observed live: JARVIS said
+"Welcome back" while the HUD stayed on the intruder screen. Only a non-proactive status — i.e.
+the owner speaking the wake word again — can clear it.
+
+Combined with F-19: **a phantom intruder permanently bricks the HUD.**
+
+## F-21 — 🟠 MEDIUM-HIGH · "Initiating lockdown protocols" secures nothing — root cause #4, second door
+
+`background_monitor.py:81-87` speaks *"Initiating lockdown protocols"*, broadcasts
+`INTRUDER DETECTED. LOCKDOWN ENGAGED.`, pings the phone, and **returns**. Nothing is locked.
+
+This exact false claim was already found and fixed **at the other site** — the voice-command path
+in `main.py:3178`, now `"Lockdown display engaged"`, guarded by
+`test_review_batch1_medium.py:156` (*"the lockdown no longer claims to have secured anything"*).
+
+**`REVIEW.md` root cause #4, verbatim: a class fixed one site at a time stays open.** The harness
+proves the sentence at one door and says nothing about the other. When fixing this, ask the
+question the review taught: *which other verb reaches this claim, and which other door reaches
+that verb?*
+
+---
+
+## F-22 — 🔴 HIGH · `4.1` FAILS: "File created, Sir." — and it is not where he asked
+
+**Row `4.1` result: FAIL.**
+
+```
+[ACTION ENGINE] payload: {'action_type': 'workspace_write',
+                          'target': 'desktop/add.py|def add(a: float, b: float) -> float: …'}
+[JARVIS] File created, Sir.
+```
+
+The file was written to **`F:\work\desktop\add.py`** (185 bytes, 17:22:03) — verified by a
+recursive sweep of every root; that is the only copy. The word *"desktop"* was treated as a
+**relative subdirectory**, so it created a new `desktop\` folder inside the first workspace root
+and wrote there. The user looked at his real Desktop and found nothing.
+
+**Root cause — the Desktop root is silently dropped on any OneDrive-redirected machine:**
+
+```
+JARVIS_WORKSPACE_ROOTS env = None
+EXISTS   F:\work
+EXISTS   F:\work\JARVIS-Project
+EXISTS   C:\Users\KINGSHUK\Documents
+                                     <-- Desktop absent
+```
+
+`workspace_agent.py:51` defaults to `Path.home()/"Desktop"` = `C:\Users\KINGSHUK\Desktop`, which
+**does not exist** — Windows redirected it to `C:\Users\KINGSHUK\OneDrive\Desktop`. The
+non-existent path is dropped from the roots without a word. `Documents` survived only because it
+happens not to be redirected. **This is the stock Windows 11 + OneDrive configuration**, not an
+exotic setup.
+
+**Two defects, and the second is the dangerous one:**
+1. The Desktop root does not survive folder redirection, and its absence is silent.
+2. An unresolvable location **falls back to a relative path and reports success.** *"File created,
+   Sir."* is true in a useless sense. This is the F-09 family in the filesystem: the user cannot
+   distinguish it from the thing he asked for.
+
+**Fix:** resolve Desktop via the shell folder (`SHGetKnownFolderPath` / `[Environment]::GetFolderPath('Desktop')`),
+not `Path.home()/"Desktop"`; log dropped roots at boot; and refuse — never silently re-root — a
+write whose named location resolves to no configured root.
+
+### What worked, and is worth keeping
+
+The truncation guard fired on the first attempt, on live data:
+
+```
+[ACTION PARSER] refusing truncated 'workspace_write': the reply was cut off mid-value,
+                so its target is a prefix of what was meant.
+```
+
+Also: `workspace_write` is **CONFIRM** tier and prompted correctly
+(`[GOVERNANCE] ⏸ Execution suspended`, then `[OK] Confirmation consumed` on *"yeah confirm"*).
+**Row `4.1`'s pass text says "fast" and never mentions a prompt — the row wording is stale.** Fold
+into F-18.
+
+## F-23 — 🔴 HIGH · Owner refused by face, then locked out because STT cut his name in half
+
+```
+[VISION] ❌ No match
+[JARVIS] Optical scan inconclusive. Please state your name.
+🗣️ You said: 'my name is'                    <-- capture ended before the name
+[JARVIS] I'm afraid I cannot grant you access. Security protocols have been engaged.
+         Interaction terminated.
+```
+
+Two defects stacked:
+
+1. **The face scan failed to match the owner** against the same 12-sample set that matched him
+   twice earlier in the session. With F-19 (owner → intruder), identity is now demonstrably
+   unreliable in **both** directions.
+2. **The voice fallback ended capture at "my name is"** — before the name. That is the one
+   utterance in the system where a mid-sentence pause is guaranteed, and the VAD ends the turn
+   inside it. The consequence is not a retry: it is `Interaction terminated`.
+
+The recovery path from a failed biometric is itself unusable, which means a false reject has no
+way back.
+
+## F-24 — 🔵 LOW · Intent classification fell back silently on malformed JSON
+
+```
+[BRAIN] Intent classification JSON decode error: Unterminated string starting at line 3 column 14
+[BRAIN] Persona Matrix -> MODULE: GENERAL | EMOTION: CASUAL | RESPONSE_MODE: CINEMATIC
+```
+
+Recovered, and still routed to `workspace_write` correctly — no harm on this turn. But the
+classifier's reply was truncated and the fallback to defaults is invisible.
+
+## Note — model load on the request path
+
+```
+Warning: You are sending unauthenticated requests to the HF Hub…
+Loading weights: 100%|██████████| 103/103
+```
+
+A HuggingFace model loads **during** command handling, unauthenticated. This is the source of the
+RAM spike the owner observed (40% idle → 90%) and part of the latency. If HF rate-limits the
+unauthenticated caller, this stalls mid-command. Not a gate row; worth a pin.
+
+## Note — `JARVIS_AMBIENT_VISION=0` was set mid-session, deliberately
+
+After F-19/F-20 made the desk unusable, the flag was set to `0` and the stack rebooted so the
+remaining ~95 rows could run uninterrupted:
+
+```
+[AMBIENT VISION] disabled by JARVIS_AMBIENT_VISION=0 — scene perception and intruder detection are OFF.
+```
+
+**§12 rows are not testable for the rest of this session.** `12.2` already has its answer (F-19).
+
+**This contradicts session 1's F-06 conclusion that the flag saves no RAM.** Measured with it off:
+`TOTAL 15.9 GB · USED 7.07 GB (44.5%) · backend python 575 MB`. Re-measure both states before
+acting on either number.
+
+## F-08 — the camera death seen later is NOT a regression
+
+At 17:2x the daemon logged `session fault: camera stream died` again — but the cause was real:
+**every source lost TCP** (the phone stream stopped; there is no USB webcam behind it, and
+index `0` reports `no device present`). The daemon then entered
+`[GESTURE] camera unavailable [absent] — retry in 30s` and kept retrying, which is precisely the
+F-08 fix: degrade and reopen instead of the reader thread returning permanently. **`21.3`'s pass
+stands.**
+
+---
+
+## F-25 — 🔴 HIGH · The desk soft-lock trapped the owner at his own desk
+
+**Found by:** running rows `4.1`/`4.2` onward with the camera off. Not a row — it happened *to*
+the session.
+
+Mid-gate the whole desktop went black behind a fullscreen panel reading **`biometric watch
+active — face the camera to unlock`**, and the monitor powered off under it. Kaustav faced the
+camera. Nothing. Keys and clicks did nothing. **He got out by closing VS Code**, which killed the
+backend, which killed the overlay.
+
+**This is a third lockdown path, distinct from F-19/F-20.** Those are `ambient_vision` →
+`background_monitor` → the HUD's `LockdownOverlay`. This one is the G3 presence lock and it
+lives entirely in the gesture daemon.
+
+### The mechanism
+
+| Step | Site |
+|---|---|
+| arm | `gesture_daemon.py:534` — `self.auto_lock and gate.available and absence.update(...)`: no face **and** no motion for `JARVIS_LOCK_AFTER` (**default 60s**) |
+| lock | `gesture_daemon.py:279` `_lock()` — spawns `lock_overlay.py` as a subprocess, fullscreen across the whole virtual desktop, always-on-top, `cursor="none"` |
+| blind the user | `gesture_daemon.py:297` `_monitor_power(off=True)` — the display is powered down on top of the overlay |
+| swallow input | `lock_overlay.py:75` returns `"break"` for every key, `:78` for every click |
+| unlock | `gesture_daemon.py:526-531` — the locked branch has **exactly one** exit: `if owner_ok: self._unlock()`. A live face match. Nothing else in that branch can clear it |
+
+### The trap is the asymmetry between arming and clearing
+
+Arming needs only `gate.available` — the camera **reachable**. Clearing needs a **recognised
+face**. A camera that is reachable but blind satisfies the first and can never satisfy the
+second: lens covered, pointed at a wall, phone app open in a dark room, stream frozen mid-decode.
+That is not a narrow window. It is most of the ways a camera fails.
+
+**So the subsystem whose failure raises the barrier is the only subsystem allowed to lift it.**
+Same shape as F-20, at a different layer, and this one takes the physical desk with it rather
+than just the HUD.
+
+### Three exits existed. The screen names the one that was broken.
+
+| Exit | Site | Why it didn't help |
+|---|---|---|
+| face the camera | `gesture_daemon.py:527` | the camera is *why* it locked |
+| say **"auto lock off"** / "disable auto lock" / "presence lock off" | `modules/fast_path.py:79` → `set_auto_lock(False)` → `gesture_daemon.py:172` calls `_unlock()` | **works — voice is never blocked, only keys and clicks are.** But it is not on the screen, the regexes are anchored `^…$` so the phrasing must be exact, and you would be waking JARVIS blind with the monitor already off |
+| type `JARVIS_UNLOCK_CODE` + Enter, blind | `lock_overlay.py:63-71` | **unset, therefore disabled** (`if not code: return "break"`) |
+| kill the parent | `lock_overlay.py:96` — `sys.stdin.buffer.read()` hits EOF | the one that worked, and the one nobody should need |
+
+`lock_overlay.py:59` is a single line of help text naming only the camera. The module docstring
+knows better — *"escape hatch if the camera dies while locked"* — but that knowledge never
+reaches the person standing in front of it.
+
+### Fix
+
+1. **The arm condition must demand what the clear condition demands.** Do not lock on a camera
+   that is merely *reachable*; require the same usable-frame quality that `owner_ok` needs.
+   Wherever a barrier can arm on weaker evidence than it needs to clear, it can trap.
+2. **The overlay must print its own exits.** It has the space. Always name the spoken phrase;
+   name the code when one is set.
+3. **Stop defaulting `JARVIS_UNLOCK_CODE` to disabled** on a barrier whose only other exit is
+   biometric. Generate one at boot and print it to the console that spawned the lock.
+4. **Widen the locked branch** at `:526` — any owner-authenticated signal should clear it, not
+   only a face. The voice path already can; it simply isn't reachable from the locked state's
+   own logic, it works by coincidence of running in a different process.
+
+### Mitigation in force for the rest of this session
+
+Launched with `JARVIS_AUTO_LOCK=0` and `JARVIS_UNLOCK_CODE` set. With the camera off,
+`gate.available` is false anyway (`[GESTURE] camera unavailable [absent] — retry in 30s`), so the
+lock cannot arm — but the flag is belt-and-braces and costs nothing.
+
+**Rows `4.1`/`4.2` results are unaffected** — the process died, no state was corrupted.
+
+### Fold into F-18 — one more stale line in the checklist
+
+`LIVE_GATE_CHECKLIST.md:85` and row `0.1` both say `.env\Scripts\python.exe watchdog.py`. The
+interpreter is at **`venv\Scripts\python.exe`**; there is no `.env\Scripts`. The line that warns
+you to use the venv interpreter names a path that does not exist.
