@@ -6,7 +6,45 @@
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
 > bookmark, not a plan.
 
-## ▶▶▶ 2026-08-16 — REVIEW COMPLETE ON EVERYTHING THAT ACTS. GATE NEXT. Suite 80/80, 2369.
+## ▶▶▶ 2026-08-16 — **THE BACKEND IS 100% REVIEWED.** Only the frontend is left.
+
+**39 findings, all fixed, all harnessed. Suite 80/80, 2374 checks.**
+
+| | Lines | State |
+|---|---|---|
+| **Backend — all 9 areas** | ~17,700 | **read line-by-line, 100%** |
+| Frontend (`jarvis-frontend/src`) | 4,677 | risk-swept clean, NOT read line-by-line |
+
+### The frontend sweep, and what it does and does not prove
+
+Swept and clean: **no `dangerouslySetInnerHTML`, no `innerHTML`, no `eval`, no
+`new Function`, no `document.write`** anywhere in `src/`. Every `JSON.parse` sits
+in a `try`, and the widget-position read *removes* the corrupt key rather than
+carrying it (finding 8's fix). Listeners balanced 2/2; `setInterval` 14 vs
+`clearInterval` 19.
+
+⚠️ **Two "uncleaned timeout" hits were FALSE POSITIVES** of a count-based grep:
+`IntroductionCeremony` collects all seven timers into an array and clears them,
+and `FaceAuthOverlay`'s hit was the word `setTimeout` **inside a comment**.
+Counting occurrences is not reading code — that is the honest limit of the sweep.
+
+**So the frontend's crash-and-injection classes are cleared. Its logic is not
+read.** ~3,250 lines of widget components remain, of which most is markup.
+
+### Batch 7–8 findings
+
+**G1** — `JARVIS_GESTURE_SMOOTH=0`, the value anyone types for "no smoothing",
+divided by zero on the first hand movement after every engage / disengage /
+hand-loss (`cutoff = min_cutoff + beta*|dx|`, and `_dx` is 0.0 after reset).
+Floored at the division.
+
+**Verified sound, read in full, do not re-raise:** `cursor_overlay` (three
+guards, each traced to the black-desktop incident; the colour-key is applied by
+us and the exstyle bits read back off the same hwnd), `gesture_camera` (every
+source frame-validated before acceptance; a recoverable JPEG desync no longer
+escalates to a dead camera), `gesture_roi`, `gesture_arbiter`.
+
+## ▶▶ 2026-08-16 — review complete on everything that acts. Suite 80/80, 2369.
 
 **38 findings, all fixed, all harnessed.** `review-findings.json` has no OPEN
 row. Batches 3–6 covered `brain.py`, the agent support layer, `agent_runner` and
