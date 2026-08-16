@@ -107,6 +107,30 @@ def _identify(message) -> Optional[dict]:
     return _IDENTITIES.get(uid)
 
 
+def _user_id(message) -> Optional[int]:
+    """The id identity is authenticated on — and therefore the one a session is
+    keyed to. In a private chat it equals `chat.id`; anywhere else it does not,
+    which is review finding C5."""
+    return getattr(getattr(message, "from_user", None), "id", None)
+
+
+def _chat_type(message) -> str:
+    """Normalised chat type. Unknown reads as NOT private — fail closed.
+
+    aiogram gives either the string "private" or a `ChatType` enum depending on
+    version, and `str(enum)` is "ChatType.PRIVATE", so neither a bare compare
+    nor a bare str() is safe on its own.
+    """
+    raw = getattr(getattr(message, "chat", None), "type", None)
+    raw = getattr(raw, "value", raw)
+    text = str(raw or "").strip().lower()
+    return text.rsplit(".", 1)[-1]
+
+
+def _is_private(message) -> bool:
+    return _chat_type(message) == "private"
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Output channel
 # ════════════════════════════════════════════════════════════════════════════
@@ -116,14 +140,21 @@ class TelegramChannel(OutputChannel):
     kind = "telegram"
 
     def __init__(self, chat_id: int, user: str = _OWNER_USER,
-                 permission_tier: str = _ADMIN_TIER, honorific: str = "Sir") -> None:
-        # Channel id is scoped to the telegram chat/user — this is the unit of
+                 permission_tier: str = _ADMIN_TIER, honorific: str = "Sir",
+                 user_id: Optional[int] = None) -> None:
+        # Channel id is scoped to the AUTHENTICATED USER — this is the unit of
         # concurrent session isolation for the phone. `user` selects the brain's
         # persona; `permission_tier` gates what the command core will run for
         # this caller; `honorific` lets generic fallback strings address the
         # caller correctly. All ride on the channel so a guest's session,
         # working memory, and tool stream stay isolated from the desk HUD's.
-        super().__init__(channel_id=f"telegram:{chat_id}", user=user)
+        #
+        # C5: the key was `chat_id`. In a private chat that IS the user id, so
+        # this changes nothing in production — but identity is authenticated on
+        # `from_user.id`, and anywhere the two differ (a group) the old key gave
+        # one session, one working memory and one pending governance slot to
+        # everybody in the room.
+        super().__init__(channel_id=f"telegram:{user_id or chat_id}", user=user)
         self.chat_id = chat_id
         self.permission_tier = permission_tier
         self.honorific = honorific
@@ -310,7 +341,31 @@ def _channel_for(message) -> "TelegramChannel":
         user=ident.get("user", _OWNER_USER),
         permission_tier=ident.get("tier", _ADMIN_TIER),
         honorific=ident.get("honorific", "Sir"),
+        user_id=_user_id(message),
     )
+
+
+def _log_inbound(label: str, text: str, ident: Optional[dict]) -> None:
+    """Log that something arrived. Log its CONTENT only if the owner sent it.
+
+    Review finding C4. Her voice note was transcribed and the first 80
+    characters printed to the desk console — the screen the owner sits in front
+    of — unconditionally: no `JARVIS_LOG_PARTNER_CHATS`, no
+    `JARVIS_LOG_CONTACT_EVENTS`, no encryption. That is the exact disclosure
+    that `contact_events`' deliberately missing content column, the sealed
+    `partner_messages` table and both opt-in flags exist to prevent. Console-only
+    by default, but one `> log.txt`, service wrapper or nssm install persists it
+    in the clear.
+
+    His own words on his own desk are his business, so ADMIN still logs in full.
+    """
+    body = str(text or "")
+    if ident and ident.get("tier") == _ADMIN_TIER:
+        print(f"[TELEGRAM] {label} → \"{body[:80]}\"", flush=True)
+        return
+    who = (ident or {}).get("label") or (ident or {}).get("user") or "a guest"
+    print(f"[TELEGRAM] {label} → {len(body)} chars from {who} (content withheld)",
+          flush=True)
 
 
 async def _firewall(message) -> None:
@@ -330,6 +385,60 @@ async def _deny_privileged(channel: "TelegramChannel") -> None:
     await channel.reply(_VIP_REJECTION)
 
 
+async def _reject_non_private(message) -> None:
+    """Drop anything that did not arrive in a one-to-one chat. Review finding C5.
+
+    Identity is authenticated on `from_user.id`, but every reply, document and
+    session was addressed to `chat.id`. No handler looked at the chat TYPE and
+    the Router carries no chat filter — so adding the bot to any group that
+    contains the owner (bot commands reach groups even under default privacy
+    mode) turned his own authenticated "/status", "did Mousumi message me
+    today", a `summarize_partner_chat` transcript, a verbatim partner read-back
+    or "/offline <token>" into a message read by everyone in that room —
+    including people whose own messages this firewall silently drops.
+
+    Answered NOWHERE in the group, on the same reasoning as `_firewall`: a reply
+    confirms the bot is listening there. The owner is told once, in the private
+    chat, so a silent drop is not mistaken for JARVIS being down.
+    """
+    chat = getattr(message, "chat", None)
+    print(f"[TELEGRAM] ⛔ Refused a non-private chat — type={_chat_type(message)!r} "
+          f"chat_id={getattr(chat, 'id', '?')} from={_user_id(message)}", flush=True)
+    ident = _identify(message)
+    if not ident or ident.get("tier") != _ADMIN_TIER:
+        return
+    if _bot is None or _OWNER_ID is None:
+        return
+    try:
+        await _bot.send_message(
+            _OWNER_ID,
+            "I saw that, Sir, but it came from a group chat — I only answer "
+            "here, in our own conversation. Anything I said there would be read "
+            "by everyone in the room.")
+    except Exception as e:  # noqa: BLE001 — a courtesy note must never raise
+        print(f"[TELEGRAM] non-private notice failed: {e}", flush=True)
+
+
+def _guard(handler):
+    """Every handler starts the same way: private chat, then a known identity.
+
+    A decorator rather than two lines repeated eight times — C5 exists because
+    the chat type was checked in none of them, and a rule that has to be
+    remembered at eight call sites is a rule that will be missed at the ninth.
+    """
+    import functools
+
+    @functools.wraps(handler)
+    async def _wrapped(message):
+        if not _is_private(message):
+            return await _reject_non_private(message)
+        if _identify(message) is None:
+            return await _firewall(message)
+        return await handler(message)
+
+    return _wrapped
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Handlers
 # ════════════════════════════════════════════════════════════════════════════
@@ -340,19 +449,16 @@ def _build_dispatcher():
     router = Router()
 
     @router.message(Command("start"))
+    @_guard
     async def cmd_start(message):
-        ident = _identify(message)
-        if ident is None:
-            return await _firewall(message)
-        await message.answer(ident["greeting"])
+        await message.answer(_identify(message)["greeting"])
 
     @router.message(Command("status"))
+    @_guard
     async def cmd_status(message):
-        if _identify(message) is None:
-            return await _firewall(message)
         if not _is_admin(message):
             return await _deny_privileged(_channel_for(message))
-        await TelegramChannel(message.chat.id).notify("typing")
+        await _channel_for(message).notify("typing")
         if _status_fn is not None:
             try:
                 text = await _status_fn()
@@ -363,9 +469,8 @@ def _build_dispatcher():
         await message.answer(text)
 
     @router.message(Command("task"))
+    @_guard
     async def cmd_task(message):
-        if _identify(message) is None:
-            return await _firewall(message)
         if not _is_admin(message):
             return await _deny_privileged(_channel_for(message))
         goal = (message.text or "").partition(" ")[2].strip()
@@ -373,7 +478,7 @@ def _build_dispatcher():
             return await message.answer("Give me a goal, Sir — e.g. \"/task build figma key abc123\".")
         if _queue_goal_fn is None:
             return await message.answer("Task queue is not available right now, Sir.")
-        await TelegramChannel(message.chat.id).notify("typing")
+        await _channel_for(message).notify("typing")
         try:
             task_id, n_actions = await _queue_goal_fn(goal, _OWNER_USER)
         except Exception as e:
@@ -389,9 +494,8 @@ def _build_dispatcher():
             await message.answer("I couldn't form an action plan for that goal, Sir.")
 
     @router.message(Command("tasks"))
+    @_guard
     async def cmd_tasks(message):
-        if _identify(message) is None:
-            return await _firewall(message)
         if not _is_admin(message):
             return await _deny_privileged(_channel_for(message))
         if _list_tasks_fn is None:
@@ -408,9 +512,8 @@ def _build_dispatcher():
         await message.answer("Tasks:\n" + "\n".join(lines))
 
     @router.message(Command("offline"))
+    @_guard
     async def cmd_offline(message):
-        if _identify(message) is None:
-            return await _firewall(message)
         if not _is_admin(message):
             return await _deny_privileged(_channel_for(message))
         token = (message.text or "").partition(" ")[2].strip()
@@ -418,21 +521,17 @@ def _build_dispatcher():
         await message.answer(msg)
 
     @router.message(F.text)
+    @_guard
     async def on_text(message):
         ident = _identify(message)
-        if ident is None:
-            return await _firewall(message)
         if _process_fn is None:
             return await message.answer("My reasoning core isn't wired up yet, Sir.")
         # Identity rides on the channel: `user` drives the brain's persona/
         # honorifics, `permission_tier` is enforced by run_remote_command +
         # the ActionEngine before any tool runs. Each guest's session is keyed
-        # by their own telegram chat id, isolating their working memory and
+        # by their own authenticated user id, isolating their working memory and
         # tool stream from the desk HUD and from each other.
-        channel = TelegramChannel(
-            message.chat.id, user=ident["user"], permission_tier=ident["tier"],
-            honorific=ident["honorific"],
-        )
+        channel = _channel_for(message)
         await channel.notify("typing")
         try:
             await _process_fn(message.text, channel)
@@ -441,17 +540,13 @@ def _build_dispatcher():
             await channel.reply("I encountered a fault processing that.")
 
     @router.message(F.voice | F.audio)
+    @_guard
     async def on_voice(message):
         """Voice note → Whisper transcript → the exact same brain path as text."""
         ident = _identify(message)
-        if ident is None:
-            return await _firewall(message)
         if _process_fn is None:
             return await message.answer("My reasoning core isn't wired up yet, Sir.")
-        channel = TelegramChannel(
-            message.chat.id, user=ident["user"], permission_tier=ident["tier"],
-            honorific=ident["honorific"],
-        )
+        channel = _channel_for(message)
         await channel.notify("typing")
         media = message.voice or message.audio
         try:
@@ -465,7 +560,7 @@ def _build_dispatcher():
         if not transcript:
             return await channel.reply(
                 f"That voice note came through empty, {ident['honorific']}.")
-        print(f"[TELEGRAM] 🎤 voice → \"{transcript[:80]}\"", flush=True)
+        _log_inbound("🎤 voice", transcript, ident)
         try:
             await _process_fn(transcript, channel)
         except Exception as e:
@@ -473,17 +568,13 @@ def _build_dispatcher():
             await channel.reply("I encountered a fault processing that.")
 
     @router.message(F.photo)
+    @_guard
     async def on_photo(message):
         """Photo → vision description → the brain answers with full persona/memory."""
         ident = _identify(message)
-        if ident is None:
-            return await _firewall(message)
         if _process_fn is None:
             return await message.answer("My reasoning core isn't wired up yet, Sir.")
-        channel = TelegramChannel(
-            message.chat.id, user=ident["user"], permission_tier=ident["tier"],
-            honorific=ident["honorific"],
-        )
+        channel = _channel_for(message)
         await channel.notify("typing")
         try:
             image = await _download_media(message.photo[-1])  # largest size
@@ -501,10 +592,8 @@ def _build_dispatcher():
             await channel.reply("I encountered a fault processing that.")
 
     @router.message()
+    @_guard
     async def on_other(message):
-        ident = _identify(message)
-        if ident is None:
-            return await _firewall(message)
         await message.answer("Text, voice notes, and photos I can work with — that one I can't, yet.")
 
     dp = Dispatcher()
@@ -552,8 +641,28 @@ async def send_text_to_owner(text: str) -> bool:
     return True
 
 
-async def send_text_to_partner(partner_id: int, text: str) -> bool:
+#: What one Telegram message holds, with headroom under the 4096 hard limit.
+#: A partner send is refused above this rather than chunked — see below.
+PARTNER_MAX_CHARS = 4000
+
+#: `send_text_to_partner` outcomes. Review finding C6: it returned a plain bool,
+#: and a send whose FIRST chunk was accepted and whose second failed returned
+#: False — so she had a truncated fragment of a private message and JARVIS told
+#: him "Nothing was sent." He re-sends, and she gets the first half twice
+#: followed by the whole thing.
+SEND_OK = "sent"
+SEND_PARTIAL = "partial"
+SEND_FAILED = "failed"
+
+
+async def send_text_to_partner(partner_id: int, text: str) -> str:
     """Deliver an OWNER-AUTHORISED message to a registered partner's chat.
+
+    Returns SEND_OK / SEND_PARTIAL / SEND_FAILED. **Not a bool** — finding C6.
+    Truthiness is deliberately not usable here: every one of these strings is
+    truthy, so a caller that ignores the distinction fails to compile its logic
+    rather than silently reporting a half-delivered private message as nothing
+    at all.
 
     Second line of defence, not the first: `partner_registry` already resolved a
     NAME to this id from the environment, and governance already had the owner
@@ -565,32 +674,47 @@ async def send_text_to_partner(partner_id: int, text: str) -> bool:
     handlers and are never piped back to the owner as a live feed.
     """
     if _bot is None or not text or not text.strip():
-        return False
+        return SEND_FAILED
     try:
         pid = int(partner_id)
     except (TypeError, ValueError):
         print(f"[TELEGRAM] ⛔ partner send refused — non-numeric id {partner_id!r}", flush=True)
-        return False
+        return SEND_FAILED
 
     ident = _IDENTITIES.get(pid)
     if ident is None:
         print(f"[TELEGRAM] ⛔ partner send refused — id={pid} is not a recognised identity.", flush=True)
-        return False
+        return SEND_FAILED
     if ident.get("tier") == _ADMIN_TIER:
         # The owner has his own paths (send_text_to_owner); this one exists for
         # partners, and keeping it strict means a "partner" send can never be
         # quietly redirected at the operator's own chat.
         print("[TELEGRAM] ⛔ partner send refused — target is the admin identity.", flush=True)
-        return False
+        return SEND_FAILED
 
-    for chunk in _chunk(text.strip(), 4000):
+    body = text.strip()
+    if len(body) > PARTNER_MAX_CHARS:
+        # Refused, not chunked. A private message split across two Telegram
+        # sends can arrive as a truncated fragment if the second one fails, and
+        # the owner approved ONE artefact — half of it is not what he approved.
+        # `_message_partner` catches this before the CONFIRM prompt; this is the
+        # backstop for any other caller.
+        print(f"[TELEGRAM] ⛔ partner send refused — {len(body)} chars is over the "
+              f"{PARTNER_MAX_CHARS}-character single-message limit.", flush=True)
+        return SEND_FAILED
+
+    chunks = _chunk(body, PARTNER_MAX_CHARS)
+    delivered = 0
+    for chunk in chunks:
         try:
             await _bot.send_message(pid, chunk)
         except Exception as e:  # noqa: BLE001
-            print(f"[TELEGRAM] partner send failed ({ident.get('label')}): {e}", flush=True)
-            return False
+            print(f"[TELEGRAM] partner send failed after {delivered}/{len(chunks)} "
+                  f"part(s) ({ident.get('label')}): {e}", flush=True)
+            return SEND_PARTIAL if delivered else SEND_FAILED
+        delivered += 1
     print(f"[TELEGRAM] ✉ Sent owner-authorised message to {ident.get('label')}.", flush=True)
-    return True
+    return SEND_OK
 
 
 def is_configured() -> bool:

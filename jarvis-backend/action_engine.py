@@ -1756,6 +1756,17 @@ class ActionEngine:
             return (f"There's no message to send to {res.display_name}, Sir — "
                     "tell me what you'd like to say.")
 
+        # C6: refused BEFORE anything is staged or sent, because the failure it
+        # prevents is the worst kind — she receives a truncated fragment of a
+        # private message and he is told nothing was sent. `normalise_body`
+        # collapses whitespace but never truncates, so a long body reached the
+        # transport and was chunked there.
+        if len(body) > partner_messaging.MAX_SEND_CHARS:
+            return (f"That message is {len(body)} characters, Sir — over the "
+                    f"{partner_messaging.MAX_SEND_CHARS} a single Telegram message "
+                    f"holds. I won't split a private message across two sends; "
+                    f"shorten it and I'll deliver it in one piece.")
+
         # A declined send is terminal, and a send already awaiting approval is
         # not staged twice. Checked HERE because every route (voice, HUD, phone,
         # a second action in the same reply) funnels through the engine.
@@ -1776,10 +1787,20 @@ class ActionEngine:
         if not telegram_bot.is_configured():
             return "The Telegram gateway is offline, Sir — nothing was sent."
 
-        ok = await telegram_bot.send_text_to_partner(res.partner_id, body)
-        if ok:
+        outcome = await telegram_bot.send_text_to_partner(res.partner_id, body)
+        if outcome == telegram_bot.SEND_OK:
             partner_messaging.guard.note_sent(res.slot, body)
             return f"Sent to {res.display_name}, Sir."
+        if outcome == telegram_bot.SEND_PARTIAL:
+            # C6: this branch used to fall through to the denial below, while
+            # she already had part of the message. He would re-send, and she
+            # would get the first half twice followed by the whole thing. Marked
+            # as sent so the guard will not let an identical body go out again
+            # by reflex.
+            partner_messaging.guard.note_sent(res.slot, body)
+            return (f"Part of that message reached {res.display_name}, Sir, and "
+                    f"then Telegram cut me off — she has an incomplete version. "
+                    f"Tell me what to send her and I'll follow it up.")
         return (f"I couldn't deliver that to {res.display_name}, Sir — "
                 "Telegram refused the message. Nothing was sent.")
 
@@ -2936,8 +2957,30 @@ class ActionEngine:
             else:
                 cat_safe = category
 
-            memory_manager.add_memory(content=fact, category=cat_safe, user="KAUSTAV")
-            return "Committed to memory, Sir."
+            # Review finding M4. The return value was DISCARDED and the success
+            # string returned unconditionally — then SPOKEN. `add_memory` returns
+            # False identically for a duplicate (fine), a refused source, and a
+            # DB error such as sqlite3 "database is locked", which is reachable:
+            # the default timeout is 5s and three migration scripts write this
+            # same file. `cloud_gateway.remember_fact` states the opposite rule
+            # for the same feature — "telling someone their assistant will
+            # remember something when it will not is worse than admitting it
+            # cannot" — and this path did the thing that rule forbids.
+            #
+            # strict=True (finding M1) is what makes the three separable: a
+            # FAULT raises, a duplicate still returns False.
+            if not fact:
+                return "There was nothing in that to remember, Sir."
+            try:
+                stored = memory_manager.add_memory(
+                    content=fact, category=cat_safe, user="KAUSTAV", strict=True)
+            except memory_manager.MemoryWriteError as e:
+                print(f"[MEMORY] remember_fact write failed: {e}", flush=True)
+                return ("I could not commit that to memory, Sir — the store "
+                        "refused the write. Nothing was saved.")
+            if stored:
+                return "Committed to memory, Sir."
+            return "I already have that one, Sir — it's in memory."
         except Exception as e:
             return f"Error: {e}"
 

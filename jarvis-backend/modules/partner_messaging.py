@@ -46,6 +46,14 @@ STAGE_TTL_S = 90.0
 REFUSED_DENIED = "already_declined"
 REFUSED_DUPLICATE = "already_awaiting_approval"
 
+#: The longest body that goes out as ONE Telegram message. Review finding C6: a
+#: longer one used to be chunked by the transport, and a second chunk failing
+#: left her holding a truncated fragment of a private message while the owner
+#: was told "Nothing was sent". A message to a person is one artefact — he
+#: approved it whole, so it is delivered whole or refused before it is staged.
+#: Telegram's own hard limit is 4096; the headroom is for the chunker.
+MAX_SEND_CHARS = 4000
+
 
 def parse_target(target) -> tuple[str, str]:
     """Pull (recipient_name, message_text) out of an action target.

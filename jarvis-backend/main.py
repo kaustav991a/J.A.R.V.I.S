@@ -1448,7 +1448,18 @@ async def run_remote_command(command_text: str, channel) -> None:
     # How to address this caller in generic fallback lines (the brain/synthesis
     # already honour persona; this only covers the bare "Done"/"Standing by" tails).
     honor = getattr(channel, "honorific", "Sir")
-    print(f"\n[REMOTE:{kind}] Command from {user} (tier={tier}): {command_text}", flush=True)
+    # Review finding C4: this printed the WHOLE text of every remote message to
+    # the desk console — the screen the owner sits in front of — including a
+    # partner's, with no flag and no encryption. That is the exact disclosure
+    # `contact_events`' missing content column, the sealed `partner_messages`
+    # table and both opt-in flags exist to prevent, and one `> log.txt` or nssm
+    # service wrapper persists it in the clear. His own words stay in full.
+    if tier == ADMIN_TIER:
+        print(f"\n[REMOTE:{kind}] Command from {user} (tier={tier}): {command_text}",
+              flush=True)
+    else:
+        print(f"\n[REMOTE:{kind}] Command from {user} (tier={tier}): "
+              f"{len(command_text or '')} chars (content withheld)", flush=True)
 
     # Background memory extraction — identical to the HUD path. Runs for EVERY
     # recognised caller, partners included, and is deliberately NOT behind the

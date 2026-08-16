@@ -103,6 +103,29 @@ class MemoryWriteError(MemoryOperationError):
     successful outcome with nothing new in it."""
 
 
+def one_line(text) -> str:
+    """One memory is ONE line. Review finding M3, 2026-08-16.
+
+    `content.strip()` trims the ends only, SQL parameters preserve embedded
+    newlines, and `format_memory_block` joins entries with a newline — which
+    `brain.py` splices RAW into the system prompt with no delimiter and no
+    escaping. So a single stored fact could become N prompt lines that are
+    byte-identical to genuine `[Correction]` entries, and Corrections sort FIRST
+    into every turn.
+
+    `remember_fact` is AUTO in governance.json, so the argument is never
+    inspected, and under the §6.8 tool layer that argument can be lifted
+    verbatim from a web result or an indexed document. That is a persistent
+    prompt injection with one AUTO action and no prompt to the owner.
+
+    Collapsed on the WAY IN (add_memory) and on the WAY OUT
+    (format_memory_block): rows written before today, or by any other path, must
+    not be able to render as more than one line either. Same treatment
+    `partner_messaging.normalise_body` already gives a message body.
+    """
+    return " ".join(str(text or "").split())
+
+
 def _encryption_on() -> bool:
     return _crypto.keys_ready()
 
@@ -296,7 +319,9 @@ def add_memory(
               f"sources are {sorted(KNOWN_SOURCES)}.", flush=True)
         return False
 
-    content = content.strip()
+    # M3: one memory, one line — before the hash, before the encryption, before
+    # the row. A newline in here is a new line of the system prompt.
+    content = one_line(content)
     timestamp = datetime.datetime.utcnow().isoformat()
 
     # Encrypt before the row leaves this function. A locked key raises rather
@@ -615,7 +640,10 @@ def format_memory_block(memories: list[dict]) -> str:
 
     lines = ["[LONG-TERM MEMORY]"]
     for m in memories:
-        lines.append(f"  [{m['category']}] {m['content']}")
+        # M3: the renderer is the SINK into the system prompt, so it collapses
+        # too. A row stored before this rule existed — or written by any path
+        # that skips add_memory — still cannot become two prompt lines here.
+        lines.append(f"  [{one_line(m['category'])}] {one_line(m['content'])}")
     return "\n".join(lines)
 
 

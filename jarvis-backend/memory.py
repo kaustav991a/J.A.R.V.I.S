@@ -359,12 +359,52 @@ init_db()
 # Every other Chroma call site in this tree was already anchored; this was the
 # one that was not.
 CHROMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis_chroma_db")
+
+#: This collection's AAD namespace, and the argument every chroma_crypto call
+#: below takes. Named once so a rename cannot silently orphan the ciphertext.
+SEMANTIC_COLLECTION = "jarvis_memory"
+
 try:
     chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-    semantic_collection = chroma_client.get_or_create_collection(name="jarvis_memory")
+    semantic_collection = chroma_client.get_or_create_collection(name=SEMANTIC_COLLECTION)
 except Exception as e:
     print(f"[MEMORY] WARNING: Failed to initialize ChromaDB. {e}")
     semantic_collection = None
+
+# ── Encryption at rest for the VECTOR half of Tier 3 (review finding M5) ─────
+# Verified on this disk 2026-08-16: `jarvis_memory` held 118 documents in
+# PLAINTEXT — none with the `enc:v1:` prefix — while `jarvis_longterm.db` in the
+# same folder was sealed 60/60 and `keys_ready()` was True. Encryption was on
+# for SQLite and off for the vector mirror of the same facts. A copied folder, a
+# backup or a sync client — the precise threat `memory_crypto`'s docstring names
+# — yielded one half as ciphertext and the other as readable text, and
+# `brain.py` reads these straight back into every prompt.
+#
+# `modules/chroma_crypto.py` exists to close exactly this and was imported by
+# `personal_rag` ONLY.
+#
+# Metadata (`user`, `timestamp`) is deliberately left in the clear, matching the
+# SQLite half exactly: `memories.user` and `memories.timestamp` are plaintext
+# there too, because both stores filter on them. What is sealed is what the
+# sibling store seals — the CONTENT.
+from modules import chroma_crypto as _chroma_crypto  # noqa: E402
+
+_embed_fn = None
+
+
+def _embedder():
+    """Chroma's DEFAULT embedding function, held explicitly.
+
+    Same model the collection already uses, so vectors written before and after
+    the ceremony live in the same space. Lazy, because instantiating it loads
+    the ONNX MiniLM model and an import must not pay for that.
+    """
+    global _embed_fn
+    if _embed_fn is None:
+        from chromadb.utils import embedding_functions
+        _embed_fn = embedding_functions.DefaultEmbeddingFunction()
+    return _embed_fn
+
 
 def save_semantic_memory(user: str, fact: str):
     """Embeds and saves a permanent fact into the Vector Database."""
@@ -373,11 +413,14 @@ def save_semantic_memory(user: str, fact: str):
     try:
         memory_id = str(uuid.uuid4())
         semantic_collection.add(
-            documents=[fact],
             metadatas=[{"user": user, "timestamp": datetime.datetime.now().isoformat()}],
-            ids=[memory_id]
+            ids=[memory_id],
+            # Embeds the PLAINTEXT and stores the ciphertext. Handing the sealed
+            # string to `documents=` alone would embed the ciphertext and break
+            # retrieval with no error at all.
+            **_chroma_crypto.sealed_add_kwargs([fact], SEMANTIC_COLLECTION, _embedder()),
         )
-        print(f"[MEMORY] Logged semantic memory for {user}: {fact}")
+        print(f"[MEMORY] Logged semantic memory for {user}: {str(fact)[:80]}")
     except Exception as e:
         print(f"[MEMORY] Failed to save semantic memory: {e}")
 
@@ -391,12 +434,21 @@ def recall_semantic_context(user: str, query: str, n_results: int = 3) -> str:
             n_results=n_results,
             where={"user": user} # Only recall facts belonging to the current user
         )
-        
-        documents = results.get("documents")
-        if documents and documents[0]:
-            memory_strings = [f"- {doc}" for doc in documents[0]]
-            return "\n".join(memory_strings)
-        return "No relevant past memories found."
     except Exception as e:
         print(f"[MEMORY] Semantic recall failed: {e}")
         return "Memory retrieval offline."
+
+    documents = results.get("documents")
+    if not (documents and documents[0]):
+        return "No relevant past memories found."
+    try:
+        # Deliberately outside the try above, and caught separately: a locked
+        # store must never be reported as "no memories". Silently answering
+        # "nothing here" when the truth is "I cannot open this" is
+        # indistinguishable from having forgotten him, which is the one failure
+        # C#11a is written to prevent.
+        opened = _chroma_crypto.open_documents(documents[0], SEMANTIC_COLLECTION)
+    except _chroma_crypto.MemoryLockedError as e:
+        print(f"[MEMORY] Semantic recall blocked — memory store locked: {e}", flush=True)
+        return "Memory retrieval offline — the memory store is locked."
+    return "\n".join(f"- {doc}" for doc in opened)

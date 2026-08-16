@@ -57,6 +57,7 @@ __all__ = [
     "MemoryLockedError", "encryption_on", "table_for", "blind",
     "encrypt_document", "decrypt_document",
     "encrypt_metadata", "decrypt_metadata",
+    "sealed_add_kwargs", "open_documents",
     "doc_id", "BLIND_SUFFIX", "DOC_COLUMN",
 ]
 
@@ -161,6 +162,47 @@ def encrypt_field_as(value: str | None, collection: str, column: str) -> str | N
 
 def decrypt_field_as(value: str | None, collection: str, column: str) -> str | None:
     return _crypto.decrypt_field(value, table_for(collection), column)
+
+
+# ── the write/read pair, so rule 1 lives in ONE place ────────────────────────
+
+def sealed_add_kwargs(texts, collection: str, embed_fn) -> dict:
+    """The kwargs an `add()`/`upsert()` needs so the store ends up sealed.
+
+    Rule 1 at the top of this file is the subtle one and the easy one to get
+    wrong: the vector has to come from the PLAINTEXT. A collection with an
+    embedding_function embeds whatever string it is handed, so passing
+    ciphertext to `add(documents=…)` embeds the ciphertext and destroys
+    retrieval **silently** — the symptom is "search got worse", not an error.
+
+    So the ordering is encoded once, here, rather than restated at each call
+    site. `embed_fn` is a callable taking a list of strings (Chroma's own
+    embedding-function protocol), passed in so this module keeps its promise of
+    depending on nothing but `memory_crypto`.
+
+    Encryption off ⇒ just the documents, and the collection embeds them as it
+    always did. Nothing about an unencrypted store changes.
+
+    Review finding M5, 2026-08-16: `jarvis_memory` held 118 documents in
+    plaintext while `jarvis_longterm.db` beside it was sealed 60/60. This module
+    existed to close exactly that and was imported by `personal_rag` only.
+    """
+    texts = list(texts)
+    if not encryption_on():
+        return {"documents": texts}
+    return {
+        "documents": [encrypt_document(t, collection) for t in texts],
+        "embeddings": embed_fn(texts),
+    }
+
+
+def open_documents(documents, collection: str) -> list:
+    """Decrypt a row of query/get results. Plaintext passes straight through.
+
+    That pass-through is what lets a half-finished migration still read, and it
+    is why sealing a store is safe to do incrementally.
+    """
+    return [decrypt_document(d, collection) for d in (documents or [])]
 
 
 # ── ids ──────────────────────────────────────────────────────────────────────

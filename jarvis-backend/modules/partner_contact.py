@@ -534,8 +534,24 @@ def note_contact(partner_slot: str, message_text: str | None, *,
     turn costs her reply no latency. Returns False rather than raising when
     recording is off or the write fails — a bookkeeping fault must never break
     her conversation.
+
+    ⚠️ THE FLAG IS CHECKED HERE, FIRST. Review finding C3, 2026-08-16.
+
+    It used to be checked only inside `contact_events.record()` — and Python
+    evaluates `assess_urgency(...)` BEFORE it calls `record`. So on a fresh
+    clone, with the flag unset (the 2026-08-08 default-OFF ruling: "records
+    nothing about anyone until its owner says otherwise"), a partner message
+    with no keyword hit still went `semantic_urgency` → `_router_call` →
+    `universal_llm_call`, which POSTs her verbatim message to Groq / OpenRouter
+    / Gemini. Only after that round trip did `record` return False and throw the
+    result away. **The owner's off switch stopped the ROW, not the network call.**
     """
     from modules import contact_events
+
+    if not contact_events.enabled(env):
+        # Nothing is assessed, nothing leaves this machine, nothing is written.
+        # One check, before any work, is what "off" has to mean.
+        return False
 
     layer2 = semantic if semantic is not None else (
         lambda t: semantic_urgency(t, env=env))

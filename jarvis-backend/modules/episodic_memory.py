@@ -17,12 +17,33 @@ CHROMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ja
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # Initialize the episodic ChromaDB collection
+EPISODES_COLLECTION = "jarvis_episodes"
+
 try:
     _chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-    episodes_collection = _chroma_client.get_or_create_collection(name="jarvis_episodes")
+    episodes_collection = _chroma_client.get_or_create_collection(name=EPISODES_COLLECTION)
 except Exception as e:
     print(f"[EPISODIC] WARNING: Failed to initialize episodic ChromaDB. {e}")
     episodes_collection = None
+
+# Review finding M5 named `jarvis_memory`; this collection is the same defect one
+# door over, in the same folder, and the document here is a summary of a WHOLE
+# CONVERSATION rather than one fact. Sealed on the same terms: content
+# encrypted, `user`/`date` metadata left in the clear because both are filtered
+# on and the SQLite half keeps its equivalents plain too.
+from modules import chroma_crypto as _chroma_crypto  # noqa: E402
+
+_embed_fn = None
+
+
+def _embedder():
+    """Chroma's DEFAULT embedding function, held explicitly — the same model
+    this collection already uses, so old and new vectors share a space."""
+    global _embed_fn
+    if _embed_fn is None:
+        from chromadb.utils import embedding_functions
+        _embed_fn = embedding_functions.DefaultEmbeddingFunction()
+    return _embed_fn
 
 # The in-memory session buffer
 _current_session = []
@@ -106,9 +127,13 @@ Transcript:
             )
             summary = completion.choices[0].message.content.strip()
             
-            # Embed the summary into ChromaDB
+            # Embed the summary into ChromaDB. sealed_add_kwargs embeds the
+            # PLAINTEXT and stores the ciphertext — handing the sealed string to
+            # documents= alone would embed the ciphertext and silently destroy
+            # retrieval.
             episodes_collection.add(
-                documents=[summary],
+                **_chroma_crypto.sealed_add_kwargs(
+                    [summary], EPISODES_COLLECTION, _embedder()),
                 metadatas=[{
                     "user": _session_user,
                     "date": date_str,
@@ -142,20 +167,25 @@ def recall_past_sessions(user: str, query: str, n_results: int = 3) -> str:
             n_results=min(n_results, count),
             where={"user": user}
         )
-        
-        documents = results.get("documents")
-        metadatas = results.get("metadatas")
-        
-        if documents and documents[0]:
-            memory_strings = []
-            for i, doc in enumerate(documents[0]):
-                date = metadatas[0][i].get("date", "unknown") if metadatas else "unknown"
-                memory_strings.append(f"- [{date}] {doc}")
-            return "\n".join(memory_strings)
-        return "No relevant past sessions found."
     except Exception as e:
         print(f"[EPISODIC] Past session recall failed: {e}")
         return "Past session retrieval offline."
+
+    documents = results.get("documents")
+    metadatas = results.get("metadatas")
+    if not (documents and documents[0]):
+        return "No relevant past sessions found."
+    try:
+        # A locked store must not read as "no past sessions" — see memory.py.
+        opened = _chroma_crypto.open_documents(documents[0], EPISODES_COLLECTION)
+    except _chroma_crypto.MemoryLockedError as e:
+        print(f"[EPISODIC] Recall blocked — memory store locked: {e}", flush=True)
+        return "Past session retrieval offline — the memory store is locked."
+    memory_strings = []
+    for i, doc in enumerate(opened):
+        date = metadatas[0][i].get("date", "unknown") if metadatas else "unknown"
+        memory_strings.append(f"- [{date}] {doc}")
+    return "\n".join(memory_strings)
 
 
 def get_session_turn_count() -> int:
