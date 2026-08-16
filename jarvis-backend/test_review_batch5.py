@@ -322,6 +322,62 @@ def test_presence_failure_parks_rather_than_asking():
           "at_desk is an equality test, so anything unknown is NOT at the desk")
 
 
+def test_no_smoothing_does_not_divide_by_zero():
+    """Batch 7. `JARVIS_GESTURE_SMOOTH=0` is what a person types for "no
+    smoothing", and it is parsed as a bare float with no range check. The
+    One-Euro cutoff is `min_cutoff + beta*|dx|`, and `_dx` is 0.0 after every
+    reset — so the first hand movement after engaging divided by zero and took
+    the gesture loop down with it."""
+    from modules.gesture_engine import OneEuroFilter
+
+    f = OneEuroFilter(min_cutoff=0.0, beta=0.015, d_cutoff=1.0)
+    try:
+        first = f(0.5, 0.0)
+        f(0.5, 0.033)
+        third = f(0.6, 0.066)
+    except ZeroDivisionError:
+        check(False, "min_cutoff=0 still divides by zero")
+        return
+    check(first == 0.5, "the first sample passes through unchanged")
+    check(0.5 <= third <= 0.6, f"and the filter keeps tracking; got {third}")
+
+    # A negative value is the other thing a fat finger produces.
+    f2 = OneEuroFilter(min_cutoff=-3.0, beta=0.0, d_cutoff=1.0)
+    try:
+        f2(0.5, 0.0)
+        f2(0.7, 0.033)
+        check(True, "a negative cutoff is survivable too")
+    except ZeroDivisionError:
+        check(False, "a negative cutoff divides by zero")
+
+
+def test_the_accel_curve_cannot_divide_by_zero_either():
+    """`_accel` has no `hi <= lo` guard where `_precision_gain` does — it is
+    safe only because both early returns fire first. Pinned, because that is
+    the kind of safety a later edit removes without noticing."""
+    from modules.gesture_engine import GestureConfig, GestureEngine
+
+    cfg = GestureConfig()
+    cfg.accel_v_lo = cfg.accel_v_hi = 2.0        # the degenerate case
+    engine = GestureEngine(cfg)
+    for v in (0.0, 2.0, 5.0, 1e6):
+        try:
+            engine._accel(v)
+        except ZeroDivisionError:
+            check(False, f"_accel divided by zero at v={v}")
+            return
+    check(True, "_accel survives accel_v_lo == accel_v_hi at every speed")
+
+    cfg.precision_v_lo = cfg.precision_v_hi = 1.0
+    for v in (0.0, 1.0, 9.0):
+        try:
+            engine._precision_gain(v)
+        except ZeroDivisionError:
+            check(False, f"_precision_gain divided by zero at v={v}")
+            return
+    check(True, "and _precision_gain survives its own degenerate config")
+
+
 TESTS = sorted(
     (fn for name, fn in list(globals().items())
      if name.startswith("test_") and callable(fn)),

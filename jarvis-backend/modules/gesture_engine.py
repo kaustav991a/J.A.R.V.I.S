@@ -102,7 +102,15 @@ class OneEuroFilter:
 
     @staticmethod
     def _alpha(cutoff: float, dt: float) -> float:
-        tau = 1.0 / (2.0 * math.pi * cutoff)
+        # Review batch 7: `cutoff` reaches zero on a value a person would
+        # reasonably type. `min_cutoff` is live-tunable through
+        # JARVIS_GESTURE_SMOOTH (parsed as a bare float, no range check), and
+        # "no smoothing" reads as 0 — but cutoff is `min_cutoff + beta*|dx|`,
+        # and `_dx` is 0.0 on the first frame after every reset, so
+        # JARVIS_GESTURE_SMOOTH=0 divided by zero the moment the hand first
+        # moved. Floored rather than validated at parse time, because this is
+        # the one line where the division actually happens.
+        tau = 1.0 / (2.0 * math.pi * max(cutoff, 1e-6))
         return 1.0 / (1.0 + tau / dt)
 
     def __call__(self, x: float, t: float) -> float:

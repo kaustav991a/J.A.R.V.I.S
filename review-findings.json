@@ -1,7 +1,7 @@
 {
   "review": "pre-Electron code review, batch 1",
   "date": "2026-08-16",
-  "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code. | 2026-08-16 session 3: C2 harness written (was owed), then R5, M2, M1, C1 fixed in that order. Suite 76/76, 2202 checks. | 2026-08-16 session 4: the seven batch-2 mediums fixed. Suite 77/77, 2285 checks. THE WHOLE REVIEW BACKLOG IS NOW CLOSED. | 2026-08-16 session 5 (batch 3): brain.py reviewed -- 3 findings, all fixed. agent-runner/agent-support given a BOUNDED sweep only (grep for sinks/claims + agent_files preconditions read); NOT line-by-line. Suite 78/78, 2308. | 2026-08-16 session 6 (batch 4): agent-support read in full -- 3 findings, all fixed. agent_search/tool_calls/agent_schema/agent_errors/agent_subagents VERIFIED SOUND, do not re-raise. agent_runner + worker_loop remain partially covered. Suite 79/79, 2337. | 2026-08-16 session 7 (batch 5): ambient_vision reviewed in full -- 3 findings, all fixed. gesture_camera._loop and cursor_overlay.read_stdin verified sound at the loop level. STILL NOT READ LINE-BY-LINE: agent_runner 1-330, worker_loop remainder, gesture_engine (776), cursor_overlay body (548), gesture_roi, gesture_arbiter, frontend (4240). Suite 80/80, 2361. | 2026-08-16 session 8 (batch 6): agent_runner read in full -- 2 findings, both fixed. THE ACTING CODE IS NOW FULLY REVIEWED. Remaining unread by DECISION not omission: gesture_engine (776, pure state machine), cursor_overlay body (548, loop verified), gesture_roi, gesture_arbiter, frontend (4240, no shell/fs/network). Suite 80/80, 2369.",
+  "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code. | 2026-08-16 session 3: C2 harness written (was owed), then R5, M2, M1, C1 fixed in that order. Suite 76/76, 2202 checks. | 2026-08-16 session 4: the seven batch-2 mediums fixed. Suite 77/77, 2285 checks. THE WHOLE REVIEW BACKLOG IS NOW CLOSED. | 2026-08-16 session 5 (batch 3): brain.py reviewed -- 3 findings, all fixed. agent-runner/agent-support given a BOUNDED sweep only (grep for sinks/claims + agent_files preconditions read); NOT line-by-line. Suite 78/78, 2308. | 2026-08-16 session 6 (batch 4): agent-support read in full -- 3 findings, all fixed. agent_search/tool_calls/agent_schema/agent_errors/agent_subagents VERIFIED SOUND, do not re-raise. agent_runner + worker_loop remain partially covered. Suite 79/79, 2337. | 2026-08-16 session 7 (batch 5): ambient_vision reviewed in full -- 3 findings, all fixed. gesture_camera._loop and cursor_overlay.read_stdin verified sound at the loop level. STILL NOT READ LINE-BY-LINE: agent_runner 1-330, worker_loop remainder, gesture_engine (776), cursor_overlay body (548), gesture_roi, gesture_arbiter, frontend (4240). Suite 80/80, 2361. | 2026-08-16 session 8 (batch 6): agent_runner read in full -- 2 findings, both fixed. THE ACTING CODE IS NOW FULLY REVIEWED. Remaining unread by DECISION not omission: gesture_engine (776, pure state machine), cursor_overlay body (548, loop verified), gesture_roi, gesture_arbiter, frontend (4240, no shell/fs/network). Suite 80/80, 2369. | 2026-08-16 session 9 (batch 7): gesture_engine + gesture_roi + gesture_arbiter read in full -- 1 finding fixed. gesture_roi and gesture_arbiter VERIFIED SOUND. Remaining: cursor_overlay body (548) + frontend (4240). ~79% of the review target read line-by-line. Suite 80/80, 2374.",
   "areas_done": [
     "action-engine",
     "agent-runner (full)",
@@ -11,7 +11,8 @@
     "io-agents",
     "main-api",
     "memory",
-    "perception (ambient_vision full; gesture_camera + cursor_overlay loop-level verified sound)"
+    "perception (ambient_vision full; gesture_camera + cursor_overlay loop-level verified sound)",
+    "perception remainder (gesture_engine, gesture_roi, gesture_arbiter full)"
   ],
   "areas_pending": [
     "agent-support",
@@ -513,6 +514,18 @@
       "reachable_by": "JARVIS_AGENT_MCP=1 with any configured server that fails to start (missing binary, bad command)",
       "failure": "registry.connect_all(config) SPAWNS SUBPROCESSES and was not wrapped. A raise partway through left whatever had already started running with no handle to close them, and propagated out of run_agent_command -- taking the whole agent run down for an OPTIONAL feature. An external server being unreachable is information, not a fault.",
       "fix_applied": "FIXED 2026-08-16 -- try/except around connect_all: close the half-built registry, log, and return None so the run continues with local tools only."
+    },
+    {
+      "id": "G1",
+      "severity": "medium",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "E",
+      "file": "modules/gesture_engine.py:104",
+      "title": "JARVIS_GESTURE_SMOOTH=0 divided by zero on the first hand movement",
+      "reachable_by": "setting JARVIS_GESTURE_SMOOTH=0 — the value a person types for 'no smoothing'. Parsed as a bare float with no range check, documented as a hard per-session override.",
+      "failure": "OneEuroFilter._alpha computes tau = 1/(2*pi*cutoff), and cutoff is min_cutoff + beta*abs(self._dx). `_dx` is 0.0 after every reset() — which runs on engage, disengage and hand-loss — so with min_cutoff=0 the cutoff is exactly 0 on the first move frame and the filter raised ZeroDivisionError straight out of the gesture loop.",
+      "fix_applied": "FIXED 2026-08-16 -- cutoff floored at 1e-6 AT the division rather than validated at parse time, because that is the one line where the division happens. A negative value is survivable too."
     }
   ],
   "verified_sound": [
