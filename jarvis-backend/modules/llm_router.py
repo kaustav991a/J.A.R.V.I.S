@@ -372,34 +372,138 @@ def _import_genai():
     return genai
 
 
+# Keys the provider has told us are not keys at all. A revoked key never
+# recovers inside one process, so re-offering it every call buys a guaranteed
+# round-trip of nothing. Live-gate F-36: key #5 of 5 was revoked and was still
+# being tried on every single call.
+_gemini_dead_keys: set[int] = set()
+
+# When every live key reports quota, the leg is out until the window resets.
+# Live-gate F-36: the four working keys share ONE bucket — their retry-after
+# values counted down in step from a single reset instant, which is what a
+# shared quota looks like from outside. The docstring above says rotation
+# "multiplies free-tier headroom"; measured, it multiplies latency. Until the
+# window turns over, escalate on the FIRST call instead of paying five
+# round-trips to learn the same thing again.
+_gemini_cooldown_until: float = 0.0
+_GEMINI_COOLDOWN_DEFAULT_S = float(os.getenv("GEMINI_QUOTA_COOLDOWN_S", "60"))
+
+
+def _is_quota_error(err: Exception) -> bool:
+    name = type(err).__name__
+    text = str(err).lower()
+    return name == "ResourceExhausted" or "429" in text or "quota" in text
+
+
+def _is_dead_key_error(err: Exception) -> bool:
+    """True when the provider rejected the CREDENTIAL, not the request."""
+    text = str(err).lower()
+    return ("api_key_invalid" in text
+            or "api key not valid" in text
+            or type(err).__name__ in ("Unauthenticated", "PermissionDenied"))
+
+
+def _quota_retry_seconds(err: Exception) -> float:
+    """Seconds Google asked us to wait, when it says so."""
+    import re as _re
+    m = _re.search(r"retry in ([0-9]+(?:\.[0-9]+)?)", str(err), _re.IGNORECASE)
+    if m:
+        try:
+            return min(float(m.group(1)) + 1.0, 300.0)
+        except ValueError:
+            pass
+    return _GEMINI_COOLDOWN_DEFAULT_S
+
+
 def _run_with_gemini_rotation(fn):
     """Run fn(genai) trying each configured Gemini key, starting from the last
-    one that worked. Rotates on ANY provider error (quota, auth, transient);
-    raises the last error only when every key failed so the router escalates."""
-    global _gemini_key_idx
+    one that worked. Rotates on PROVIDER errors (quota, auth, transient);
+    raises the last error only when every key failed so the router escalates.
+
+    Two things it deliberately does NOT rotate on (live-gate F-17):
+    a deterministic client-side error, which every key will reproduce
+    identically, and a key the provider has already called invalid.
+    """
+    global _gemini_key_idx, _gemini_cooldown_until
     keys = _gemini_keys()
     if not keys:
         raise RuntimeError("No Gemini keys configured (GEMINI_API_KEYS / GEMINI_API_KEY)")
+
+    now = time.monotonic()
+    if now < _gemini_cooldown_until:
+        raise RuntimeError(
+            f"Gemini quota cooldown — every key reported 429; "
+            f"{_gemini_cooldown_until - now:.0f}s left in the window"
+        )
+
     genai = _import_genai()
+    live = [i for i in range(len(keys)) if i not in _gemini_dead_keys]
+    if not live:
+        raise RuntimeError(
+            f"All {len(keys)} Gemini key(s) were rejected as invalid by the provider"
+        )
+
     last_err: Exception | None = None
-    for offset in range(len(keys)):
-        idx = (_gemini_key_idx + offset) % len(keys)
+    quota_failures = 0
+    tried = 0
+    # Start from the last key that worked, if it is still live.
+    start = live.index(_gemini_key_idx) if _gemini_key_idx in live else 0
+    for offset in range(len(live)):
+        idx = live[(start + offset) % len(live)]
+        tried += 1
         genai.configure(api_key=keys[idx])
         try:
             result = fn(genai)
             _gemini_key_idx = idx  # sticky: keep using the key that worked
             return result
+        except (TypeError, ValueError) as e:
+            # F-17: a client-side bug. Five keys produced five identical
+            # "contents must not be empty" failures and the log read as five
+            # dead keys — the payload was wrong and no key could have helped.
+            print(f"[ROUTER] Gemini call is malformed ({type(e).__name__}: {e}) "
+                  f"— not a key problem, not rotating.", flush=True)
+            raise
         except Exception as e:  # noqa: BLE001
             last_err = e
+            if _is_dead_key_error(e):
+                _gemini_dead_keys.add(idx)
+                print(f"[ROUTER] Gemini key #{idx + 1}/{len(keys)} REVOKED by the "
+                      f"provider — dropped for this process.", flush=True)
+                continue
+            if _is_quota_error(e):
+                quota_failures += 1
             print(f"[ROUTER] Gemini key #{idx + 1}/{len(keys)} failed "
                   f"({type(e).__name__}) — rotating.", flush=True)
+
+    if quota_failures and quota_failures == tried:
+        wait = _quota_retry_seconds(last_err) if last_err else _GEMINI_COOLDOWN_DEFAULT_S
+        _gemini_cooldown_until = time.monotonic() + wait
+        print(f"[ROUTER] Every live Gemini key is quota-limited — the leg is "
+              f"shared-bucket, not per-key. Cooling down {wait:.0f}s.", flush=True)
+
     raise last_err  # type: ignore[misc]
+
+
+#: What to send when a caller's whole prompt was system text. Gemini rejects an
+#: empty `contents` outright, so SOMETHING has to occupy the user turn; this
+#: says only "do the thing you were just told to do" and adds no instruction of
+#: its own, because anything with content in it would silently edit prompts
+#: written for four different call sites.
+_GEMINI_SYSTEM_ONLY_NUDGE = "Proceed."
 
 
 def _split_messages_for_gemini(messages):
     """OpenAI-style messages → (system_instruction, Gemini contents).
 
     Gemini takes system text separately and uses roles 'user'/'model'.
+
+    Live-gate finding F-17. Hoisting system text out is correct — and when the
+    caller passed NOTHING ELSE, it left `contents` empty and the SDK raised
+    "contents must not be empty" on every key in the pool. Four call sites do
+    exactly that (`brain.py` synthesis ×2, the briefing, and episodic-memory
+    summarisation), so the separate-quota fallback was permanently dead on the
+    four paths that most needed a second provider — invisibly, because the
+    cascade just answered from the next one down.
     """
     system_parts, contents = [], []
     for m in messages:
@@ -412,6 +516,8 @@ def _split_messages_for_gemini(messages):
         else:  # user (and any unknown role) maps to user
             contents.append({"role": "user", "parts": [content]})
     system_instruction = "\n\n".join(p for p in system_parts if p) or None
+    if not contents and system_instruction:
+        contents.append({"role": "user", "parts": [_GEMINI_SYSTEM_ONLY_NUDGE]})
     return system_instruction, contents
 
 

@@ -1492,6 +1492,35 @@ _CONFIRM_TARGET_LABEL = {
 }
 
 
+def _disclosed_path(raw: str, atype: str) -> str:
+    """The path the action will ACTUALLY touch, for the authorisation prompt.
+
+    Live-gate finding F-34. The prompt used to read back the raw target the
+    model produced. On 2026-08-16 that was `C:\\Users\\KAUSTAV\\Desktop\\add.py`
+    — a path invented from the speaker's name, on a machine whose profile is
+    `KINGSHUK`. It read as plausible, so there was nothing in the question for
+    the owner to catch, and the sandbox refusal came only afterwards.
+
+    A read-back that shows the request rather than the consequence is the same
+    defect F-29 fixed one layer up: the human is shown something other than
+    what will happen. Falls back to the raw string — a prompt with an
+    imperfect path still beats a prompt with none.
+    """
+    if not raw:
+        return raw
+    if atype not in ("workspace_write", "workspace_patch"):
+        return raw
+    try:
+        probe = raw
+        prefix = getattr(engine, "PATCH_ALL_PREFIX", "")
+        if prefix and probe.startswith(prefix):
+            probe = probe[len(prefix):].strip()
+        resolved = engine.workspace_agent._resolve_safe_for_write(probe)
+        return str(resolved) if resolved is not None else raw
+    except Exception:
+        return raw
+
+
 def _confirm_disclosure(conf_action: str, conf_id: str | None) -> str:
     """A human-readable description of WHAT the staged action will do.
 
@@ -1512,7 +1541,7 @@ def _confirm_disclosure(conf_action: str, conf_id: str | None) -> str:
         # summarised by size rather than read aloud in full.
         if atype in ("workspace_write", "ghost_save_file"):
             path, sep, content = target.partition("|")
-            path = path.strip() or "an unnamed file"
+            path = _disclosed_path(path.strip(), atype) or "an unnamed file"
             if sep:
                 lines = content.count("\\n") + content.count("\n") + 1
                 return f"writing {lines} line{'s' if lines != 1 else ''} to {path}"
@@ -1521,7 +1550,8 @@ def _confirm_disclosure(conf_action: str, conf_id: str | None) -> str:
         # "path|search|replace": all three are the decision.
         if atype == "workspace_patch":
             bits = target.split("|")
-            path = (bits[0] if bits else "").strip() or "an unnamed file"
+            path = _disclosed_path((bits[0] if bits else "").strip(),
+                                   atype) or "an unnamed file"
             if len(bits) >= 3:
                 return (f"in {path}, replacing “{bits[1].strip()}” "
                         f"with “{bits[2].strip()}”")
@@ -1533,6 +1563,21 @@ def _confirm_disclosure(conf_action: str, conf_id: str | None) -> str:
     except Exception as e:  # noqa: BLE001 — never let the read-back break the gate
         print(f"[GOVERNANCE] confirm disclosure failed: {e}", flush=True)
         return ""
+
+
+def _dropped_plan_note(dropped: int, title: str) -> str:
+    """What to say about the rest of a plan that was abandoned at a CONFIRM.
+
+    Live-gate finding F-34. A batch does not survive a confirmation: the human
+    is asked about ONE action and the remaining steps are dropped, not queued.
+    Says "dropped" rather than "held" on purpose — "held" promises they will
+    run after approval, and they will not. The F-16 rule reads both ways: do
+    not claim work you did not do, and do not promise work you will not do.
+    """
+    plural = "s" if dropped != 1 else ""
+    verb = "were" if dropped != 1 else "was"
+    return (f"The remaining {dropped} step{plural} of that plan {verb} dropped, "
+            f"{title} — nothing else ran.")
 
 
 def _partner_note_denial(conf_id: str | None) -> None:
@@ -1821,7 +1866,7 @@ async def run_remote_command(command_text: str, channel) -> None:
     replied = False
 
     try:
-        for intent_json in actions:
+        for _idx, intent_json in enumerate(actions):   # F-34: index for the drop note
             atype = intent_json.get("action_type", "")
             trace_id = engine.new_trace_id()
             # Serialise the shared engine across channels.
@@ -1875,6 +1920,20 @@ async def run_remote_command(command_text: str, channel) -> None:
                             f"'cancel' to drop it."
                         )
                     )
+                    # F-34, same rule as the desk: one question, one slot. This
+                    # door already cancelled the previous pending on a second
+                    # CONFIRM, so it could not orphan a slot — but it still
+                    # asked twice for one instruction, and the second question
+                    # silently voided the first.
+                    replied = True
+                    _dropped = len(actions) - _idx - 1
+                    if _dropped > 0:
+                        print(f"[REMOTE] F-34: plan suspended at '{conf_action}' — "
+                              f"{_dropped} later action(s) dropped: "
+                              f"{[a.get('action_type') for a in actions[_idx + 1:]]}",
+                              flush=True)
+                        await channel.reply(_dropped_plan_note(_dropped, honor))
+                    break
                 else:
                     # Non-admin caller (or malformed sentinel): refuse and clear
                     # so it can't be approved later out of context.
@@ -2455,8 +2514,10 @@ async def backdoor_command(req: BackdoorRequest):
                 # --- BATCHED ACTION ENGINE --- (uses module-level DATA_ACTIONS)
                 batched_data = []
                 has_web_search = False
-                
-                for intent_json in actions:
+
+                # F-34: enumerated so a confirmation can say how much of the
+                # plan it is abandoning.
+                for _idx, intent_json in enumerate(actions):
                     atype = intent_json.get("action_type", "")
                     
                     if atype == "read_screen":
@@ -2523,6 +2584,24 @@ async def backdoor_command(req: BackdoorRequest):
                         )
                         await safe_send_all({"status": "pending_confirmation", "action": conf_action, "result": msg})
                         asyncio.create_task(speaker.speak_text(msg))
+                        # ── F-34: the plan STOPS at a confirmation ──────────
+                        # It used to carry on down the batch. One utterance
+                        # staged three `workspace_write` confirmations; each
+                        # overwrote `_DESK_PENDING["cid"]`, so the first two
+                        # became unapprovable orphans, and the owner was asked
+                        # the same question three times over a minute of TTS
+                        # while the microphone was deafened by JARVIS's own
+                        # voice. One question, one answer, one slot.
+                        _dropped = len(actions) - _idx - 1
+                        if _dropped > 0:
+                            _note = _dropped_plan_note(_dropped, title)
+                            print(f"[MAIN] F-34: plan suspended at '{conf_action}' — "
+                                  f"{_dropped} later action(s) dropped: "
+                                  f"{[a.get('action_type') for a in actions[_idx + 1:]]}",
+                                  flush=True)
+                            await safe_send_all({"status": "complete", "result": _note})
+                            asyncio.create_task(speaker.speak_text(_note))
+                        break
                     # ───────────────────────────────────────────────────────────────────
 
                     elif atype == "web_search_image":
@@ -3168,6 +3247,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             await speaker.speak_text("Yes, sir?")
                     first_run = False
 
+                    # F-35: how many times the current authorisation prompt has
+                    # been re-asked after an unintelligible answer. Reset on
+                    # every understood turn so it can never accumulate across a
+                    # session and mute a later prompt.
+                    _confirm_reasks = 0
+
                     while True:
                         if _fd_pending:
                             command_text = _fd_pending
@@ -3179,18 +3264,52 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                         # --- SEAMLESS CONVERSATION LOGIC ---
                         if command_text in ["UNKNOWN", "ERROR"]:
-                            # He heard a noise but couldn't make it out. 
-                            # Silently loop back to listen again.
+                            # He heard a noise but couldn't make it out.
+                            # Live-gate F-35: silence is the right answer to a
+                            # cough and the wrong one to an answered question.
+                            # An authorisation prompt that goes unintelligible
+                            # gets asked again — the owner has already spoken
+                            # once and is owed the knowledge that it did not
+                            # land. Two re-asks, then stop badgering him.
+                            if _DESK_PENDING["cid"] is not None and _confirm_reasks < 2:
+                                _confirm_reasks += 1
+                                _t = "Madam" if active_user == "MOUSUMI" else "Sir"
+                                _re_ask = (f"I didn't catch that, {_t}. "
+                                           f"Confirm, or cancel?")
+                                print(f"[GOVERNANCE] F-35: unintelligible answer to a "
+                                      f"pending confirmation — re-asking "
+                                      f"({_confirm_reasks}/2).", flush=True)
+                                await safe_send({"status": "pending_confirmation",
+                                                 "action": "reask", "result": _re_ask})
+                                await speaker.speak_text(_re_ask)
                             continue
-                            
+
                         if command_text == "TIMEOUT" or not command_text:
                             # Total silence for 5 seconds. User walked away or is done.
+                            # F-35: never walk away from a live authorisation
+                            # in silence. The prompt outlives the session
+                            # otherwise — governance expires it on a TTL, but
+                            # between now and then the owner believes he was
+                            # asked a question that is still open, and the desk
+                            # still holds a pinned id it could resolve later
+                            # against a turn he never connected to it.
+                            if _DESK_PENDING["cid"] is not None:
+                                governance_manager.cancel_pending(_DESK_PENDING["cid"])
+                                _DESK_PENDING["cid"] = None
+                                _t = "Madam" if active_user == "MOUSUMI" else "Sir"
+                                _lapsed = (f"The authorisation request has lapsed, {_t}. "
+                                           f"Nothing was done.")
+                                print("[GOVERNANCE] F-35: pending confirmation cancelled — "
+                                      "the session went to standby unanswered.", flush=True)
+                                await safe_send({"status": "complete", "result": _lapsed})
+                                await speaker.speak_text(_lapsed)
                             await safe_send({"status": "online", "message": "RESUMING STANDBY PROTOCOLS."})
                             break
-                            
+
                         # If he heard an actual command, process it
                         if command_text:
                             command_lower = command_text.lower().strip()
+                            _confirm_reasks = 0   # F-35: a turn landed
 
                             # ── Barge-in (voice path): cut JARVIS off mid-speech ──
                             # Only fires when he is actually speaking, so a bare "stop"/
@@ -3442,9 +3561,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                         # (uses module-level DATA_ACTIONS)
                                         batched_data = []
                                         has_web_search = False
-                                        for intent_json in actions:
+                                        for _idx, intent_json in enumerate(actions):   # F-34
                                             atype = intent_json.get("action_type", "")
-                                            
+
                                             if atype == "read_screen":
                                                 await safe_send({"status": "scanning_screen", "message": "SCANNING OPTICAL FEED..."})
                                                 await asyncio.sleep(1.0)
@@ -3501,6 +3620,19 @@ async def websocket_endpoint(websocket: WebSocket):
                                                 )
                                                 await safe_send({"status": "pending_confirmation", "action": conf_action, "result": msg})
                                                 asyncio.create_task(speaker.speak_text(msg))
+                                                # F-34: the plan stops here — this is
+                                                # the door the finding was found on.
+                                                _dropped = len(actions) - _idx - 1
+                                                if _dropped > 0:
+                                                    _note = _dropped_plan_note(_dropped, title)
+                                                    print(f"[VOICE] F-34: plan suspended at "
+                                                          f"'{conf_action}' — {_dropped} later "
+                                                          f"action(s) dropped: "
+                                                          f"{[a.get('action_type') for a in actions[_idx + 1:]]}",
+                                                          flush=True)
+                                                    await safe_send({"status": "complete", "result": _note})
+                                                    asyncio.create_task(speaker.speak_text(_note))
+                                                break
                                             elif atype == "web_search_image":
                                                 if isinstance(result, dict) and result.get("success"):
                                                     await safe_send({"status": "search_result_image", "url": result["url"], "title": result["title"]})

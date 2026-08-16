@@ -174,7 +174,12 @@ def listen_to_mic(status_callback=None):
                 # Replaced print statement with silent timeout
                 return "TIMEOUT"
             except sr.UnknownValueError:
-                # Silent failure when hearing static or a cough
+                # Was silent. Live-gate F-35: the owner answered a governance
+                # prompt with "yes", the recogniser could not make out a single
+                # short word, and the log showed "Processing speech…" followed
+                # by nothing at all — an answered question that looked, in the
+                # only record there is, like an unanswered one.
+                print("[EARS] Speech not understood — no transcript.")
                 return "UNKNOWN"
             except sr.RequestError as e:
                 print(f"[EARS] Network error with transcription service: {e}")

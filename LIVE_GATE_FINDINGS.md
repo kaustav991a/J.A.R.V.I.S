@@ -1472,3 +1472,156 @@ today (`workspace_patch`, `workspace_write` — pending → consumed → execute
 never once said in this session.** Nothing shows a pending action being dismissed and the slot
 cleared. Re-point `6.2`–`6.4` at a CONFIRM-tier action — `workspace_write` is the obvious one —
 and run the cancel branch deliberately.
+
+---
+
+# RETEST OF ROW `4.1` — 2026-08-16, 19:05, against the §4/§6 fixes (`80fc884`)
+
+The first phrase off the retest list, spoken with a deliberate mid-sentence pause. **Row `4.1`
+still FAILS**, for none of the reasons it failed the first time.
+
+```
+🗣️ You said: 'write a python script for a simple ADD function and save it to
+              my you know desktop as add.py' [CLOUD STT]
+```
+
+**What held.** F-33: the pause did not truncate him — the whole sentence, filler included,
+arrived in one transcript. F-28: nothing claimed a write that had not happened. F-29: the prompt
+named a path, and naming it is the only reason the rest of this section exists.
+
+**What one utterance then did:**
+
+```
+[GOVERNANCE] workspace_write      -> CONFIRM  id=662844d2…
+[GOVERNANCE] workspace_write      -> CONFIRM  id=c4c13510…
+[GOVERNANCE] workspace_write      -> CONFIRM  id=12d8fde4…
+[GOVERNANCE] workspace_save_file  -> BLOCK  (not in the ruleset — fail-safe)
+[JARVIS] Authorisation required, Sir. I would like to execute 'workspace_write'
+         — writing to C:\Users\KAUSTAV\Desktop\add.py. …            (×3, spread over ~70s)
+```
+
+`workspace_save_file` **exists nowhere in this codebase**; the real name is `ghost_save_file`.
+The fail-safe default caught it, which is the ruleset working exactly as designed.
+
+## F-34 — 🔴 HIGH · Three authorisations for one instruction, none of them answerable, for a write that could not have happened
+
+Four distinct defects stack here, and each one is enough on its own.
+
+**1 · The batch does not stop at a confirmation.** `main.py`'s dispatch loop is
+`for intent_json in actions:` and a `GOVERNANCE_CONFIRM` result was handled like any other —
+speak, and carry on to the next action. So three confirmations were staged from one plan, and
+each overwrote `_DESK_PENDING["cid"]`. **The first two were unapprovable the moment the third
+existed** — a "confirm" resolves the pinned id, and the pin had moved. Two orphans, held until
+the TTL expired them.
+
+**2 · Every one of those payloads was already impossible.** All three targets carried a path and
+no content: `target="C:\Users\KAUSTAV\Desktop\add.py"`, no pipe, no body. `_workspace_write`
+answers that with its usage hint and touches no filesystem. **The owner was asked, out loud,
+three times, to authorise a no-op.** The gate was working perfectly and guarding nothing — and
+the same is true of any CONFIRM-tier payload that cannot execute, which is a class, not a case.
+
+**3 · The disclosed path was invented.** `C:\Users\KAUSTAV\Desktop\add.py` — the speaker's name,
+on a machine whose Windows profile is `KINGSHUK`. `_resolve_within_roots` refuses it, so nothing
+would have been written; the sandbox is not in question. What is in question is the read-back:
+F-29 added it so the human has something to catch, and it read back **the request instead of the
+consequence**. A plausible path that will be refused is worse than no path, because it invites a
+yes.
+
+**4 · The mic is deafened while he speaks.** The three prompts and the block message played over
+roughly 70 seconds. Answering during that window is not heard at all. F-35 is what happened when
+he answered after it.
+
+### Fixes
+
+- **`ActionEngine._preflight_refusal`** runs after the tier gate and *before* governance. It
+  returns the string the real handler would have returned — the same one, deliberately, so
+  `_sanitize_for_speech` narrates it identically whether it was caught early or late. A
+  `workspace_write` with no content, or a path outside every root, never becomes a question.
+- **All three dispatch loops break at the first confirmation** (desk WS, voice, remote channel)
+  and say what they dropped: *"The remaining 2 steps of that plan were dropped, Sir — nothing
+  else ran."* **Dropped**, not *held* — they will not run after approval, and F-16's rule runs
+  both directions: do not claim work you did not do, and do not promise work you will not do.
+- **The prompt reads back the RESOLVED path**, falling back to the raw string if it cannot be
+  resolved. `desktop/add.py` is now disclosed as `C:\Users\KINGSHUK\OneDrive\Desktop\add.py`.
+
+Three doors reach that loop and all three are fixed together — `REVIEW.md` root cause #4, asked
+before the fix this time rather than after the next finding.
+
+## F-35 — 🔴 HIGH · He answered. The answer did not transcribe, nothing said so, and the session walked away from the open question
+
+```
+[EARS] Processing speech...
+                                  <- no transcript line, no filler line, nothing
+[EARS] Adjusting for background noise...
+[EARS] Listening...
+[SYSTEM] Passive Listening for 'Hello Jarvis'...
+```
+
+`recorder.py:176` — `sr.UnknownValueError` returned `"UNKNOWN"` with **no log line at all**. The
+one record of what happened showed a question asked and never answered, when in fact it was
+answered and not understood. "yes" *is* in `_APPROVAL_WORDS` (`main.py:301`); the word never
+reached that code.
+
+Then `main.py:3181` looped back silently, the next capture timed out, and `:3186` broke to
+standby — **with three confirmations still pending**. Governance expires them on a TTL, so
+nothing could be approved out of context later; but between the two, the owner believed he was
+holding a conversation and the desk believed it was alone.
+
+**Fix.** The failed transcription prints. While a confirmation is pinned, an unintelligible turn
+gets the question again — *"I didn't catch that, Sir. Confirm, or cancel?"* — at most twice, the
+counter resetting on any turn that lands. And a session going to standby with a pending
+confirmation **cancels it and says so**: *"The authorisation request has lapsed, Sir. Nothing was
+done."*
+
+## F-36 — 🟠 MEDIUM-HIGH · The Gemini keys do not have separate quotas, and one of them is not a key
+
+Measured directly, all five keys, one minimal call each:
+
+```
+model = gemini-flash-latest  ->  resolves to gemini-3.7-flash
+#1..#4  429 ResourceExhausted — "limit: 20, model: gemini-3.7-flash"
+        retry in 48.7 / 48.2 / 47.6 / 47.1 s
+#5      400 API_KEY_INVALID
+```
+
+**The retry-after counts down across the probe.** Four keys, one reset instant: they are behind
+**one bucket**. `llm_router.py:361` states the premise plainly — *"keys live in separate Google
+projects, so rotating on quota/auth errors multiplies free-tier headroom"* — and it is false as
+configured. Rotation multiplies latency: five round-trips to learn what the first one said. The
+briefing turn paid that twice.
+
+**Key #5 is revoked** and was being offered on every call, forever.
+
+**`gemini-flash-latest` is an evergreen alias and it has drifted to `gemini-3.7-flash`**, whose
+free tier is 20 requests per window. The alias was chosen (`:48`) because pinned ids get retired
+and start 404ing — a real hazard — but the cost is that the model, and its quota, can change
+under a name that looks stable. This is the same lesson as the OpenRouter `:free` withdrawal:
+**an id that reads as permanent is not a guarantee about what answers.**
+
+**Fixes.** A key the provider calls invalid is dropped for the process. When every live key
+reports quota, the leg cools down for the retry window Google itself supplies (capped at 300s)
+and the *next* call escalates immediately instead of re-probing. **Owed by hand:** replace or
+remove key #5, and decide whether the four survivors should live in genuinely separate projects
+— the code's premise is only true if someone makes it true.
+
+## F-17 — the payload bug is fixed, and today's failure was NOT it
+
+Session 2 recorded `TypeError: contents must not be empty` on all five keys. Today the same call
+sites failed with `ResourceExhausted` — **the quota outage was masking the payload bug**, and
+either one alone is enough to kill the leg.
+
+`_split_messages_for_gemini` now emits a single `"Proceed."` user turn when the caller passed
+system text and nothing else, so the four system-only call sites (`brain.py` synthesis ×2, the
+briefing at `:2819`, `episodic_memory.py:123`) can reach Gemini at all. And a `TypeError` /
+`ValueError` from the SDK now raises on the **first** key instead of rotating: a deterministic
+client-side error is not a key failure, and reporting it as five of them is what hid this for a
+session and a half.
+
+## Row verdicts from this retest
+
+| Row | Verdict |
+|---|---|
+| `4.1` desktop write | ❌ **FAIL** — F-34. Nothing was written; the sandbox was never the problem |
+| F-33 (pause) | ✅ **PASS** — a mid-sentence pause no longer truncates the command |
+| F-28 (no false success) | ✅ **PASS** — a refusal was never dressed as a completed write |
+| F-29 (disclosure) | ✅ **PASS**, and it earned its keep on the first try — the bogus path was visible only because the prompt named it |

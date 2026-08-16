@@ -424,6 +424,67 @@ class ActionEngine:
             keygen(adbkey)
         return PythonRSASigner.FromRSAKeyPath(adbkey)
 
+    #: Live-gate finding F-34. Payload contracts that can be checked WITHOUT
+    #: performing the action, so an impossible request is refused before it is
+    #: staged for authorisation. Keyed by action type; the value is the method
+    #: that returns a refusal string, or None when the payload could execute.
+    #:
+    #: Only CONFIRM-tier mutators are listed. An AUTO action reaches its own
+    #: validation a microsecond later and gains nothing from being checked
+    #: twice; a CONFIRM action does not — it stops at a human first, and asking
+    #: a human to authorise something that cannot happen spends the one form of
+    #: attention this system cannot manufacture more of.
+    def _preflight_refusal(self, payload: dict) -> Optional[str]:
+        """The refusal the action itself would produce, without doing anything.
+
+        Live-gate finding F-34. On 2026-08-16 one utterance staged THREE
+        `workspace_write` confirmations whose targets carried a path and no
+        content at all. Every one of them could only ever have returned the
+        usage hint — yet each asked the owner, out loud, to authorise a write.
+        The gate was working perfectly and guarding nothing.
+
+        Returns the SAME string the real handler returns for that defect, so
+        `_sanitize_for_speech` narrates it identically whether it was caught
+        here or downstream. A second vocabulary for the same refusal is a
+        second thing that can drift out of step with the speech layer.
+        """
+        atype = (payload.get("action_type") or "").strip().lower()
+        target = str(payload.get("target") or "")
+
+        if atype == "workspace_write":
+            if "|" not in target:
+                return "Format: 'filepath|file content'. Pipe separates path from content."
+            filepath, _, content = target.partition("|")
+            filepath = filepath.strip()
+            if not filepath:
+                return "No file path specified for workspace write."
+            if not content.strip():
+                # A pipe with nothing after it is the same defect wearing a
+                # separator: there is no file to write.
+                return "Format: 'filepath|file content'. Pipe separates path from content."
+            if self.workspace_agent._resolve_safe_for_write(filepath) is None:
+                return (f"Access denied: '{filepath}' is outside the permitted "
+                        f"workspace roots.")
+            return None
+
+        if atype == "workspace_patch":
+            if not target:
+                return "No patch target specified."
+            parts = target.split("|", 2)
+            if len(parts) < 3:
+                return "Format: 'filepath|search_string|replace_string'"
+            filepath = parts[0].strip()
+            if filepath.startswith(self.PATCH_ALL_PREFIX):
+                filepath = filepath[len(self.PATCH_ALL_PREFIX):].strip()
+            if not filepath:
+                return "No file path specified for workspace patch."
+            if self.workspace_agent._resolve_safe_for_write(filepath) is None:
+                return (f"Access denied: '{filepath}' is outside the permitted "
+                        f"workspace roots.")
+            return None
+
+        return None
+
     async def execute(self, payload: dict, *, governance_bypass: bool = False,
                       permission_tier: str = ADMIN_TIER) -> str:
         # ── Phase 4.5: Tier Gate (identity-scoped; runs BEFORE governance) ──
@@ -438,6 +499,18 @@ class ActionEngine:
                 flush=True,
             )
             return f"{TIER_BLOCKED_PREFIX}{_atype}"
+
+        # ── F-34: pre-flight (runs BEFORE governance, after the tier gate) ──
+        # A payload that cannot execute must not become a question. Skipped on
+        # the approval re-entry: the payload was already checked on the way in,
+        # and re-checking a stored payload after the human said yes could only
+        # ever turn an authorised action into a silent no-op.
+        if not governance_bypass:
+            _pre = self._preflight_refusal(payload)
+            if _pre is not None:
+                print(f"[ACTION ENGINE] pre-flight refusal for '{_atype}': {_pre}",
+                      flush=True)
+                return _pre
 
         # ── Phase 6: Governance Gate (must run before logging or dispatch) ──
         # PASS   → transparent, continues below.
