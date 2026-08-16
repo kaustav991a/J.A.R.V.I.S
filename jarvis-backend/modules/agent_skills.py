@@ -148,8 +148,26 @@ class SkillLibrary:
             return []
         for path in sorted(self.root.glob("*.md")):
             skill = self._read(path)
-            if skill is not None:
-                found[skill.name] = skill
+            if skill is None:
+                continue
+            # A skill's name comes from its FRONTMATTER, not its filename, so two
+            # files can claim one name — and the later one silently replaced the
+            # earlier, with sorted-glob order deciding which playbook the model
+            # actually gets. Review batch 4, 2026-08-16: that is the quiet half
+            # of poisoning this directory. A model that keeps calling
+            # `load_skill("workspace-edit")` would have gone on receiving
+            # somebody else's procedure under the name it trusts.
+            #
+            # FIRST WINS, and the collision is announced. The same rule
+            # `CompositeRegistry` states for a tool-name clash: the incumbent is
+            # never shadowed by something that arrived later.
+            if skill.name in found:
+                print(f"[SKILLS] ⛔ {path.name} claims the name "
+                      f"{skill.name!r}, already held by "
+                      f"{found[skill.name].path.name} — IGNORED. Two files "
+                      f"cannot own one playbook name.", flush=True)
+                continue
+            found[skill.name] = skill
         self._skills = found
         return list(found)
 

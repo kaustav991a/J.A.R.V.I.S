@@ -1,9 +1,10 @@
 {
   "review": "pre-Electron code review, batch 1",
   "date": "2026-08-16",
-  "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code. | 2026-08-16 session 3: C2 harness written (was owed), then R5, M2, M1, C1 fixed in that order. Suite 76/76, 2202 checks. | 2026-08-16 session 4: the seven batch-2 mediums fixed. Suite 77/77, 2285 checks. THE WHOLE REVIEW BACKLOG IS NOW CLOSED. | 2026-08-16 session 5 (batch 3): brain.py reviewed -- 3 findings, all fixed. agent-runner/agent-support given a BOUNDED sweep only (grep for sinks/claims + agent_files preconditions read); NOT line-by-line. Suite 78/78, 2308.",
+  "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code. | 2026-08-16 session 3: C2 harness written (was owed), then R5, M2, M1, C1 fixed in that order. Suite 76/76, 2202 checks. | 2026-08-16 session 4: the seven batch-2 mediums fixed. Suite 77/77, 2285 checks. THE WHOLE REVIEW BACKLOG IS NOW CLOSED. | 2026-08-16 session 5 (batch 3): brain.py reviewed -- 3 findings, all fixed. agent-runner/agent-support given a BOUNDED sweep only (grep for sinks/claims + agent_files preconditions read); NOT line-by-line. Suite 78/78, 2308. | 2026-08-16 session 6 (batch 4): agent-support read in full -- 3 findings, all fixed. agent_search/tool_calls/agent_schema/agent_errors/agent_subagents VERIFIED SOUND, do not re-raise. agent_runner + worker_loop remain partially covered. Suite 79/79, 2337.",
   "areas_done": [
     "action-engine",
+    "agent-support (agent_search, tool_calls, agent_schema, agent_errors, agent_subagents, agent_skills, agent_metrics read in full)",
     "brain (partial: prompt spine, process_command, process_stream, truthfulness guards)",
     "comms",
     "io-agents",
@@ -414,6 +415,42 @@
       "reachable_by": "not reachable -- that is the finding",
       "failure": "'Unrecognized voice protocol' is the phrase that arms is_locked, and it appears NOWHERE else in the repository: no module and no frontend file writes it into working memory. So is_locked has always been False, and the SECURITY LOCKDOWN PROTOCOL block in BASE_CORE, the Mousumi escape hatch and the 'Access Denied' override are all unreachable decoration. The real barrier is main.py's voice-challenge BRANCH D, which hits `continue` and returns an unrecognised person to standby without ever reaching the brain -- that barrier is sound. Second defect at the same site: the disarm scan walked EVERY message regardless of role, so had the marker ever been written, an intruder typing 'access granted' would have cleared the lock on the next turn. The comment ('if we see that he already welcomed someone') meant JARVIS's own words.",
       "fix_applied": "FIXED 2026-08-16 -- one _security_locked() shared by both paths. A lock claim is honoured from any turn (fail-safe: the worst it does is make JARVIS refuse to talk); a DISARM is honoured only from an assistant turn. Arming deliberately NOT wired: deciding when JARVIS should refuse to speak at all is Kaustav's call, not a review fix. A harness test fails if anyone ever writes the marker without reading the docstring."
+    },
+    {
+      "id": "S1",
+      "severity": "high",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "C",
+      "file": "modules/protected_paths.py:91 (with modules/agent_skills.py)",
+      "title": "The skills/ playbooks steer every agent run and were not on the enforcement list",
+      "reachable_by": "any write that lands a .md file in jarvis-backend/skills/ -- workspace_write, ghost_save_file (see S3), or an approved edit",
+      "failure": "agent_skills is careful that a skill can never grant a tool or raise a tier, and that is true and beside the point. One line per skill goes into the SYSTEM PROMPT of every agent run, and load_skill hands the whole body to the model as an authoritative PLAYBOOK it is told to open BEFORE starting that kind of work. An injection does not need capability -- it borrows the model's. ENFORCEMENT_FILES is a FILE list, so it could never have covered a directory where the attack is a NEW file. It belongs there by that list's own stated criterion: 'the things whose failure is silent rather than noisy'. A rewritten governance.json is at least a rule someone can read; a poisoned playbook is text nobody sees that shapes every action after it.",
+      "fix_applied": "FIXED 2026-08-16 -- new ENFORCEMENT_DIRS, checked by enforcement_write_problem with the same parents-walk protected_path_problem uses for folders. Reading is untouched: JARVIS explaining its own playbooks stays a feature."
+    },
+    {
+      "id": "S2",
+      "severity": "medium",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "D",
+      "file": "modules/agent_skills.py:139",
+      "title": "Two files could claim ONE playbook name, and the later one silently won",
+      "reachable_by": "any second .md in skills/ whose frontmatter repeats an existing name",
+      "failure": "A skill's name comes from its FRONTMATTER, not its filename, and refresh() did found[skill.name] = skill in sorted-glob order. So a file sorting later than the real one replaced it with no warning, and a model calling load_skill('edit-a-file') went on receiving somebody else's procedure under the name it trusts. This is the quiet half of S1: no error, no log line, and the index still shows one entry.",
+      "fix_applied": "FIXED 2026-08-16 -- FIRST WINS and the clash is printed, naming both files. Same rule CompositeRegistry already states for a tool-name clash: the incumbent is never shadowed by something that arrived later."
+    },
+    {
+      "id": "S3",
+      "severity": "high",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "C",
+      "file": "action_engine.py:593 and action_engine.py:2739",
+      "title": "R3 was wired on the headless write door only -- ghost_save_file and delete_file reached the same bytes",
+      "reachable_by": "ghost_save_file (a real Save As dialog, target path model-supplied) and run_terminal_command's delete_file verb",
+      "failure": "Finding R3 put enforcement_write_problem into WorkspaceAgent._resolve_safe_for_write, covering workspace_write and workspace_patch. The OTHER doors to the same files asked only protected_path_problem -- which guards the key store and the backups and says NOTHING about governance.json, shell_safety.py, url_safety.py or skills/. So the GUI save dialog could overwrite the ruleset, and delete_file could remove it outright. Deleting the rules is not softer than editing them. This is finding 14 completing finding 10, one layer over: a guard wired at one door, and there were three.",
+      "fix_applied": "FIXED 2026-08-16 -- one ActionEngine._write_path_problem asks BOTH lists, wired into the ghost_save_file and _delete_file doors. The secrets list still answers first so the key store keeps its own wording. test_protected_paths' two structural assertions named the old helper and were widened to accept the superset."
     }
   ],
   "verified_sound": [

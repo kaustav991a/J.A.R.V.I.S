@@ -103,12 +103,39 @@ ENFORCEMENT_FILES = frozenset(
 )
 
 
+#: Whole DIRECTORIES whose contents steer JARVIS, where a new file is as
+#: dangerous as an edit to an existing one — so a file list cannot cover them.
+#:
+#: Review batch 4, 2026-08-16. `skills/` holds the playbooks
+#: `agent_skills.SkillLibrary` reads: one line per skill goes into the system
+#: prompt of every agent run, and `load_skill` hands the whole body to the model
+#: as an authoritative PLAYBOOK it was told to follow BEFORE starting that kind
+#: of work. The module is careful that a skill can never grant a tool or raise a
+#: tier — true, and beside the point. **Instructions are what an injection wants.**
+#: A file dropped in here does not need capability; it borrows the model's.
+#:
+#: It belongs on this list by that docstring's own criterion — "the things whose
+#: failure is silent rather than noisy". A rewritten `governance.json` is at
+#: least a rule someone can read; a poisoned playbook is text nobody sees, that
+#: shapes every action taken after it.
+ENFORCEMENT_DIRS = frozenset(
+    p.resolve() if p.exists() else p
+    for p in (
+        BACKEND_DIR / "skills",                 # the agent-loop playbooks
+    )
+)
+
+
 def enforcement_write_problem(target_path):
     """Refuse a WRITE to the code that enforces everything else. None if fine.
 
     Deliberately separate from `protected_path_problem`: that one refuses reads
     too, because its files are secrets. These are not secret — they are refused
     only for writing, because a rule that edits itself is not a rule.
+
+    Covers ENFORCEMENT_DIRS as well as ENFORCEMENT_FILES: for the playbooks, a
+    NEW file is the attack and an edit is merely one way to make it, so a list
+    of known filenames could never have been complete.
     """
     if not isinstance(target_path, str) or not target_path.strip():
         return None            # the caller's own path check owns that complaint
@@ -123,6 +150,11 @@ def enforcement_write_problem(target_path):
                 "decide what I'm allowed to do. Changing it has to be a "
                 "deliberate edit you make yourself, not one I make on your "
                 "behalf.")
+    for folder in ENFORCEMENT_DIRS:
+        if folder == path or folder in path.parents:
+            return (f"I won't write into {folder.name}/, Sir — those are the "
+                    "playbooks I read my own instructions from. A procedure I "
+                    "wrote for myself is not one you approved.")
     return None
 
 

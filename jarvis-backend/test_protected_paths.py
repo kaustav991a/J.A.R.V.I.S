@@ -136,9 +136,15 @@ def _calls_guard(method_name: str) -> bool:
                if isinstance(n, ast.FunctionDef) and n.name == method_name), None)
     if fn is None:
         return False
+    # `_write_path_problem` is the SUPERSET added in review batch 4: it asks the
+    # protected list AND the enforcement list, so a site that calls it satisfies
+    # this property more strongly than one calling the guard directly. Listing it
+    # here rather than loosening the check keeps the assertion specific — an
+    # unguarded delete still fails.
     return any(
         isinstance(n, ast.Call)
         and (getattr(n.func, "attr", None) in ("_protected_path_problem",
+                                               "_write_path_problem",
                                                "protected_path_problem")
              or getattr(n.func, "id", None) == "protected_path_problem")
         for n in ast.walk(fn)
@@ -165,7 +171,8 @@ def test_the_guard_runs_before_the_destructive_call():
     guard_line = min(
         (n.lineno for n in ast.walk(fn)
          if isinstance(n, ast.Call)
-         and getattr(n.func, "attr", None) == "_protected_path_problem"),
+         and getattr(n.func, "attr", None) in ("_protected_path_problem",
+                                               "_write_path_problem")),
         default=None)
     unlink_line = min(
         (n.lineno for n in ast.walk(fn)

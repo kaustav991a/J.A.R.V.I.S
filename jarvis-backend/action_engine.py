@@ -135,6 +135,7 @@ def tier_allows(permission_tier: str, action_type: str) -> bool:
 # Re-exported under the old names — they are the public surface a harness pins.
 from modules.protected_paths import (  # noqa: E402
     PROTECTED_FILES, PROTECTED_FOLDERS, protected_path_problem,
+    enforcement_write_problem,
 )
 
 
@@ -590,7 +591,10 @@ class ActionEngine:
                 # verbalized" below) and the CONFIRM prompt names only the action
                 # type, so the owner approving it is never shown which file.
                 _save_target = os.path.join(target_dir_clean, filename_clean)
-                _save_problem = self._protected_path_problem(_save_target)
+                # Batch 4: the ENFORCEMENT list too, not just the secrets list.
+                # This dialog can put any path on screen, so it reaches
+                # governance.json and skills/ exactly as workspace_write does.
+                _save_problem = self._write_path_problem(_save_target)
                 if _save_problem:
                     print(f"[ACTION ENGINE] ghost_save_file refused: "
                           f"{os.path.basename(_save_target)} is protected.",
@@ -2733,10 +2737,29 @@ class ActionEngine:
         return protected_path_problem(target_path,
                                       self.protected_files, self.protected_folders)
 
+    def _write_path_problem(self, target_path: str) -> str | None:
+        """EVERY guard a write has to clear: the secrets list AND the rules.
+
+        Review batch 4, 2026-08-16 — finding R3 completed, the same way finding
+        14 completed finding 10. R3 wired `enforcement_write_problem` into
+        `WorkspaceAgent._resolve_safe_for_write`, which covers `workspace_write`
+        and `workspace_patch`. It does not cover the OTHER doors to the same
+        bytes: `ghost_save_file` drives a real Save As dialog, and `_delete_file`
+        removes the file outright. Both asked only `protected_path_problem`,
+        which guards the key store and the backups and says nothing about
+        `governance.json`, `shell_safety.py` or the playbooks in `skills/`.
+
+        Deleting the ruleset is not softer than editing it, and the GUI route is
+        not softer than the headless one. One helper, asked by every write.
+        """
+        return (self._protected_path_problem(target_path)
+                or enforcement_write_problem(target_path))
+
     def _delete_file(self, target_path: str) -> str:
         try:
             path = Path(target_path).resolve()
-            protected = self._protected_path_problem(target_path)
+            # Batch 4: deleting the ruleset is not softer than editing it.
+            protected = self._write_path_problem(target_path)
             if protected:
                 print(f"[ACTION ENGINE] delete refused: {path.name} is protected.",
                       flush=True)
