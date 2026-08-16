@@ -1625,3 +1625,83 @@ session and a half.
 | F-33 (pause) | ✅ **PASS** — a mid-sentence pause no longer truncates the command |
 | F-28 (no false success) | ✅ **PASS** — a refusal was never dressed as a completed write |
 | F-29 (disclosure) | ✅ **PASS**, and it earned its keep on the first try — the bogus path was visible only because the prompt named it |
+
+---
+
+# SECOND RETEST OF ROW `4.1` — 2026-08-16, 19:50, against `8ae1757`
+
+**The three fixes from an hour ago all held on real hardware**, and the row still fails, on a
+defect that was underneath them the whole time.
+
+| Fix | Live evidence |
+|---|---|
+| F-34 pre-flight | `[ACTION ENGINE] pre-flight refusal for 'workspace_write'` ×2 — **no confirmation staged** for either |
+| F-34 plan stop | `[VOICE] F-34: plan suspended at 'workspace_write' — 1 later action(s) dropped` |
+| F-34 drop note | *"The remaining 1 step of that plan was dropped, Sir — nothing else ran."* |
+| F-35 logging | `[EARS] Speech not understood — no transcript.` — the silent branch speaks up |
+| F-35 re-ask | `F-35: unintelligible answer to a pending confirmation — re-asking (1/2)` → *"I didn't catch that, Sir. Confirm, or cancel?"* → `🗣️ 'yeah go ahead'` → **`[OK] Confirmation consumed`** |
+| F-36 cooldown | `Cooling down 58s` … then `RuntimeError: Gemini quota cooldown — 42s left`, escalated **without a single network call** |
+
+**One prompt, one answer, one execution.** That is the first time the confirm lifecycle has run
+end to end at the desk in this gate.
+
+## F-37 — 🔴 HIGH · The model wrote the CONTRACT into the payload, and the voice door read the engine's internals out loud
+
+```
+[ACTION ENGINE] Processing payload:
+  {'action_type': 'workspace_write',
+   'target': 'filepath|/Users/KAUSTAV/Desktop/a d d p y'}
+[JARVIS] File created, Sir.
+```
+
+**The path is the placeholder and the content is the path.** `brain.py` documented the contract
+as `target="filepath|file_content"`; the model — Groq's `llama-3.1-8b-instant`, because Gemini
+was quota-dead — copied it literally. `F:\work\filepath` was created, 32 bytes, containing the
+text `/Users/KAUSTAV/Desktop/a d d p y`.
+
+**Every guard passed honestly.** `filepath` resolves inside a workspace root; the content is
+non-empty; the write succeeded; "File created, Sir." is *true*. The F-34 pre-flight checked
+whether the payload could execute and it could. Nothing downstream can catch this, because the
+only thing wrong with the payload is that it means nothing — and *meaninglessness is not a
+property any of the safety checks are looking for*.
+
+The prompt did read it back: *"writing 1 line to F:\work\filepath"*. It was disclosed, correctly,
+and approved anyway — worth noting plainly, because a read-back only works if it is read.
+
+**Contributing cause, and it is not incidental.** STT produced *"a d d p y"* for "add.py" and
+*"at function"* for "add function". The model had no filename to use, so it filled the slot with
+the slot's own name. A dictated filename is the single most fragile token in a spoken command,
+and the system's response to not having one was to invent.
+
+### Second half — the raw refusal was spoken
+
+Before that turn, two malformed writes were refused by the pre-flight, and the owner heard:
+
+> *"Format: 'filepath|file content'. Pipe separates path from content."*
+
+`main.py:2732` (desk socket) runs its fall-through through `_sanitize_for_speech`. The **voice**
+loop's identical fall-through spoke `str(result)` raw. Divergent twins: the door that is actually
+used was the unprotected one, and every internal string the engine can return — usage hints,
+`Access denied: '<path>' is outside the permitted workspace roots`, raw exception text — reached
+TTS through it verbatim. **`REVIEW.md` root cause #4 again**, and this is the fourth time in two
+sessions.
+
+### Fixes
+
+1. **A placeholder is not a filename.** `is_placeholder_path()` refuses `filepath`, `file_path`,
+   `filename`, `path`, `file`, `path/to/file`, their bracketed forms and their extension'd
+   variants — at the pre-flight **and** at `_workspace_write` / `_workspace_patch` themselves,
+   because the approval re-entry runs with `governance_bypass=True` and skips the pre-flight.
+   Module-level, not a method: both write functions are called *unbound* by harnesses passing a
+   stub engine, so a guard reached through `self` fails the CALL rather than the assertion —
+   `RESUME.md`'s fifth standing lesson, which duly caught it (`test_agent_files.py`, 2 failures,
+   fixed by moving the function).
+2. **The voice door sanitises**, exactly as the desk socket has for a long time.
+3. **The prompt no longer offers a copyable placeholder.** The spec reads
+   `target="<the real path>|<the real file content>"`, states that the brackets are a slot and
+   not text, and — for the transcription case — says to **ask** for a filename that did not
+   survive rather than invent one.
+
+**Still open, and it belongs to STT rather than to any of this:** a dictated filename like
+"add.py" transcribes as "a d d p y". Nothing in this fix recovers it; the model is now told to
+ask instead of guess, which turns a wrong file into a question.

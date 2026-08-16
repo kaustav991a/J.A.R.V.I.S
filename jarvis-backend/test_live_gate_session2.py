@@ -400,6 +400,69 @@ def test_the_prompt_reads_back_the_resolved_path():
           "the Notepad chain's own target format is left alone")
 
 
+# ── F-37: the spec copied into the payload, and spoken out loud ──────────────
+
+def test_the_spec_placeholder_is_not_a_filename():
+    """Live: target="filepath|/Users/KAUSTAV/Desktop/a d d p y" — the model put
+    the placeholder where the path goes and the path where the content goes.
+    Every real check passed: `filepath` resolves inside a root and the content
+    is non-empty. F:\\work\\filepath was created and reported as a success."""
+    eng = _engine()
+    for path in ("filepath", "FilePath", " file_path ", "<filename>", "path",
+                 "path/to/file", "filepath.py", "{file}"):
+        out = eng._preflight_refusal({"action_type": "workspace_write",
+                                      "target": f"{path}|print('hi')"})
+        check(out is not None and out.startswith("Format:"),
+              f"the spec placeholder is refused as a path: {path!r}")
+    check(eng._preflight_refusal({"action_type": "workspace_write",
+                                  "target": "filepath_utils.py|x = 1"}) is None,
+          "...but a real filename that merely contains the word is fine")
+    check(eng._preflight_refusal({"action_type": "workspace_patch",
+                                  "target": "filepath|old|new"}) is not None,
+          "the patch door refuses it too")
+
+
+def test_the_write_itself_refuses_the_placeholder():
+    """The pre-flight is skipped on the approval re-entry (governance_bypass),
+    so the guard has to exist at the write as well."""
+    eng = _engine()
+    out = eng._workspace_write("filepath|/Users/KAUSTAV/Desktop/a d d p y")
+    check(out.startswith("Format:"),
+          "an approved payload naming the placeholder still writes nothing")
+    # "somefile" is on the placeholder list and is not a real file anywhere in
+    # the tree, so its absence after the call is evidence, not luck.
+    probe = pathlib.Path(_inside_root("somefile"))
+    existed = probe.exists()
+    eng._workspace_write("somefile|x = 1")
+    check(probe.exists() == existed,
+          "...and nothing appears on disk under a placeholder name")
+
+
+def test_the_voice_door_speaks_through_the_sanitiser():
+    """F-37's other half: the desk socket sanitised its results and the VOICE
+    loop — the one actually used — spoke the engine's raw return value, so the
+    owner heard "Format: 'filepath|file content'…" out loud."""
+    src = (HERE / "main.py").read_text(encoding="utf-8", errors="replace")
+    check(src.count("asyncio.create_task(speaker.speak_text(str(result)))") == 4,
+          "only the four focus-mode fallbacks speak a raw result")
+    # Both generic tails must sanitise. They are the last `else` of each batch
+    # loop, and they are the ones every unrecognised action lands in.
+    tails = [i for i in range(len(src))
+             if src.startswith("spoken = _sanitize_for_speech(atype, result_str)", i)]
+    check(len(tails) >= 2,
+          f"both batch loops run their fall-through through the sanitiser ({len(tails)})")
+
+
+def test_the_prompt_no_longer_offers_a_copyable_placeholder():
+    joined = "\n".join(_string_literals("brain.py"))
+    check('target="filepath|file_content"' not in joined,
+          "the write spec no longer reads as a literal string to copy")
+    check("The angle brackets are a SLOT, not text" in joined,
+          "...and says so explicitly")
+    check("ask for it instead of inventing one" in joined,
+          "a filename that did not survive transcription is asked for, not guessed")
+
+
 # ── F-35: an answered question that looked unanswered ────────────────────────
 
 def test_an_unintelligible_answer_is_logged():

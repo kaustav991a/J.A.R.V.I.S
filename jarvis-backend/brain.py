@@ -161,7 +161,7 @@ ACTION_CATALOGUE = """Available Actions for JSON Output:
 - "get_telemetry": full live system snapshot. target="snapshot".
 - "run_terminal_command": OS shell op. target="verb: argument". Verbs: list_directory, create_folder, move_file, copy_file, delete_file, list_processes, kill_process, network_info, ping, lock, sleep.
 - "workspace_read": read a project file into context. target=filepath (absolute or relative).
-- "workspace_write": create/overwrite a project file. target="filepath|file_content".
+- "workspace_write": create/overwrite a project file. target="<the real path>|<the real file content>". The angle brackets are a SLOT, not text: substitute both. Writing the literal words filepath/file_content/path/filename creates a file with that name — it happened live. If Sir named a location ("my desktop", "documents"), the path is that location plus his filename; if you did not catch the filename, ask for it instead of inventing one.
 - "workspace_patch": surgical line edit. target="filepath|exact_search_string|replacement_string". CRITICAL: exact_search_string MUST be the LITERAL text currently in the file — character for character. NEVER use placeholder names like "def old():" or "old_text". Example: if file contains print('Hello, World!') then to change it use: "test_hello.py|print('Hello, World!')|print('Hello, Universe!')".
 - "remember_fact": target="Category: fact details".
 - "telegram_send_file": send a file/document to the operator's phone via Telegram. target=filepath, OR {"path": filepath, "caption": "short note"}. Use when the user (especially over a remote channel) asks you to "send me", "text me", or "deliver" a file/report/document.
@@ -381,7 +381,7 @@ OS MACRO RULES: deep work/lock me in/code mode/work mode → os_macro target="de
 _CAT_CODE = """\
 CODING / WORKSPACE / GIT ACTIONS:
 - "workspace_read": read a project file into context. target=filepath.
-- "workspace_write": create/overwrite a project file. target="filepath|file_content".
+- "workspace_write": create/overwrite a project file. target="<the real path>|<the real file content>". The angle brackets are a SLOT, not text: substitute both. Writing the literal words filepath/file_content/path/filename creates a file with that name — it happened live. If Sir named a location ("my desktop", "documents"), the path is that location plus his filename; if you did not catch the filename, ask for it instead of inventing one.
 - "workspace_patch": surgical line edit. target="filepath|exact_search_string|replacement_string". exact_search_string MUST be the LITERAL current text char-for-char (from a prior [workspace_read/write result]) — never a placeholder/paraphrase.
 - "self_improve": propose a change to your OWN codebase on a branch, run tests, open a PR (never merges). target="what to improve". CONFIRM.
 - "github_status": git status. target="" or repo path. AUTO. | "github_log": last N commits. target="N" or "repo_path|N". AUTO. | "github_diff": diff --stat. target="" or repo path. AUTO.

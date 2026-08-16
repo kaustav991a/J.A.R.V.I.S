@@ -3748,7 +3748,19 @@ async def websocket_endpoint(websocket: WebSocket):
                                                         await _stream_deep_memory_speak(deep_payload, active_user, safe_send)
                                                     else:
                                                         await safe_send({"status": "complete", "result": result_str})
-                                                        asyncio.create_task(speaker.speak_text(str(result)))
+                                                        # Live-gate F-37: this door spoke the engine's
+                                                        # raw return value. Its twin on the desk socket
+                                                        # has run everything through the sanitiser for a
+                                                        # long time; the VOICE door — the one actually
+                                                        # used — never did, so the owner heard
+                                                        # "Format: 'filepath|file content'. Pipe
+                                                        # separates path from content." out loud. Every
+                                                        # refusal, path leak and internal error reaches
+                                                        # TTS through here.
+                                                        spoken = _sanitize_for_speech(atype, result_str)
+                                                        if spoken is None:
+                                                            spoken = result_str
+                                                        asyncio.create_task(speaker.speak_text(spoken))
                                             await asyncio.sleep(0.1)
                                         # --- SYNTHESIZE ALL BATCHED DATA (STREAMING) ---
                                         if batched_data:

@@ -139,6 +139,42 @@ from modules.protected_paths import (  # noqa: E402
 )
 
 
+#: Words that are the SPEC, not a filename. Live-gate F-37: asked to save a
+#: script to the Desktop, the model emitted
+#: `target="filepath|/Users/KAUSTAV/Desktop/a d d p y"` — it copied the
+#: placeholder out of the prompt as the path and put the path in the content.
+#: `filepath` resolves inside a workspace root and the content is non-empty, so
+#: every real check passed, `F:\work\filepath` was created, and it was reported
+#: as a success. Nothing downstream can catch this: the only thing wrong with
+#: the payload is that it means nothing.
+PLACEHOLDER_PATHS = frozenset({
+    "filepath", "file_path", "file path", "filename", "file_name",
+    "file name", "path", "file", "your_file", "yourfile", "myfile",
+    "my_file", "path/to/file", "path\\to\\file", "path/to/your/file",
+    "somefile", "some_file", "example.py", "file.txt",
+})
+
+
+def is_placeholder_path(raw: str) -> bool:
+    """True when the 'path' is the contract's own placeholder text.
+
+    Module-level rather than a method on purpose: `_workspace_write` and
+    `_workspace_patch` are both called UNBOUND by harnesses that pass a stub
+    engine, so a guard reached through `self` fails the call instead of the
+    assertion. That is `RESUME.md`'s fifth standing lesson, and it caught this
+    one on the way in.
+    """
+    probe = (raw or "").strip().strip("'\"<>{}[]").lower()
+    if not probe:
+        return False
+    if probe in PLACEHOLDER_PATHS:
+        return True
+    # Angle/brace forms are stripped above, so what remains is the bare word;
+    # this catches the extension'd variant of the same habit ("filepath.py").
+    stem, _, ext = probe.rpartition(".")
+    return bool(ext) and stem in PLACEHOLDER_PATHS
+
+
 class ActionEngine:
     def __init__(self):
         self.os_agent       = OSAgent()
@@ -452,6 +488,8 @@ class ActionEngine:
         target = str(payload.get("target") or "")
 
         if atype == "workspace_write":
+            if is_placeholder_path(target.partition("|")[0]):
+                return "Format: 'filepath|file content'. Pipe separates path from content."
             if "|" not in target:
                 return "Format: 'filepath|file content'. Pipe separates path from content."
             filepath, _, content = target.partition("|")
@@ -470,6 +508,8 @@ class ActionEngine:
         if atype == "workspace_patch":
             if not target:
                 return "No patch target specified."
+            if is_placeholder_path(target.split("|", 1)[0]):
+                return "Format: 'filepath|search_string|replace_string'"
             parts = target.split("|", 2)
             if len(parts) < 3:
                 return "Format: 'filepath|search_string|replace_string'"
@@ -1950,6 +1990,14 @@ class ActionEngine:
         content = content.replace("\\n", "\n").replace("\\t", "\t")
         if not filepath:
             return "No file path specified for workspace write."
+        # F-37, checked HERE as well as in the pre-flight because the approval
+        # re-entry runs with governance_bypass=True and skips the pre-flight
+        # entirely. A payload staged before this guard existed would otherwise
+        # still create `F:\work\filepath` on the way out of a "confirm".
+        if is_placeholder_path(filepath):
+            print("[ACTION ENGINE] workspace_write refused: the path is the "
+                  "spec placeholder, not a filename.", flush=True)
+            return "Format: 'filepath|file content'. Pipe separates path from content."
         # Truncating a key file destroys it exactly as thoroughly as unlinking it,
         # and this path had no check at all.
         protected = self._protected_path_problem(filepath)
@@ -2001,6 +2049,10 @@ class ActionEngine:
             filepath = filepath[len(self.PATCH_ALL_PREFIX):].strip()
         if not filepath:
             return "No file path specified for workspace patch."
+        if is_placeholder_path(filepath):   # F-37, see _workspace_write
+            print("[ACTION ENGINE] workspace_patch refused: the path is the "
+                  "spec placeholder, not a filename.", flush=True)
+            return "Format: 'filepath|search_string|replace_string'"
         if not search:
             return "Search string cannot be empty."
         try:
