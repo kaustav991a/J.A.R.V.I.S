@@ -343,8 +343,14 @@ def test_a_fact_containing_a_colon_is_stored_whole():
     engine = ae.ActionEngine.__new__(ae.ActionEngine)
     stored = {}
     original = memory_manager.add_memory
-    memory_manager.add_memory = lambda content, category, user: stored.update(
-        content=content, category=category)
+    def _spy(content, category, user, strict=False):
+        # `strict` is the keyword M4 made _remember_fact pass so it can tell a
+        # write FAULT from a duplicate. A stub without it fails the CALL rather
+        # than the assertion, which is a far more confusing way to find out.
+        stored.update(content=content, category=category, strict=strict)
+        return True
+
+    memory_manager.add_memory = _spy
     try:
         engine._remember_fact("router login: admin/hunter2")
         check(stored.get("content") == "router login: admin/hunter2",

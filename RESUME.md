@@ -6,6 +6,82 @@
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
 > bookmark, not a plan.
 
+## ▶▶▶ 2026-08-16 (session 4) — THE REVIEW BACKLOG IS EMPTY. Suite 77/77, 2285.
+
+**All seven remaining mediums fixed.** `review-findings.json` has no OPEN row
+left. One thing is owed by hand, below.
+
+### ⚠️ OWED: shred `jarvis-backend/jarvis_chroma_db.plaintext-20260816-120052`
+
+M5's migration ran on this machine. It takes a full copy of the store BEFORE
+touching anything, and that copy is the plaintext one — **the very thing the
+migration exists to remove from the disk.** Delete it once you are satisfied
+JARVIS still recalls properly. (`--report` now says `118 sealed, 0 PLAINTEXT` and
+a live `recall_semantic_context` came back with the dogs' names, so it works.)
+
+### M5 — the vector half was never encrypted, and it is now, data included
+
+Verified before and after, not inferred: `jarvis_memory` held **118 plaintext
+documents** and `jarvis_episodes` 1, in the same folder where
+`jarvis_longterm.db` was sealed 60/60 with `keys_ready()` True. Encryption was
+on for SQLite and off for the vector mirror of the same facts.
+
+Both collections now go through `chroma_crypto`. The subtle part is
+`sealed_add_kwargs`, which exists so rule 1 of that module lives in ONE place:
+**the vector must come from the plaintext.** Handing a sealed string to
+`documents=` alone embeds the CIPHERTEXT, and the symptom is "search got worse",
+never an error. `jarvis_episodes` was done at the same time — same defect, same
+folder, and its document is a summary of an entire conversation rather than one
+fact.
+
+`migrate_chroma_encryption.py --report/--apply` re-keys what was already on
+disk: backup first, **the existing vectors handed straight back so nothing is
+re-embedded**, every row read back and compared byte-for-byte, idempotent, and
+it refuses outright if there is no key to encrypt with. Metadata stays plain,
+matching the SQLite half exactly — both stores filter on `user`.
+
+### C5 — the bot answered in group chats
+
+Identity is authenticated on `from_user.id`; every reply, document and session
+was addressed to `chat.id`. No handler looked at the chat TYPE. Add the bot to
+any group containing the owner and his own authenticated `/status`, a
+`summarize_partner_chat` transcript, a verbatim partner read-back or
+`/offline <token>` was read by everyone in the room — including people whose own
+messages the firewall silently drops.
+
+A `_guard` decorator now fronts all **nine** routed handlers: non-private is
+dropped in silence (a reply confirms the bot is listening there) and logged, and
+the owner alone gets a one-line note in his private chat so the silence is not
+mistaken for JARVIS being down. `_chat_type` normalises aiogram's string AND its
+`ChatType` enum, and an unreadable type fails closed. Sessions are keyed on the
+authenticated user id — the same value in a private chat, so production is
+unchanged. **A harness test asserts every routed handler carries the guard**,
+because a rule spread over nine call sites is a rule that gets missed at the
+tenth.
+
+### The other five, one line each
+
+`C3` her message went to a cloud LLM even with recording OFF — Python evaluates
+`assess_urgency(...)` before it calls `record`, and only `record` read the flag;
+the check moved to the top of `note_contact`, so off means nothing is assessed
+and nothing leaves the machine · `C4` her voice-note transcript was printed to
+the desk console, and `run_remote_command` printed the whole text of every
+remote message; both are tier-gated now and log `<n> chars (content withheld)`
+for anyone but the owner · `C6` a send whose first chunk landed and second
+failed reported "Nothing was sent" while she held a truncated fragment — tri-state
+`SEND_OK/PARTIAL/FAILED`, and an over-long body is refused **before** the CONFIRM
+prompt so a private message is never split at all · `M3` a stored fact's
+newlines became extra `[Correction]` lines of the system prompt through an AUTO
+action — collapsed on write and on render · `M4` "Committed to memory, Sir." was
+returned unconditionally and then spoken, even when the write failed; three
+honest answers now, using M1's `strict`.
+
+### Two stale stubs again — third time this pattern has shown up
+
+`test_review_batch1_medium`'s `add_memory` spy did not accept `strict=`, so M4's
+call failed rather than its assertion. Same class as session 3's two. **When a
+production signature grows a keyword, grep the harnesses for stubs of it.**
+
 ## ▶▶▶ 2026-08-16 (session 3) — R5 + ALL THREE HIGH BATCH-2 FINDINGS FIXED. Suite 76/76, 2202.
 
 **Every HIGH finding in the review is now closed. Seven mediums remain** (`M3`,
