@@ -593,7 +593,7 @@ Briefing` at 04:49 PM. The period is computed from the real hour.
 | `10.9` **briefing** | F-10's half is fixed; **F-09 is REOPENED** — the briefing narrates four data sources it never read. See below |
 | `4.1` **workspace write to Desktop** | **F-22** — wrote to `F:\work\desktop\add.py` and said *"File created, Sir."* The user's Desktop is not a workspace root and its absence is silent |
 
-## Findings — 9 new this session
+## Findings — 11 new this session
 
 | ID | Sev | One line |
 |---|---|---|
@@ -601,12 +601,14 @@ Briefing` at 04:49 PM. The period is computed from the real hour.
 | **F-19** | 🔴 | Owner declared an intruder 4 min after a successful match; escalated to lockdown; oscillating on the 60s poll |
 | **F-20** | 🔴 | Lockdown overlay latches forever — the security barrier disables the only channel that can clear it |
 | **F-25** | 🔴 | Desk soft-lock trapped the owner: its only advertised exit is the camera, and the camera is why it fired |
+| **F-27** | 🔴 | The command line is hardened against bypassing the face scan; a **spoken** phrase printed on the idle screen bypasses it completely |
 | **F-22** | 🔴 | `workspace_write` silently re-roots an unresolvable location and reports success |
 | **F-23** | 🔴 | Owner refused by face, then locked out because STT ended capture at *"my name is"* |
 | **F-21** | 🟠 | *"Initiating lockdown protocols"* secures nothing — root cause #4, second door |
 | **F-09** | 🟠 | REOPENED and wider — unevidenced **state** claims, not just action claims |
 | **F-18** | 🔵 | Row wording: `0.3` points at `/` not `/hud/`; `4.1` omits the CONFIRM prompt |
 | **F-24** | 🔵 | Intent classification falls back silently on malformed JSON |
+| **F-26** | 🔵 | The HUD fetches its own typeface from the public internet — nothing is bundled |
 
 **The pattern is the same one session 1 named, and it is now the dominant theme:** *a failure the
 user cannot distinguish from normal operation.* A dead provider leg that answers anyway (F-17), a
@@ -975,3 +977,183 @@ lock cannot arm — but the flag is belt-and-braces and costs nothing.
 `LIVE_GATE_CHECKLIST.md:85` and row `0.1` both say `.env\Scripts\python.exe watchdog.py`. The
 interpreter is at **`venv\Scripts\python.exe`**; there is no `.env\Scripts`. The line that warns
 you to use the venv interpreter names a path that does not exist.
+
+---
+
+## Two HUD console errors, triaged — one is by design, one is F-26
+
+Seen in the browser console on the session-2 relaunch:
+
+```
+yMJ_MIlzdpvBhQQL_SC3X9yhF25-T1nyGy7TrUDChqmWoLxl7vXry-eeuQ.woff2:1
+    Failed to load resource: the server responded with a status of 404 ()
+api/camera/stream?fps=12&n=0:1
+    Failed to load resource: the server responded with a status of 503 (Service Unavailable)
+```
+
+### The 503 is correct behaviour — do not log it as a failure
+
+`/api/camera/stream` returns 503 when no camera owner is publishing, which is exactly the state
+this session is in (camera off, `[GESTURE] camera unavailable [absent]`). The frontend is built
+for it: `CameraFeedWidget.jsx:107-111` reads `camera_active === false` and renders **`OPTICAL FEED
+OFFLINE — camera unreachable, check the phone camera app`**, and `FaceAuthOverlay.scss:35` says
+the live layer is *"absent entirely when the endpoint 503s (no camera owner)"*. The console line
+is the browser reporting a status the app then handles. **No row fails on this.**
+
+## F-26 — 🔵 LOW · The HUD fetches its own typeface from the public internet
+
+The 404 is **Orbitron**, from `fonts.gstatic.com` — that hash is a Google Fonts v2 asset name, and
+the request 404s because a cached copy of the Google Fonts stylesheet still points at a font file
+version Google has since retired. A hard reload fixes the symptom. The display font is currently
+falling back, which is why the HUD's titles look wrong.
+
+**The symptom is trivial. What it exposes is not:**
+
+```
+dist\  ->  zero .woff2, .woff or .ttf files
+```
+
+The typeface is fetched from the network on every boot, from three places at once:
+
+| Site | What it does |
+|---|---|
+| `index.html:10` | `<link>` to `fonts.googleapis.com/css2?family=Orbitron…&family=Poppins…` |
+| `src/SidecarView.scss:5` | the same `@import url(...)`, which Vite inlines into the bundle |
+| `src/NotchView.scss:5` | the same `@import` again — the built CSS carries it **twice** |
+
+So the packaged build asks Google for the same stylesheet three times per load, and the HUD's
+identity — Orbitron is *the* JARVIS display face — depends on a third-party CDN being reachable
+and on that CDN not retiring an asset.
+
+**Why this matters more than a 404:** `ELECTRON_SHIP_PLAN.md` is next after the gate. A packaged
+desktop assistant that renders in Times New Roman when the network is down, and that phones a
+third party on every launch, is not what "packaged" should mean. This is also the only remaining
+external runtime dependency the HUD has.
+
+**Fix:** self-host both families in `public/fonts/` with a local `@font-face`, drop the `<link>`
+and both `@import`s. Fonts stop being a network call, the duplicate import disappears, and the
+404 cannot recur. Small change, and it belongs **before** packaging, not after.
+
+---
+
+## F-27 — 🔴 HIGH · The typed door is bolted. The spoken door has no lock, and the screen advertises it.
+
+**Found by:** trying to log in at all, with the camera off.
+
+The command line refused, correctly, and said why:
+
+```json
+POST /api/backdoor -> 403
+{"status":"refused","reason":"locked",
+ "message":"Biometric authorisation required, Sir. The command line does not bypass the
+            optical sensors — say the wake word and complete the face scan.",
+ "flag":"JARVIS_ALLOW_BACKDOOR"}
+```
+
+**That gate works. It is also pointless**, because seconds later:
+
+```
+[SYSTEM] Offline. Waiting for 'wake up' or 'initiate admin override'...
+[STT] Heard: 'initiate admin override'
+[BOOT SEQUENCE INITIATED VIA: initiate admin override]
+[BRAIN] Compiling system briefing…
+```
+
+No scan. No name. No challenge. Straight to a full briefing as the owner.
+
+`main.py:2765`:
+
+```python
+if "admin override" in wake_phrase.lower():
+    active_user = "KAUSTAV"          # identity assigned from a spoken substring
+```
+
+**Unconditional, and a substring match** — any utterance containing the words is enough. The
+whole biometric branch (`STAGE 1B`, `:2776` onward) is the `else`.
+
+### Three doors, three different answers to the same question
+
+| Door | Site | Verdict |
+|---|---|---|
+| HTTP command line | `/api/backdoor`, gated by `JARVIS_ALLOW_BACKDOOR` | **refused** — and tells you to go do the face scan |
+| click-to-talk | `wakeword.py:85` — *"never 'admin override': a click must not hand out admin"*, asserted by `test_listen_request.py:164` | **refused**, deliberately, with a harness protecting it |
+| **spoken wake phrase** | `main.py:2765` | **grants admin, unauthenticated** — and `wakeword.py:120` prints the phrase on the idle screen on every cycle |
+
+**The project already identified this exact risk and closed it twice.** The click path has a
+comment explaining why a click must not hand out admin, and a harness that fails if the phrase
+ever appears there. The HTTP path has a flag, a refusal, and a live gate section. The voice path —
+the loudest, most reachable one, the one whose phrase is printed for anyone in the room to read —
+was never closed.
+
+**`REVIEW.md` root cause #4, for the third time in one session** (with F-21 and F-25): *a class
+fixed one site at a time stays open.* Ask the review's question — **which other door reaches this
+verb?**
+
+### What makes it worse than a plain backdoor
+
+The refusal message directs the user to a path that, in this session, **was broken and hostile**:
+optical scan impossible (camera off), voice fallback terminated the real owner twice on a
+mis-transcribed name (F-23). So the hardened door sends you to a door that rejects you, while the
+unhardened door lets anyone in. **The security ordering is exactly inverted.**
+
+### Fix
+
+Not "remove the override" — it is the recovery path when biometrics fail, which F-23 and F-25
+show is a real and frequent state. Make it *authenticated*: a spoken shared secret from `.env`
+(the same shape as `JARVIS_UNLOCK_CODE`), off by default, never printed on the idle screen, and
+logged loudly when used. The idle line should name only `wake up`.
+
+---
+
+## Live re-confirmations from the same run — no new IDs, but they move three findings
+
+**F-17 reproduced verbatim** on the `initiate admin override` briefing:
+
+```
+[ROUTER] Gemini key #1/5 failed (TypeError) — rotating.   (…through #5)
+[ROUTER] 'gemini' route failed (TypeError: contents must not be empty). Escalating…
+```
+
+Five keys burned on one payload bug, on the exact call site the finding named (`brain.py:2819`).
+The offline reproduction and the live behaviour agree. **Ready to fix.**
+
+**F-23 reproduced twice, and the cause is wider than session 2 recorded.** Session 2 blamed the
+VAD ending capture at *"my name is"*. This run, capture was fine and **cloud STT could not
+transcribe the owner's name**:
+
+```
+🗣️ You said: 'ads ka Utsav'  [CLOUD STT]   -> Interaction terminated.
+🗣️ You said: 'ads house of'  [CLOUD STT]   -> Interaction terminated.
+```
+
+So the identity fallback gates on a string a speech-to-text engine has to spell correctly, and
+`main.py:2999` answers any miss with `Interaction terminated` — no retry, no second attempt. **Two
+independent failure modes now reach the same dead end.** The fix must be at the dead end
+(`:2999` must retry and must not terminate), not only at the capture.
+
+**F-09's leading hypothesis is dead — and this is the useful part.** Session 2 guessed the empty
+data came from the Google auth failure seen at boot. This run:
+
+```
+[GOOGLE AUTH] Token refreshed successfully.
+[CALENDAR_WIDGET] Google Calendar service initialised
+[HEALTH] Google Fitness service initialised.
+…
+[JARVIS] "…I do have 201 unread emails…"
+```
+
+**Auth succeeded and the number is still 201** — the same figure Kaustav called *"totally wrong"*.
+So the cause is the query or the count, **not the credential**. Do not build the fix against the
+auth theory. The briefing also claimed *"no scheduled events"*, which is the calendar leg of the
+same question and is still unverified against the real calendar.
+
+### Console noise that is NOT a finding
+
+- `POST /api/backdoor 403` in the console is the gate **working** — it fires on `onKeyDown` from
+  the HUD command box.
+- `api/camera/stream 503` — by design with no camera owner; the widget renders `OPTICAL FEED
+  OFFLINE`.
+- `A listener indicated an asynchronous response…message channel closed` — a Chrome **extension**,
+  not the HUD.
+- The two `GET …woff2 404` lines in the *server* log are probes run from this session's shell
+  while diagnosing F-26, not browser traffic. The browser's 404 is almost certainly `gstatic`.
