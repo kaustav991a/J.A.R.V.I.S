@@ -1,10 +1,49 @@
 import React, { useState, useEffect } from "react";
 import { Search, ExternalLink, ShieldAlert } from "lucide-react";
 
+const DEFAULT_URL = "https://www.youtube.com/embed/S2O6oV_2H8k?autoplay=1&mute=1";
+
+// Only http(s) may reach the iframe.
+//
+// `externalUrl` arrives over the WebSocket — it is whatever the backend, and
+// therefore ultimately the model, decided to open. Inside an Electron shell a
+// `file:///` frame reads the local disk and a `data:` frame executes script, so
+// this is not the same risk it would be in a browser tab.
+//
+// ⚠️ MODULE SCOPE, and called from the useState INITIALISER. Review batch 10,
+// 2026-08-16: this lived inside the component and guarded the two UPDATE paths
+// (typed submit, and the effect watching `externalUrl`) while the initial state
+// took `externalUrl` RAW. A component mounted with a `file:///` prop therefore
+// rendered it into the iframe on the very first paint, and the effect that
+// would have caught it returns early on a refusal — deliberately, so a bad URL
+// does not blank the page — which left the unsafe frame up.
+//
+// Three doors, two guarded. Exactly finding S3's shape, and finding 14's before
+// it: a gate wired where the change happens, and not where the value ARRIVES.
+//
+// Returns null for anything it will not open, so callers can leave the previous
+// page up rather than blanking the frame.
+const safeHttpUrl = (raw) => {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  try {
+    const parsed = new URL(text, window.location.href);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      console.warn(`[BrowserWidget] refused a ${parsed.protocol} URL`);
+      return null;
+    }
+    return parsed.href;
+  } catch {
+    console.warn("[BrowserWidget] refused an unparseable URL");
+    return null;
+  }
+};
+
 const BrowserWidget = ({ externalUrl, immersive = false }) => {
-  const defaultUrl = "https://www.youtube.com/embed/S2O6oV_2H8k?autoplay=1&mute=1";
-  const [urlInput, setUrlInput] = useState(externalUrl || defaultUrl);
-  const [currentUrl, setCurrentUrl] = useState(externalUrl || defaultUrl);
+  const defaultUrl = DEFAULT_URL;
+  // The gate runs BEFORE the first render, not after it.
+  const [urlInput, setUrlInput] = useState(() => safeHttpUrl(externalUrl) || DEFAULT_URL);
+  const [currentUrl, setCurrentUrl] = useState(() => safeHttpUrl(externalUrl) || DEFAULT_URL);
   const [isEstablishing, setIsEstablishing] = useState(true);
   // Some frames error outright (bad host, network failure) — onError fires and
   // we swap to a fallback. NOTE: X-Frame-Options / CSP blocks are NOT reliably
@@ -28,33 +67,6 @@ const BrowserWidget = ({ externalUrl, immersive = false }) => {
   }, [currentUrl]);
 
   const handleFrameError = () => setLoadError(true);
-
-  // Only http(s) may reach the iframe.
-  //
-  // `externalUrl` arrives over the WebSocket — it is whatever the backend, and
-  // therefore ultimately the model, decided to open. Inside an Electron shell a
-  // `file:///` frame reads the local disk and a `data:` frame executes script,
-  // so this is not the same risk it would be in a browser tab. The typed path
-  // below already forces https:// onto anything unschemed; this closes the same
-  // gap on the path nobody types into.
-  //
-  // Returns null for anything it will not open, so the caller can leave the
-  // previous page up rather than blanking the frame.
-  const safeHttpUrl = (raw) => {
-    const text = String(raw || "").trim();
-    if (!text) return null;
-    try {
-      const parsed = new URL(text, window.location.href);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        console.warn(`[BrowserWidget] refused a ${parsed.protocol} URL`);
-        return null;
-      }
-      return parsed.href;
-    } catch {
-      console.warn("[BrowserWidget] refused an unparseable URL");
-      return null;
-    }
-  };
 
   useEffect(() => {
     if (externalUrl) {

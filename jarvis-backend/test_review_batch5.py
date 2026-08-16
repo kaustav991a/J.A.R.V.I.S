@@ -422,6 +422,46 @@ def test_one_malformed_detection_cannot_white_screen_the_hud():
         check(prop in guard, f"the guard checks {prop}")
 
 
+def test_the_iframe_url_is_gated_where_the_value_ARRIVES():
+    """Batch 10. safeHttpUrl guarded the two UPDATE paths (typed submit, and the
+    effect watching externalUrl) while the initial useState took the prop RAW —
+    so a component mounted with a `file:///` externalUrl rendered it into the
+    iframe on the first paint, and the effect that would catch it returns early
+    on a refusal, leaving the unsafe frame up. Three doors, two guarded: S3's
+    shape, and finding 14's before it."""
+    src = (FRONTEND / "components" / "BrowserWidget.jsx").read_text(
+        encoding="utf-8", errors="replace")
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith(("//", "*", "/*")))
+    check("useState(externalUrl || defaultUrl)" not in code,
+          "the raw prop no longer becomes the initial URL")
+    check(code.count("safeHttpUrl(externalUrl)") >= 2,
+          "both initial states run the prop through the gate")
+    check(code.index("const safeHttpUrl") < code.index("const BrowserWidget"),
+          "the gate is module-scope, so a useState initialiser can call it")
+    for scheme in ("file:", "data:", "javascript:"):
+        check(scheme not in code.replace("http:", "").replace("https:", ""),
+              f"no {scheme} scheme is special-cased back in")
+    gate = code.split("const safeHttpUrl", 1)[1].split("const BrowserWidget", 1)[0]
+    check('parsed.protocol !== "http:"' in gate and 'parsed.protocol !== "https:"' in gate,
+          "the gate is an allowlist of two protocols, not a blocklist")
+
+
+def test_the_calculator_never_evaluates_code():
+    """`safeEvaluate` replaced eval(). Pinned: a tokenizer that throws on any
+    character it does not recognise is what makes the widget CSP-safe."""
+    src = (FRONTEND / "components" / "CalculatorWidget.jsx").read_text(
+        encoding="utf-8", errors="replace")
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith(("//", "*", "/*")))
+    check("eval(" not in code and "new Function" not in code,
+          "no code evaluation of any kind")
+    check("throw new Error(\"bad char: \" + c)" in code,
+          "an unrecognised character is refused rather than skipped")
+    check("Number.isFinite(st[0])" in code,
+          "and a non-finite result (1/0) is an error, not a display value")
+
+
 def test_the_frontend_has_no_html_injection_sink():
     """Swept in batch 8, pinned here: React escapes by default, and the only way
     to lose that is to ask for it. `eval` was already replaced by a safe parser
