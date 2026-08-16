@@ -3,13 +3,35 @@
 > **Single source of truth.** Read this first when resuming. It replaces and folds in
 > the old `ROADMAP_TO_FULL_JARVIS.md`, `RELIABILITY_HARDENING.md`,
 > `HAND_GESTURE_CONTROL_PLAN.md`, `UPGRADES_AND_FLUIDITY.md`, `MOBILE_PRESENCE_PLAN.md`,
-> and `LOGIN_REVAMP_PLAN.md` (all deleted 2026-07-19). The **test plan lives
-> separately** in `TEST_PLAN.md`. Last updated 2026-08-01 at `9c8c5eb`.
+> and `LOGIN_REVAMP_PLAN.md` (all deleted 2026-07-19), plus `REVIEW_PLAN.md` and
+> `PHASE_TRACKER.md` (deleted 2026-08-16 — see below). The **test plan lives
+> separately** in `TEST_PLAN.md`. Last updated **2026-08-16**.
 >
-> **Working branch:** `feat/cloud-gateway`, fully pushed as of 2026-08-01 (see §7).
-> Not merged to `main` — and `main` carries one commit this branch does not
-> (`8d0ea4f` "Add GNU General Public License v3"), so the merge is not a fast-forward.
+> **Working branch:** `feat/cloud-gateway`, pushed and in sync. Not merged to
+> `main` — and `main` carries one commit this branch does not (`8d0ea4f`, the
+> GPL LICENSE), so the merge is not a fast-forward.
 > **Deep code detail:** query the `codebase-memory-mcp` graph, don't re-read whole files.
+
+---
+
+## 0. WHERE THIS STANDS — 2026-08-16
+
+**The pre-Electron code review is 100% COMPLETE.** 46 findings, all fixed, all
+harnessed; ~17,700 backend lines and 4,677 frontend lines read. Suite **80/80
+harnesses, 2407 checks, 0 failed**.
+
+- **What it found and the five root causes:** `REVIEW.md`
+- **The 46 findings, each with its reasoning:** `review-findings.json`
+- **What to do next, and what is owed by hand:** `RESUME.md`
+
+**The next milestone is the §7 live gate** (`LIVE_GATE_CHECKLIST.md`), and it is
+now the only thing that can find what a review cannot: timing, integration, and
+anything needing real hardware. Five of its rows exist because of fixes made
+during the review that no harness can prove.
+
+The queue below is unchanged and nothing jumps it: **finish the gate → the
+capability pass (introspection action + skill installer + a public-API
+shortlist, as ONE reviewable change) → the torch move → Electron → mobile.**
 
 ---
 

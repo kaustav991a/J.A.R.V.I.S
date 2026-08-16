@@ -353,7 +353,9 @@ python run_phase1_regression.py --commands-file phase1_regression_commands.json 
 
 ⚠️ **None of the `phase*_regression_commands.json` files are in the repo** (lost in the
 Jul-4 history rewrite) — only the runner survives. Either re-author a command list or
-treat §15 as retired; PART A + §0–§22 are the real coverage. KPIs: `jarvis-backend/PHASE_TRACKER.md`.
+treat §15 as retired; PART A + §0–§22 are the real coverage. (Historical phase KPIs
+lived in `jarvis-backend/PHASE_TRACKER.md`, deleted 2026-08-16 — it had not been
+touched in seven weeks and the roadmap is the single source of truth. `git log` has it.)
 
 ---
 
