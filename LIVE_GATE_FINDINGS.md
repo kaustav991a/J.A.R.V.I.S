@@ -1327,6 +1327,12 @@ never invent it. The mkdir at `:159` is what makes the invention permanent.
 
 # §6 GOVERNANCE ROWS — 2026-08-16
 
+> **§4 and §6 are CLOSED for session 2** (Kaustav, 2026-08-16), with one hole recorded and
+> accepted: **the CONFIRM "cancel" branch was never exercised.** The word was not spoken once in
+> this session — verified against the full session log, not assumed. Every CONFIRM prompt raised
+> today ended in `[OK] Confirmation consumed`. Nothing shows a pending action being *dismissed*
+> and its slot cleared. That is the only untested path in the governance lifecycle.
+
 | Row | Verdict | Evidence |
 |---|---|---|
 | `6.1` weather, ALLOW tier | ✅ **PASS** on tier, ❌ on content | ran with no prompt; **the first answer was fabricated** — F-32 |
