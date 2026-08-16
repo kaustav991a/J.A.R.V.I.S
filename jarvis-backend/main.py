@@ -2582,23 +2582,74 @@ async def backdoor_command(req: BackdoorRequest):
 # registered clients and receive every broadcast — they just do not drive the
 # mic. Ownership is released on disconnect, so the next HUD to connect picks it
 # up and reloading the page still leaves you with a working microphone.
-_VOICE_LOOP_OWNER = None
+#
+# ⚠️ That last sentence was FALSE until review finding R5 (2026-08-16). The
+# owner is blocked inside the mic thread, and starlette only notices a
+# disconnect inside `receive()` — which this handler never called while
+# listening. So the release never ran, the reloaded HUD lost its single claim
+# attempt and parked view-only, and the microphone was dead while the HUD said
+# `SYSTEM OFFLINE // STANDBY FOR VOICE INPUT`. The state machine now lives in
+# `modules/voice_loop.py`; read its docstring before changing any of this.
+from modules import voice_loop
+from modules.voice_loop import ownership as _voice_ownership
 
 
 def _claim_voice_loop(websocket) -> bool:
     """True if this connection now owns the wake-word loop."""
-    global _VOICE_LOOP_OWNER
-    if _VOICE_LOOP_OWNER is not None:
-        return False
-    _VOICE_LOOP_OWNER = websocket
-    return True
+    return _voice_ownership.claim(websocket)
 
 
 def _release_voice_loop(websocket) -> None:
     """Give the loop up, but only if this connection is what holds it."""
-    global _VOICE_LOOP_OWNER
-    if _VOICE_LOOP_OWNER is websocket:
-        _VOICE_LOOP_OWNER = None
+    _voice_ownership.release(websocket)
+
+
+def _owns_voice_loop(websocket) -> bool:
+    """Checked by the mic thread each listen window, and at every stage 0."""
+    return _voice_ownership.owns(websocket)
+
+
+def _wake_word_for(websocket):
+    """Run the blocking wake-word wait on behalf of ONE connection.
+
+    Two things the bare `wait_for_wake_word()` call could not do: hold the
+    hand-over interlock (so the next owner does not open a second microphone
+    on top of this one), and stand down when this connection stops being the
+    owner (so the device is actually released rather than held by a socket
+    nobody is on the other end of).
+    """
+    with _voice_ownership.mic_session():
+        return wait_for_wake_word(
+            should_abort=lambda: not _voice_ownership.owns(websocket))
+
+
+async def _watch_for_disconnect(websocket, gone: asyncio.Event) -> None:
+    """The one and only reader on this socket, for the life of the connection.
+
+    Nothing in the HUD protocol travels client→server over `/ws` (click-to-talk
+    is `POST /api/listen` for exactly that reason), so this task exists purely
+    to OBSERVE the disconnect: `receive()` is what moves `client_state` to
+    DISCONNECTED, and without someone calling it a dead socket is
+    indistinguishable from an idle one.
+
+    It releases ownership itself rather than waiting for the handler's
+    `finally`, because the handler may be parked in the mic thread for another
+    five seconds and the whole point is that the next HUD gets the microphone
+    immediately.
+    """
+    try:
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+    except Exception:
+        # A closed socket, a cancelled task, a receive after disconnect — all
+        # of them mean the same thing here.
+        pass
+    finally:
+        gone.set()
+        _release_voice_loop(websocket)
+        unregister_client(websocket)
 
 
 @app.websocket("/ws")
@@ -2608,7 +2659,12 @@ async def websocket_endpoint(websocket: WebSocket):
     register_client(websocket)
     print("UI Connected to WebSocket")
     loop = asyncio.get_running_loop()
-    
+
+    # Set the moment this client is observed to have gone. See
+    # _watch_for_disconnect — without a reader, a dead socket looks idle.
+    gone = asyncio.Event()
+    disconnect_watcher = asyncio.create_task(_watch_for_disconnect(websocket, gone))
+
     async def safe_send(payload):
         if websocket.client_state.value == 1:
             await websocket.send_json(payload)
@@ -2635,18 +2691,39 @@ async def websocket_endpoint(websocket: WebSocket):
         # One microphone, one wake-word loop. A second HUD (or a reloaded page
         # whose old socket has not closed yet) stays connected and keeps
         # receiving broadcasts, but does not start a rival listener.
+        #
+        # R5: the claim RETRIES. The common case for losing it is not a second
+        # HUD, it is the previous incarnation of this one — and that socket is
+        # already dead, it just cannot be seen to be dead until the watcher
+        # above reads the disconnect. One attempt meant a reload cost you the
+        # microphone until the backend was restarted.
         if not _claim_voice_loop(websocket):
             print("[VOICE] wake-word loop already owned by another HUD "
-                  "connection — this one is view-only.", flush=True)
+                  "connection — this one is view-only for now.", flush=True)
             await safe_send({"status": "offline",
                              "message": "SYSTEM OFFLINE // STANDBY FOR VOICE INPUT"})
-            while True:
-                # Blocks until this client goes away; WebSocketDisconnect is
-                # handled by the same except below, and the finally releases
-                # ownership if this connection happened to hold it.
-                await websocket.receive()
+            while not _claim_voice_loop(websocket):
+                try:
+                    await asyncio.wait_for(gone.wait(), timeout=voice_loop.CLAIM_RETRY_S)
+                except asyncio.TimeoutError:
+                    pass
+                if gone.is_set():
+                    # Our own client left while we were waiting our turn. The
+                    # finally below unregisters; nothing else to do.
+                    return
+            print("[VOICE] wake-word loop handed over to this connection.", flush=True)
+
+        # The token is ours; the DEVICE may not be yet. The outgoing owner
+        # stands down within one listen window — opening the microphone before
+        # it has is how F-11 comes back.
+        if not await asyncio.to_thread(_voice_ownership.wait_for_mic_release):
+            print("[VOICE] previous listener has not released the microphone "
+                  "in time — starting anyway.", flush=True)
 
         while True:
+            if not _owns_voice_loop(websocket):
+                # Lost between turns (our socket died, or we were judged dead).
+                break
             # ==========================================
             # STAGE 0: DEEP SLEEP & MEMORY WIPE
             # ==========================================
@@ -2662,7 +2739,12 @@ async def websocket_endpoint(websocket: WebSocket):
             
             await safe_send({"status": "offline", "message": "SYSTEM OFFLINE // STANDBY FOR VOICE INPUT"})
             
-            wake_phrase = await asyncio.to_thread(wait_for_wake_word)
+            wake_phrase = await asyncio.to_thread(_wake_word_for, websocket)
+            if not _owns_voice_loop(websocket):
+                # The wait returned because a newer connection took the loop,
+                # not because anyone spoke. Let go of the microphone.
+                print("[VOICE] stood down from the wake-word loop.", flush=True)
+                break
             if not wake_phrase:
                 continue
 
@@ -3430,7 +3512,15 @@ async def websocket_endpoint(websocket: WebSocket):
                                 _fault_title = "Madam" if active_user == "MOUSUMI" else "Sir"
                                 asyncio.create_task(speaker.speak_text(f"I encountered an execution fault, {_fault_title}."))
                         # No else needed here, the loop naturally continues to `AWAITING INPUT...`
-                            
+
+        # Reached only by standing down from the loop above. The socket may
+        # still be perfectly alive — a viewer is a registered client and keeps
+        # receiving broadcasts — so park rather than hang up. No re-claim from
+        # here: whoever took the microphone is the one holding it.
+        await safe_send({"status": "offline",
+                         "message": "SYSTEM OFFLINE // STANDBY FOR VOICE INPUT"})
+        await gone.wait()
+
     except WebSocketDisconnect:
         print("UI Disconnected.")
     except asyncio.CancelledError:
@@ -3440,3 +3530,4 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         _release_voice_loop(websocket)
         unregister_client(websocket)
+        disconnect_watcher.cancel()

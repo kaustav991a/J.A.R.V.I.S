@@ -86,8 +86,19 @@ listen_request = ListenRequest()
 # same biometric boot a spoken "wake up" does.
 CLICK_WAKE_PHRASE = "wake up"
 
-def wait_for_wake_word():
-    """STAGE 1: The Initial Boot (Only happens once)"""
+def wait_for_wake_word(should_abort=None):
+    """STAGE 1: The Initial Boot (Only happens once)
+
+    `should_abort` is a zero-argument predicate checked once per listen window
+    (so within ~5s). Returning True makes this return "" and, crucially, leave
+    the `sr.Microphone()` context — releasing the DEVICE, not just the caller.
+
+    Review finding R5: the wake-word loop is owned by one WebSocket connection
+    at a time, and until this existed the owner had no way to be told it had
+    stopped being the owner. Reloading the HUD left the old connection blocked
+    in here forever, holding both the ownership token and the microphone, while
+    the new HUD sat view-only reporting that it was listening.
+    """
     # --- LAZY IMPORT FIX: Prevents Uvicorn infinite loops on Windows ---
     from modules.wake_engine import has_human_speech
     
@@ -109,6 +120,14 @@ def wait_for_wake_word():
             print("[SYSTEM] Offline. Waiting for 'wake up' or 'initiate admin override'...", flush=True)
             
             while not is_shutting_down.is_set():
+                # R5: stand down for the connection that now owns the loop.
+                # Checked here, at the top of the window, so the device is
+                # released before the next 5-second listen begins.
+                if should_abort is not None and should_abort():
+                    print("[WAKE] Standing down — this connection no longer "
+                          "owns the microphone.", flush=True)
+                    return ""
+
                 # --- DEAFEN LOOP: Disable Barge-in by ignoring wake words while speaking ---
                 if speaker.is_system_speaking:
                     import time
