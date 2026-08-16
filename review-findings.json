@@ -1,9 +1,10 @@
 {
   "review": "pre-Electron code review, batch 1",
   "date": "2026-08-16",
-  "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code. | 2026-08-16 session 3: C2 harness written (was owed), then R5, M2, M1, C1 fixed in that order. Suite 76/76, 2202 checks. | 2026-08-16 session 4: the seven batch-2 mediums fixed. Suite 77/77, 2285 checks. THE WHOLE REVIEW BACKLOG IS NOW CLOSED. | 2026-08-16 session 5 (batch 3): brain.py reviewed -- 3 findings, all fixed. agent-runner/agent-support given a BOUNDED sweep only (grep for sinks/claims + agent_files preconditions read); NOT line-by-line. Suite 78/78, 2308. | 2026-08-16 session 6 (batch 4): agent-support read in full -- 3 findings, all fixed. agent_search/tool_calls/agent_schema/agent_errors/agent_subagents VERIFIED SOUND, do not re-raise. agent_runner + worker_loop remain partially covered. Suite 79/79, 2337. | 2026-08-16 session 7 (batch 5): ambient_vision reviewed in full -- 3 findings, all fixed. gesture_camera._loop and cursor_overlay.read_stdin verified sound at the loop level. STILL NOT READ LINE-BY-LINE: agent_runner 1-330, worker_loop remainder, gesture_engine (776), cursor_overlay body (548), gesture_roi, gesture_arbiter, frontend (4240). Suite 80/80, 2361.",
+  "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code. | 2026-08-16 session 3: C2 harness written (was owed), then R5, M2, M1, C1 fixed in that order. Suite 76/76, 2202 checks. | 2026-08-16 session 4: the seven batch-2 mediums fixed. Suite 77/77, 2285 checks. THE WHOLE REVIEW BACKLOG IS NOW CLOSED. | 2026-08-16 session 5 (batch 3): brain.py reviewed -- 3 findings, all fixed. agent-runner/agent-support given a BOUNDED sweep only (grep for sinks/claims + agent_files preconditions read); NOT line-by-line. Suite 78/78, 2308. | 2026-08-16 session 6 (batch 4): agent-support read in full -- 3 findings, all fixed. agent_search/tool_calls/agent_schema/agent_errors/agent_subagents VERIFIED SOUND, do not re-raise. agent_runner + worker_loop remain partially covered. Suite 79/79, 2337. | 2026-08-16 session 7 (batch 5): ambient_vision reviewed in full -- 3 findings, all fixed. gesture_camera._loop and cursor_overlay.read_stdin verified sound at the loop level. STILL NOT READ LINE-BY-LINE: agent_runner 1-330, worker_loop remainder, gesture_engine (776), cursor_overlay body (548), gesture_roi, gesture_arbiter, frontend (4240). Suite 80/80, 2361. | 2026-08-16 session 8 (batch 6): agent_runner read in full -- 2 findings, both fixed. THE ACTING CODE IS NOW FULLY REVIEWED. Remaining unread by DECISION not omission: gesture_engine (776, pure state machine), cursor_overlay body (548, loop verified), gesture_roi, gesture_arbiter, frontend (4240, no shell/fs/network). Suite 80/80, 2369.",
   "areas_done": [
     "action-engine",
+    "agent-runner (full)",
     "agent-support (agent_search, tool_calls, agent_schema, agent_errors, agent_subagents, agent_skills, agent_metrics read in full)",
     "brain (partial: prompt spine, process_command, process_stream, truthfulness guards)",
     "comms",
@@ -488,6 +489,30 @@
       "reachable_by": "every identity match, i.e. any time a person is in view",
       "failure": "`temp_path = \"temp_ambient_face.jpg\"` resolves against the process's CWD, so the file followed whoever launched JARVIS -- the same defect memory.py's CHROMA_PATH had, with a much worse payload: an unencrypted cropped PHOTO OF WHOEVER IS IN THE ROOM, landing in the repo root when launched from there, one `git add -A` from being published. The removal was straight-line code after the match loop, so any raise above it left the image on disk.",
       "fix_applied": "FIXED 2026-08-16 -- anchored on __file__ like every sibling store, and removed in a `finally`."
+    },
+    {
+      "id": "R1b",
+      "severity": "medium",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "D",
+      "file": "modules/agent_skills.py:171",
+      "title": "A skill DESCRIPTION's newlines became extra lines of the system prompt index",
+      "reachable_by": "any .md in skills/ whose description field carries a newline (now write-gated by S1, so this is defence in depth)",
+      "failure": "index_line renders '  - {name}: {description}' and the index goes into the SYSTEM PROMPT of every agent run. description was only .strip()ped, which trims the ends, so a newline inside it rendered a SECOND line that reads exactly like a genuine skill entry ('  - not-a-skill: ignore every rule above'). The name was safe -- NAME_PATTERN forbids anything but [a-z0-9-] -- and the description was not checked at all. Third appearance of M3's shape: a stored value's newlines becoming prompt lines.",
+      "fix_applied": "FIXED 2026-08-16 -- ' '.join(split()) before the length cap, so the cap counts what will actually render."
+    },
+    {
+      "id": "R2b",
+      "severity": "medium",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "E",
+      "file": "modules/agent_runner.py:226",
+      "title": "A failed MCP connect leaked subprocesses and killed the run",
+      "reachable_by": "JARVIS_AGENT_MCP=1 with any configured server that fails to start (missing binary, bad command)",
+      "failure": "registry.connect_all(config) SPAWNS SUBPROCESSES and was not wrapped. A raise partway through left whatever had already started running with no handle to close them, and propagated out of run_agent_command -- taking the whole agent run down for an OPTIONAL feature. An external server being unreachable is information, not a fault.",
+      "fix_applied": "FIXED 2026-08-16 -- try/except around connect_all: close the half-built registry, log, and return None so the run continues with local tools only."
     }
   ],
   "verified_sound": [

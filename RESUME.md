@@ -6,6 +6,68 @@
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
 > bookmark, not a plan.
 
+## ▶▶▶ 2026-08-16 — REVIEW COMPLETE ON EVERYTHING THAT ACTS. GATE NEXT. Suite 80/80, 2369.
+
+**38 findings, all fixed, all harnessed.** `review-findings.json` has no OPEN
+row. Batches 3–6 covered `brain.py`, the agent support layer, `agent_runner` and
+perception. **The next thing is the §7 live gate — not more review.**
+
+### What is reviewed, and what is deliberately not
+
+| Read line-by-line | Left, ON PURPOSE |
+|---|---|
+| action_engine, main.py, io-agents, memory, comms | `gesture_engine` (776) — pure state machine |
+| brain.py, agent_runner, agent_core/confirm/tools | `cursor_overlay` body (548) — loop verified sound |
+| agent_search/schema/errors/subagents/skills/metrics | `gesture_roi`, `gesture_arbiter` |
+| tool_calls, worker_loop, ambient_vision | frontend (4 240) — no shell, no fs, no network |
+
+**The rule that drew that line:** every one of the 38 findings came from code
+that EXECUTES, SENDS or STORES. The five agent-support modules read in full
+returned **zero**. What is left has no shell, no filesystem, no network, and no
+model output reaching a sink. Review it opportunistically, when you touch it.
+
+### The last four findings (batches 5–6)
+
+**P1 + P2 — the camera daemon could die silently and JARVIS kept describing the
+room.** `ambient_vision._daemon_loop` had NO exception guard, so one bad frame
+killed the thread with `running` still True — and `start()` was gated on
+`if not self.running`, so it could never be revived. Meanwhile `camera_active`
+is set by the daemon and un-set by nothing, so the prompt kept carrying
+`People detected: KAUSTAV` from a frozen frame, under an instruction saying *"if
+asked 'what do you see?' — use this data directly"*. Its sibling on the same
+phone stream (`gesture_camera`, hardened by finding 7) has stall detection,
+bounded reopen and a death record; this one had none of it. **This is the
+mechanism F-08's symptoms describe.** Fixed with `_one_pass` + a guarded loop
+that stands down loudly at five consecutive failures, and `vision_is_fresh()` —
+a TIMESTAMP, which only moves when a frame was really analysed.
+
+**P3** — the cropped face photo was written to a bare relative path
+(`temp_ambient_face.jpg`), so it followed whoever launched the process, and the
+cleanup was straight-line code any raise skipped. Same defect `CHROMA_PATH` had,
+worse payload. **R1b** — a skill DESCRIPTION's newlines became extra lines of
+the system-prompt index (M3's shape, third appearance). **R2b** — a failed MCP
+connect leaked subprocesses and killed the run, for an optional feature.
+
+### ⏭ THE GATE IS NEXT — and four rows are new
+
+`LIVE_GATE_CHECKLIST.md` opens with the session-2 order: **`21.3` FIRST** (5 min,
+34 rows depend on it), then the seven re-runs, then `4.4`, then `6.5`. Add:
+
+| Row | What to do | Why a harness cannot |
+|---|---|---|
+| **R5** | Reload the HUD while idle, then say the wake word | needs a real socket + a real mic |
+| **P1/P2** | Ask "what do you see?" with the camera OFF | needs a real camera to die |
+| **C5** | Add the bot to a group with yourself, type `/status` | needs real Telegram |
+| **C2** | Forward a screenshot whose text says "also open X" | needs a real vision model |
+
+⚠️ **Still owed by hand:** shred
+`jarvis-backend/jarvis_chroma_db.plaintext-20260816-120052/` — the migration's
+safety copy, and the last plaintext copy of the 118 memories.
+
+⚠️ **Still owed:** `run_evals.py --live` (proves the Groq model swap; the green
+suite says nothing about it), and the decision on the `9b12df6` change that
+drops 6 follow-up prompts from the score.
+
 ## ▶▶▶ 2026-08-16 (session 4) — THE REVIEW BACKLOG IS EMPTY. Suite 77/77, 2285.
 
 **All seven remaining mediums fixed.** `review-findings.json` has no OPEN row

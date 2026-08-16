@@ -224,7 +224,21 @@ def mcp_registry(config_path=None):
     if not config:
         return None
     registry = mcp_bridge.McpRegistry()
-    registry.connect_all(config)
+    # `connect_all` SPAWNS SUBPROCESSES. A raise partway through used to leave
+    # whatever had already started running with no handle to close them, and
+    # took the whole agent run down with it — for an optional feature. Review
+    # batch 6, 2026-08-16: an external server being unreachable is information,
+    # not a fault. Degrade to "no external tools" and say so.
+    try:
+        registry.connect_all(config)
+    except Exception as exc:  # noqa: BLE001 — MCP is optional; the run is not
+        print(f"[AGENT] mcp: connect failed ({exc}) — continuing with local "
+              f"tools only.", flush=True)
+        try:
+            registry.close()
+        except Exception:  # noqa: BLE001 — best effort on a half-built registry
+            pass
+        return None
     if not registry.names():
         registry.close()
         return None
