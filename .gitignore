@@ -41,6 +41,19 @@ action_chroma_db/
 rag_chroma_db/
 vector_db/
 
+# --- And their MIGRATION COPIES ---
+# The patterns above end in a slash and match the directory NAME exactly, so
+# `jarvis_chroma_db.plaintext-20260816-120052/` — the copy that
+# migrate_chroma_encryption.py takes aside before sealing anything — matched
+# none of them and showed up as untracked. That folder is the LAST plaintext
+# copy of the 118 memory documents on this machine, which is precisely the
+# thing that migration exists to remove from the disk, and it was one
+# `git add -A` from being published. This file already records that exact
+# mistake happening once (run_evals.py, commit 9b12df6).
+*_chroma_db.*/
+*_chroma_db.*
+jarvis-backend/*_chroma_db.*/
+
 # --- Agent measurement (§6.8.4) — counters, per machine, never shared ---
 # It stores no argument values and no goal text by construction, but it is still
 # a record of how this particular desk is used, and it is per-machine noise in a
