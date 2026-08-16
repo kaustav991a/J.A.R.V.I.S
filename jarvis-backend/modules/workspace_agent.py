@@ -25,6 +25,34 @@ from typing import Optional
 
 # ── Workspace root resolution ─────────────────────────────────────────────────
 
+def _known_folder(csidl_name: str, fallback: Path) -> Path:
+    """Resolve a Windows shell folder, falling back to the naive home-relative path.
+
+    Live-gate finding F-22. `Path.home()/"Desktop"` does not exist on a machine
+    where OneDrive has redirected the folder — the stock Windows 11 setup — so
+    the Desktop root was dropped from the list entirely and every "save it to my
+    desktop" resolved somewhere else. The shell knows the real location; the
+    home-relative guess does not.
+
+    `csidl_name` is the registry value name under Shell Folders: "Desktop" for
+    the desktop, "Personal" for Documents.
+    """
+    if os.name != "nt":
+        return fallback
+    try:
+        import winreg
+
+        key = (r"Software\Microsoft\Windows\CurrentVersion"
+               r"\Explorer\Shell Folders")
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+            value, _ = winreg.QueryValueEx(handle, csidl_name)
+        if value:
+            return Path(os.path.expandvars(value))
+    except Exception:
+        pass
+    return fallback
+
+
 def _build_workspace_roots() -> list[Path]:
     """
     Read roots from JARVIS_WORKSPACE_ROOTS env var, falling back to
@@ -47,13 +75,18 @@ def _build_workspace_roots() -> list[Path]:
         for candidate in [
             _work_dir,
             _project_root,
-            Path.home() / "Documents",
-            Path.home() / "Desktop",
+            _known_folder("Personal", Path.home() / "Documents"),
+            _known_folder("Desktop", Path.home() / "Desktop"),
         ]:
             try:
                 resolved = candidate.resolve()
                 if resolved.exists():
                     roots.append(resolved)
+                else:
+                    # F-22: this used to be silent. A dropped root is why
+                    # "save it to my desktop" landed somewhere else entirely.
+                    print(f"[WORKSPACE] root dropped (does not exist): {resolved}",
+                          flush=True)
             except Exception:
                 continue
 
@@ -400,10 +433,36 @@ class WorkspaceAgent:
 
     @staticmethod
     def _resolve_within_roots(raw: str) -> Optional[Path]:
-        """The original root check, unchanged — resolve and confirm containment."""
+        """Resolve `raw` and confirm containment in a workspace root.
+
+        Live-gate finding F-22. The relative branch below takes the FIRST root
+        that can contain the path — and every root can contain a relative path,
+        so it always took `WORKSPACE_ROOTS[0]`. "documents/add.py" became
+        `F:\\work\\documents\\add.py` and the user's real Documents folder, a
+        configured root sitting later in the same list, was never reached. The
+        folder was then created by `mkdir(parents=True)` downstream, so the
+        invention looked like a success.
+
+        The named location is now matched against the root NAMES first, so a
+        leading segment that names a root resolves into that root instead of
+        being treated as a subdirectory of an unrelated one.
+        """
         try:
             p = Path(raw).expanduser()
             if not p.is_absolute():
+                parts = p.parts
+                # A leading segment that names a root means that root — not a
+                # new subdirectory inside a different one.
+                if len(parts) > 1:
+                    head = parts[0].strip().lower()
+                    for root in WORKSPACE_ROOTS:
+                        if root.name.lower() == head:
+                            candidate = (root / Path(*parts[1:])).resolve()
+                            try:
+                                candidate.relative_to(root)
+                                return candidate
+                            except ValueError:
+                                return None
                 # Try each workspace root as a base
                 for root in WORKSPACE_ROOTS:
                     candidate = (root / p).resolve()

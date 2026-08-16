@@ -390,6 +390,32 @@ def _strip_metadata(text: str) -> str:
     return text
 
 
+# Results that carry no evidence the action succeeded. Live-gate finding F-28:
+# every branch below used to end in an unconditional success sentence, so a
+# result the branch did not recognise — a refusal, a usage hint, an unhandled
+# error — was announced as a completed action.
+#
+# The observed case was `workspace_write` with a target the model emitted
+# WITHOUT the required pipe. `_workspace_write` returned the usage hint
+# "Format: 'filepath|file content'…", nothing was written, and JARVIS said
+# "File written, Sir." over a request to write to C:\Windows\system32.
+#
+# The rule this restores is the one F-16 already established elsewhere in this
+# project: A CLAIM REQUIRES POSITIVE EVIDENCE. The absence of a known failure
+# marker is not evidence of success. Where a branch cannot show the action
+# happened, it must say so — not fall through to "Done, Sir."
+_FAILURE_MARKERS = (
+    "format:", "no file path", "error", "failed", "refused", "denied",
+    "cannot", "unable", "not found", "too large", "invalid", "blocked",
+    "unavailable", "no such", "missing",
+)
+
+
+def _unevidenced(r: str) -> bool:
+    """True when the result names a failure the caller's branch did not handle."""
+    return any(m in r for m in _FAILURE_MARKERS)
+
+
 def _sanitize_for_speech(atype: str, result: str) -> str | None:
     """
     Return a clean TTS-ready string, or None to stay silent.
@@ -419,17 +445,25 @@ def _sanitize_for_speech(atype: str, result: str) -> str | None:
             return "That file already exists, Sir. Shall I overwrite, or save a new copy?"
         if "failed" in r or "error" in r:
             return "The save failed, Sir. Please check the application."
+        if _unevidenced(r):
+            return "The save did not complete, Sir."
         return "Save complete, Sir."
 
     # ── Workspace actions ─────────────────────────────────────────────────────
     if atype == "workspace_write":
+        # Only these two strings are produced by an actual write.
         if "created:" in r:
             return "File created, Sir."
         if "overwritten:" in r:
             return "File overwritten, Sir."
         if "write error" in r:
             return "Write failed, Sir. There was an I/O error."
-        return "File written, Sir."
+        if "too large" in r:
+            return "That's too large to write, Sir."
+        if r.startswith("format:") or "no file path" in r:
+            return ("I couldn't act on that, Sir — the write instruction reached me "
+                    "malformed, so nothing was written.")
+        return "The write did not complete, Sir. Nothing was saved."
 
     if atype == "workspace_patch":
         if "replacement" in r or "patched" in r:
@@ -445,6 +479,11 @@ def _sanitize_for_speech(atype: str, result: str) -> str | None:
             return "Patch failed, Sir — that string isn't in the file."
         if "aborted" in r:
             return "Patch aborted, Sir. Too many matches — be more specific."
+        if r.startswith("format:") or "no file path" in r:
+            return ("I couldn't act on that, Sir — the patch instruction reached me "
+                    "malformed, so the file is unchanged.")
+        if _unevidenced(r):
+            return "The patch did not apply, Sir. The file is unchanged."
         return "Patch complete, Sir."
 
     if atype == "workspace_read":
@@ -457,6 +496,8 @@ def _sanitize_for_speech(atype: str, result: str) -> str | None:
                 return f"File read, Sir. It contains: {spoken}"
         if "not found" in r:
             return "I've lost the trail on that file, Sir."
+        if _unevidenced(r):
+            return "I couldn't read that file, Sir."
         return "File read, Sir."
 
     # ── Terminal commands ─────────────────────────────────────────────────────
@@ -494,10 +535,14 @@ def _sanitize_for_speech(atype: str, result: str) -> str | None:
         if "next" in r:     return "Next track, Sir."
         if "prev" in r or "previous" in r: return "Previous track, Sir."
         if "toggled" in r or "play" in r or "pause" in r: return "Media playback toggled, Sir."
+        if _unevidenced(r):
+            return "That didn't go through, Sir."
         return "Done, Sir."
 
     # ── Memory / facts ────────────────────────────────────────────────────────
     if atype == "remember_fact":
+        if _unevidenced(r):
+            return "I couldn't commit that to memory, Sir."
         return "Committed to memory, Sir."
 
     # ── Gmail — preserve full numbered lists for TTS (do not apply 25-word cap) ──
@@ -508,6 +553,8 @@ def _sanitize_for_speech(atype: str, result: str) -> str | None:
 
     # ── Focus mode ────────────────────────────────────────────────────────────
     if atype in ("enable_focus_mode", "disable_focus_mode"):
+        if _unevidenced(r):
+            return "I couldn't change focus mode, Sir."
         state = "enabled" if atype == "enable_focus_mode" else "disabled"
         return f"Focus mode {state}, Sir."
 
@@ -515,6 +562,8 @@ def _sanitize_for_speech(atype: str, result: str) -> str | None:
     if atype == "tv_control":
         if "error" in r or "failed" in r or "unable" in r:
             return "I couldn't reach the TV, Sir. It may be offline."
+        if _unevidenced(r):
+            return "The TV didn't accept that, Sir."
         return "Done, Sir."
 
     # ── OS macros (deep work, diagnostics) ───────────────────────────────────
@@ -524,6 +573,8 @@ def _sanitize_for_speech(atype: str, result: str) -> str | None:
             return "Work mode ended, Sir."
         if "deep work" in rl or "vs code" in rl:
             return "Deep work mode engaged, Sir."
+        if _unevidenced(rl):
+            return "The macro did not complete, Sir."
         return "Macro complete, Sir."
 
     # ── Generic fallback: strip metadata, truncate ───────────────────────────
@@ -1414,6 +1465,76 @@ def _partner_confirm_text(conf_action: str, conf_id: str | None, honor: str = "S
         return None
 
 
+# ── Every OTHER CONFIRM action: say what is being authorised ──────────────────
+# Live-gate finding F-29. The partner-send prompt above reads its message back
+# verbatim, because a summary is not consent. Every other CONFIRM-tier action
+# fell through to a sentence naming only the action TYPE — "I would like to
+# execute 'workspace_patch'" — and nothing else. No path, no search string, no
+# replacement.
+#
+# The cost was measured live: the owner authorised a patch to
+# `F:\United\Desktop\add.py`, a path he never asked for, produced by STT hearing
+# "untitled" as "United", because the question he was asked contained no path.
+# An earlier approval in the same session carried a body the model invented. The
+# CONFIRM tier exists so a human can catch exactly that, and it was structurally
+# unable to — the human was shown nothing to catch.
+#
+# Root cause #4 again: the disclosure was built once, for partner sends, and
+# never extended to the siblings that reach the same prompt.
+_CONFIRM_TARGET_LABEL = {
+    "workspace_write": "write",
+    "workspace_patch": "patch",
+    "ghost_save_file": "save",
+    "send_email": "send",
+    "gmail_send": "send",
+    "gmail_reply": "reply",
+    "gmail_draft": "draft",
+}
+
+
+def _confirm_disclosure(conf_action: str, conf_id: str | None) -> str:
+    """A human-readable description of WHAT the staged action will do.
+
+    Returns "" when the payload cannot be read — the caller still prompts, it
+    simply cannot promise detail it does not have. Never raises: a read-back
+    that breaks must not take the gate down with it.
+    """
+    try:
+        payload = governance_manager.get_pending_payload(conf_id) if conf_id else None
+        if not isinstance(payload, dict):
+            return ""
+        target = str(payload.get("target") or "").strip()
+        if not target:
+            return ""
+        atype = (conf_action or "").lower()
+
+        # "path|content" actions: the path is what matters, and the content is
+        # summarised by size rather than read aloud in full.
+        if atype in ("workspace_write", "ghost_save_file"):
+            path, sep, content = target.partition("|")
+            path = path.strip() or "an unnamed file"
+            if sep:
+                lines = content.count("\\n") + content.count("\n") + 1
+                return f"writing {lines} line{'s' if lines != 1 else ''} to {path}"
+            return f"writing to {path}"
+
+        # "path|search|replace": all three are the decision.
+        if atype == "workspace_patch":
+            bits = target.split("|")
+            path = (bits[0] if bits else "").strip() or "an unnamed file"
+            if len(bits) >= 3:
+                return (f"in {path}, replacing “{bits[1].strip()}” "
+                        f"with “{bits[2].strip()}”")
+            return f"patching {path}"
+
+        verb = _CONFIRM_TARGET_LABEL.get(atype)
+        summary = target if len(target) <= 160 else target[:157] + "…"
+        return f"{verb} {summary}" if verb else summary
+    except Exception as e:  # noqa: BLE001 — never let the read-back break the gate
+        print(f"[GOVERNANCE] confirm disclosure failed: {e}", flush=True)
+        return ""
+
+
 def _partner_note_denial(conf_id: str | None) -> None:
     """Record an explicit refusal of a staged partner send so nothing re-attempts it.
 
@@ -1743,11 +1864,14 @@ async def run_remote_command(command_text: str, channel) -> None:
                     if prev:
                         governance_manager.cancel_pending(prev.get("cid"))
                     sess.pending["governance"] = {"cid": conf_id, "atype": conf_action}
+                    _what = _confirm_disclosure(conf_action, conf_id)
                     await channel.reply(
                         _partner_confirm_text(conf_action, conf_id, honor)
                         or (
                             f"Authorisation required, {honor}: '{conf_action}' is a "
-                            f"CONFIRM-tier action. Reply 'confirm' to execute it or "
+                            f"CONFIRM-tier action"
+                            + (f" — {_what}" if _what else "")
+                            + ". Reply 'confirm' to execute it or "
                             f"'cancel' to drop it."
                         )
                     )
@@ -2391,9 +2515,11 @@ async def backdoor_command(req: BackdoorRequest):
                         _DESK_PENDING["cid"] = (parts[2] if len(parts) > 2 and parts[2]
                                                 else governance_manager.pending_id())
                         title = "Madam" if active_user == "MOUSUMI" else "Sir"
+                        _what = _confirm_disclosure(conf_action, _DESK_PENDING["cid"])
                         msg = _partner_confirm_text(conf_action, _DESK_PENDING["cid"], title) or (
-                            f"Authorisation required, {title}. I would like to execute ‘{conf_action}’. "
-                            f"Do you authorise this action? Please say ‘confirm’ or ‘cancel’."
+                            f"Authorisation required, {title}. I would like to execute ‘{conf_action}’"
+                            + (f" — {_what}" if _what else "")
+                            + f". Do you authorise this action? Please say ‘confirm’ or ‘cancel’."
                         )
                         await safe_send_all({"status": "pending_confirmation", "action": conf_action, "result": msg})
                         asyncio.create_task(speaker.speak_text(msg))
@@ -3367,9 +3493,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                                     parts[2] if len(parts) > 2 and parts[2]
                                                     else governance_manager.pending_id())
                                                 title = "Madam" if active_user == "MOUSUMI" else "Sir"
+                                                _what = _confirm_disclosure(conf_action, _DESK_PENDING["cid"])
                                                 msg = _partner_confirm_text(conf_action, _DESK_PENDING["cid"], title) or (
-                                                    f"Authorisation required, {title}. I would like to execute ‘{conf_action}’. "
-                                                    f"Do you authorise this action? Please say ‘confirm’ or ‘cancel’."
+                                                    f"Authorisation required, {title}. I would like to execute ‘{conf_action}’"
+                                                    + (f" — {_what}" if _what else "")
+                                                    + f". Do you authorise this action? Please say ‘confirm’ or ‘cancel’."
                                                 )
                                                 await safe_send({"status": "pending_confirmation", "action": conf_action, "result": msg})
                                                 asyncio.create_task(speaker.speak_text(msg))

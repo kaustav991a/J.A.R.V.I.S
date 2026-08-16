@@ -1,6 +1,54 @@
+import os
 import speech_recognition as sr
-import speaker 
+import speaker
 import time # --- NEW: Required for the holding pattern ---
+
+# ==========================================
+# CAPTURE TIMING — ACCESSIBILITY DEFAULTS. DO NOT TUNE DOWN FOR LATENCY.
+# (live-gate finding F-33, 2026-08-16)
+# ==========================================
+# THE OWNER STUTTERS. These values exist so he can speak the way he speaks, and
+# every one of them is a correctness requirement, not a comfort setting. The
+# previous values were chosen to cut latency — the comment here used to read
+# "Cut the silence delay from 2.0s down to 0.5s" — and the cost was that a
+# command had to be delivered in a single unbroken breath or its back half was
+# discarded. Anyone tempted to lower these to make JARVIS feel snappier is
+# trading the owner's ability to use the system at all for a few hundred
+# milliseconds. Don't.
+#
+# `pause_threshold` — how long silence must run before the phrase is considered
+# over. A stutter block routinely lasts 1–3 seconds, so anything near the
+# library's 0.8s default cuts mid-word. 2.5s clears a normal block; a fluent
+# short command is unaffected because the phrase still ends on silence, just
+# 2.5s later.
+#
+# This is also the root of F-23. The identity challenge asks "please state your
+# name" — "my name is … Kaustav" is the single most pause-prone utterance in the
+# system, capture ended at "my name is", and a failed challenge TERMINATES the
+# interaction rather than retrying. A short pause threshold there locked the
+# owner out of his own house.
+#
+# `phrase_time_limit` — hard ceiling on one utterance. With longer internal
+# pauses a normal sentence occupies more wall-clock, so the old 10s truncated
+# instructions mid-word regardless of how they were spoken.
+#
+# `START_TIMEOUT_S` — how long to wait for speech to BEGIN. A block at the start
+# of an utterance is common; at 5s the recogniser gave up before he began and
+# returned TIMEOUT as though he had said nothing.
+def _envf(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+PAUSE_THRESHOLD_S = _envf("JARVIS_STT_PAUSE_S", 2.5)
+PHRASE_LIMIT_S = _envf("JARVIS_STT_PHRASE_LIMIT_S", 30.0)
+START_TIMEOUT_S = _envf("JARVIS_STT_START_TIMEOUT_S", 12.0)
+# Floor for the ambient calibration. `adjust_for_ambient_noise` OVERWRITES
+# `energy_threshold`, so a value assigned before it is silently discarded — the
+# hand-set 150 below the calibration call never applied to anything.
+ENERGY_FLOOR = _envf("JARVIS_STT_ENERGY_FLOOR", 150.0)
 
 # ==========================================
 # PHASE 8: LOCAL STT TOGGLE
@@ -48,13 +96,12 @@ def listen_to_mic(status_callback=None):
     # Initialize the recognizer
     recognizer = sr.Recognizer()
     
-    # Sensitivity and silence thresholds
-    recognizer.energy_threshold = 150 
-    
-    # Cut the silence delay from 2.0s down to 0.5s
-    recognizer.pause_threshold = 0.5
+    # Sensitivity and silence thresholds — see the module header. These are
+    # accessibility defaults; the owner stutters and a short pause threshold
+    # eats the back half of his sentences.
+    recognizer.pause_threshold = PAUSE_THRESHOLD_S
     # Prevents the mic from dynamically adjusting mid-sentence and hanging
-    recognizer.dynamic_energy_threshold = False 
+    recognizer.dynamic_energy_threshold = False
     
     try:
         # Use the default system microphone
@@ -66,7 +113,13 @@ def listen_to_mic(status_callback=None):
             
             # Cut calibration wait time in half
             recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            
+            # `adjust_for_ambient_noise` OVERWRITES energy_threshold, so it has
+            # to be floored AFTER the call, not before it. A quiet room can
+            # calibrate the threshold low enough that a stutter block's own
+            # breath re-triggers speech detection.
+            if recognizer.energy_threshold < ENERGY_FLOOR:
+                recognizer.energy_threshold = ENERGY_FLOOR
+
             # 2. Tell React we are listening
             if status_callback: status_callback("listening", "Listening... (Speak clearly)")
             print("[EARS] Listening... (Speak clearly into your microphone)")
@@ -78,7 +131,8 @@ def listen_to_mic(status_callback=None):
             
             try:
                 # Listen for audio
-                audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
+                audio = recognizer.listen(source, timeout=START_TIMEOUT_S,
+                                          phrase_time_limit=PHRASE_LIMIT_S)
                 
                 # 3. Tell React we are processing
                 if status_callback: status_callback("processing_llm", "Processing speech...")
