@@ -1705,3 +1705,51 @@ sessions.
 **Still open, and it belongs to STT rather than to any of this:** a dictated filename like
 "add.py" transcribes as "a d d p y". Nothing in this fix recovers it; the model is now told to
 ask instead of guess, which turns a wrong file into a question.
+
+## F-38 — 🔴 HIGH · The night the DNS went, and JARVIS could not tell the owner he had gone deaf
+
+**Found by:** waking with `initiate admin override`, then saying *"hello jarvis"* repeatedly and
+getting nothing.
+
+```
+[SYSTEM] Passive Listening for 'Hello Jarvis'...
+[VAD] Speech detected. Transcribing...
+[STT] Google Cloud STT timed out (5s). Skipping.
+[STT] Heard: ''
+[BRIDGE] link down ([Errno 11001] getaddrinfo failed); retrying in 4s … 8s … 16s … 32s
+[SENSORS] Connection Error: api.openweathermap.org … connect timeout
+[CALENDAR] Error checking upcoming: [WinError 10054]
+```
+
+`getaddrinfo failed` is DNS. The wake matcher was never the problem — `jarvis` on its own has
+been in the alias list at `wakeword.py:244` all along, next to `hello jarvis`, `hey jarvis`,
+`jervis` and `chavis`. **It never received a word to match.** `USE_LOCAL_STT = False` in both
+`wakeword.py:10` and `recorder.py:58`, so cloud STT was the only transcriber in the build, and a
+`tiny.en` model — already a dependency, already on the same disk, loads in under a second — sat
+unused while every utterance became `''`.
+
+**The shape of this is the one this gate keeps finding:** a failure the user cannot distinguish
+from normal operation. A system that cannot hear looks exactly like a system that is ignoring
+you, and there is nothing in the room to tell the difference.
+
+The same outage explains empty transcripts elsewhere in the session, including some of what
+F-35 was catching downstream.
+
+### Fix — `modules/stt_route.py`, one rule, both microphones
+
+**The fallback fires on a NETWORK failure and deliberately not on a rejected utterance:**
+
+| Cloud said | Then | Why |
+|---|---|---|
+| timeout / `RequestError` / unreachable | ask the local model | the audio was never judged — this is the outage case |
+| `UnknownValueError` | **stop** | the audio WAS judged, by the better model, and found unintelligible |
+
+That second row is the whole design. A `tiny.en` second opinion on audio the big model rejected
+is precisely where whisper hallucinates — *"Thank you."* on silence is its signature — and this
+text can **approve a CONFIRM-tier action or wake an admin session**. A guess is not worth that.
+
+Neither door calls `recognize_google` directly any more (root cause #4, asked in advance), and
+the empty-transcript branch always logs.
+
+**Left alone deliberately:** `USE_LOCAL_STT` stays `False`. Cloud remains the primary because it
+is markedly better on this owner's speech; the local model is the parachute, not the wing.

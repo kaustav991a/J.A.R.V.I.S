@@ -485,6 +485,72 @@ def test_a_pending_confirmation_is_re_asked_then_lapsed():
           "...and actually cancels it, rather than leaving it for the TTL")
 
 
+# ── F-38: cloud-only ears, and the night the DNS went ────────────────────────
+
+class _FakeAudio:
+    sample_rate = 16000
+
+    def get_raw_data(self):
+        return b"\x00\x00"
+
+
+def _route_with(monkey, *, cloud=None, local=None):
+    """The router with its two legs stubbed. `cloud` is raised or returned."""
+    from modules import stt_route
+
+    class _Rec:
+        def recognize_google(self, audio):
+            if isinstance(cloud, Exception):
+                raise cloud
+            return cloud
+
+    stt_route._local = type("L", (), {
+        "transcribe_audio_data": staticmethod(lambda data, sample_rate=16000: local)
+    })()
+    return stt_route, _Rec()
+
+
+def test_a_network_outage_falls_back_to_the_local_model():
+    """The live failure: DNS died, cloud STT timed out, and 'hello jarvis'
+    became '' — with a local model on the same disk, unused."""
+    import speech_recognition as sr
+
+    route, rec = _route_with(None, cloud=sr.RequestError("getaddrinfo failed"),
+                             local="hello jarvis")
+    text, engine = route.transcribe(rec, _FakeAudio(), cloud_timeout=1)
+    check(text == "hello jarvis" and engine == "local",
+          f"an unreachable cloud hands off to the local model ({engine}: {text!r})")
+
+
+def test_a_rejected_utterance_does_NOT_get_a_second_opinion():
+    """The line the fallback must not cross. The cloud HEARD it and rejected
+    it; tiny.en's guess on that audio is where whisper invents words, and this
+    text can approve a CONFIRM-tier action or wake an admin session."""
+    import speech_recognition as sr
+
+    route, rec = _route_with(None, cloud=sr.UnknownValueError(),
+                             local="Thank you.")
+    text, engine = route.transcribe(rec, _FakeAudio(), cloud_timeout=1)
+    check(text == "" and engine == "cloud",
+          f"an unintelligible utterance stays unintelligible ({engine}: {text!r})")
+
+
+def test_the_cloud_answer_wins_when_the_cloud_answers():
+    route, rec = _route_with(None, cloud="  go ahead ", local="something else")
+    text, engine = route.transcribe(rec, _FakeAudio(), cloud_timeout=1)
+    check(text == "go ahead" and engine == "cloud",
+          "a healthy cloud is still the transcriber")
+
+
+def test_both_microphones_use_the_same_rule():
+    for door in ("wakeword.py", "recorder.py"):
+        src = (HERE / door).read_text(encoding="utf-8", errors="replace")
+        check("from modules.stt_route import transcribe" in src,
+              f"{door} routes through the shared rule")
+        check("recognize_google" not in src,
+              f"{door} no longer calls the cloud directly")
+
+
 # ── F-17 / F-36: the Gemini leg ──────────────────────────────────────────────
 
 def test_a_system_only_prompt_produces_a_sendable_request():

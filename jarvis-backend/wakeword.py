@@ -45,27 +45,18 @@ def _get_local_stt():
     return _local_stt_instance
 
 def _transcribe(recognizer, audio):
-    """Unified transcription that routes to local or cloud STT."""
-    if USE_LOCAL_STT:
-        stt = _get_local_stt()
-        raw_data = audio.get_raw_data()
-        text = stt.transcribe_audio_data(raw_data, sample_rate=audio.sample_rate)
-        return text.lower().strip() if text else ""
-    else:
-        try:
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(recognizer.recognize_google, audio)
-                result = future.result(timeout=5)  # 5-second hard cap
-                return result.lower()
-        except concurrent.futures.TimeoutError:
-            print("[STT] Google Cloud STT timed out (5s). Skipping.", flush=True)
-            return ""
-        except sr.UnknownValueError:
-            return ""
-        except Exception as e:
-            print(f"[STT] Transcription error: {e}", flush=True)
-            return ""
+    """Unified transcription that routes to local or cloud STT.
+
+    F-38: the cloud leg used to be the only leg here, so a DNS outage made the
+    wake word unusable — "hello jarvis" transcribed as '' and the owner had no
+    way to tell a deaf system from an ignoring one. `stt_route` falls back to
+    the local model when the NETWORK fails, and deliberately does not when the
+    cloud heard the audio and rejected it.
+    """
+    from modules.stt_route import transcribe as _route
+    text, _engine = _route(recognizer, audio, cloud_timeout=5,
+                           prefer_local=USE_LOCAL_STT, tag="STT")
+    return (text or "").lower().strip()
 
 # 1. Global kill-switch for graceful shutdowns
 is_shutting_down = threading.Event()

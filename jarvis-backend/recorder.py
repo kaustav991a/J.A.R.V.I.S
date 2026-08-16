@@ -143,30 +143,24 @@ def listen_to_mic(status_callback=None):
                 except Exception:
                     pass
                 
-                # --- Phase 8: Route to local or cloud STT ---
-                if USE_LOCAL_STT:
-                    stt = _get_local_stt()
-                    raw_data = audio.get_raw_data()
-                    text = stt.transcribe_audio_data(raw_data, sample_rate=audio.sample_rate)
-                    if not text or len(text.strip()) < 2:
-                        return "UNKNOWN"
-                    if _is_filler(text):
-                        print(f"[EARS] Filler/noise ignored: '{text}'")
-                        return "UNKNOWN"
-                    print(f"\n🗣️ You said: '{text}' [LOCAL STT]")
-                else:
-                    try:
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as pool:
-                            future = pool.submit(recognizer.recognize_google, audio)
-                            text = future.result(timeout=7)  # 7-second hard cap
-                    except concurrent.futures.TimeoutError:
-                        print("[EARS] Google Cloud STT timed out (7s).")
-                        return "UNKNOWN"
-                    if _is_filler(text):
-                        print(f"[EARS] Filler/noise ignored: '{text}'")
-                        return "UNKNOWN"
-                    print(f"\n🗣️ You said: '{text}' [CLOUD STT]")
+                # --- Phase 8 / F-38: cloud, with the local model behind it ---
+                # The timeout branch used to return UNKNOWN outright, which is
+                # what a DNS outage looks like from here: every command lost,
+                # nothing said. `stt_route` falls back on a NETWORK failure and
+                # not on a rejected utterance — see its module docstring for
+                # why that line is drawn where it is.
+                from modules.stt_route import transcribe as _route
+                text, _engine = _route(recognizer, audio, cloud_timeout=7,
+                                       prefer_local=USE_LOCAL_STT, tag="EARS")
+                if not text or len(text.strip()) < 2:
+                    # F-35: this must never be silent. It is the branch that
+                    # ate a spoken "yes" to a live authorisation prompt.
+                    print("[EARS] Speech not understood — no transcript.")
+                    return "UNKNOWN"
+                if _is_filler(text):
+                    print(f"[EARS] Filler/noise ignored: '{text}'")
+                    return "UNKNOWN"
+                print(f"\n🗣️ You said: '{text}' [{_engine.upper()} STT]")
 
                 return text
                 
