@@ -487,6 +487,46 @@ def test_a_microphone_stream_that_arrives_late_is_handed_back():
           "the first animation frame's id is captured, so cancel can reach it")
 
 
+def test_infinite_animations_are_killed_on_unmount():
+    """Batch 12. HudReticle's three `repeat: -1` GSAP tweens never complete, so
+    GSAP holds them on its global ticker — and a reference to the DOM node — for
+    the life of the page. Nothing killed them, so every open/close of a view
+    carrying the reticle left three more immortal tweens animating detached
+    elements."""
+    src = (FRONTEND / "components" / "HudReticle.jsx").read_text(
+        encoding="utf-8", errors="replace")
+    check("t.kill()" in src, "the tweens are killed")
+    check("return () => tweens" in src, "from the effect's cleanup")
+
+
+def test_a_cancelled_first_boot_does_not_still_call_onComplete():
+    """Batch 12. The two NESTED timeouts were never cleared — only the typing
+    interval was. Cancelling the ceremony left them running, and the inner one
+    calls onComplete(), advancing the app out of first boot for a sequence that
+    did not finish."""
+    src = (FRONTEND / "components" / "FirstBootSequence.jsx").read_text(
+        encoding="utf-8", errors="replace")
+    check("const pending = []" in src, "the nested timeouts are tracked")
+    check("pending.forEach(clearTimeout)" in src, "and cleared on teardown")
+    cleanup = src.split("return () => {", 1)[1].split("}", 1)[0]
+    check("clearInterval(timer)" in cleanup and "pending" in cleanup,
+          "the cleanup stops BOTH the typing and the pending callbacks")
+
+
+def test_a_widget_payload_missing_a_field_cannot_crash_the_tree():
+    """Batch 12, F2's shape again. `data` is replaced wholesale by whatever the
+    endpoint returns, so configured:true with no `steps` reached
+    data.steps.toLocaleString() and threw at RENDER time."""
+    src = (FRONTEND / "components" / "HealthWidget.jsx").read_text(
+        encoding="utf-8", errors="replace")
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith(("//", "*", "/*")))
+    check("data.steps.toLocaleString()" not in code,
+          "the raw field is no longer called on directly")
+    check("Number(data.steps) || 0" in code, "it is coerced first")
+    check("Number(data.heart_rate) || 0" in code, "and so is the heart rate")
+
+
 def test_the_frontend_has_no_html_injection_sink():
     """Swept in batch 8, pinned here: React escapes by default, and the only way
     to lose that is to ask for it. `eval` was already replaced by a safe parser

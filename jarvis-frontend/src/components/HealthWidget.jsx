@@ -30,8 +30,14 @@ const HealthWidget = () => {
     );
   }
 
+  // Coerced, not trusted. `data` is replaced wholesale by whatever
+  // /api/health/summary returns, so a payload with configured:true and no
+  // `steps` reached `data.steps.toLocaleString()` and threw at RENDER time —
+  // which in React unmounts the whole tree, not just this widget. F2's shape.
   const stepGoal = 10000;
-  const stepPercent = Math.min((data.steps / stepGoal) * 100, 100);
+  const steps = Number(data.steps) || 0;
+  const heartRate = Number(data.heart_rate) || 0;
+  const stepPercent = Math.min((steps / stepGoal) * 100, 100);
 
   return (
     <div className="health-widget">
@@ -51,7 +57,7 @@ const HealthWidget = () => {
             <Heart size={20} color="#ff3366" />
           </div>
           <div className="stat-info">
-            <div className="stat-value">{data.heart_rate} <span className="stat-unit">BPM</span></div>
+            <div className="stat-value">{heartRate} <span className="stat-unit">BPM</span></div>
             <div className="stat-label">HEART RATE</div>
           </div>
         </div>
@@ -61,7 +67,7 @@ const HealthWidget = () => {
             <Activity size={20} color="#00ffcc" />
           </div>
           <div className="stat-info">
-            <div className="stat-value">{data.steps.toLocaleString()}</div>
+            <div className="stat-value">{steps.toLocaleString()}</div>
             <div className="stat-label">STEPS TODAY</div>
           </div>
         </div>

@@ -13,26 +13,35 @@ export default function FirstBootSequence({ isActive, onComplete }) {
     let i = 0;
     setDisplayedText("");
     setIsExiting(false); // Reset exit state for repeat triggers
-    
-    // Typing effect
+
+    // Review batch 12, 2026-08-16: the two NESTED timeouts below were never
+    // cleared — only the typing interval was. So cancelling the sequence
+    // (isActive going false, or an unmount) left them running, and the inner
+    // one calls `onComplete()` — which advances the app out of first boot for a
+    // ceremony that was already cancelled. Not merely a post-unmount warning:
+    // a callback firing for something that did not finish.
+    const pending = [];
     const timer = setInterval(() => {
       i++;
       setDisplayedText(fullText.slice(0, i));
-      
+
       if (i >= fullText.length) {
         clearInterval(timer);
-        
+
         // Wait a few seconds after typing is done, then fade out
-        setTimeout(() => {
+        pending.push(setTimeout(() => {
           setIsExiting(true);
-          setTimeout(() => {
+          pending.push(setTimeout(() => {
             if (onComplete) onComplete();
-          }, 2000); // fade out duration
-        }, 3000); // hold text duration
+          }, 2000)); // fade out duration
+        }, 3000)); // hold text duration
       }
     }, 35); // typing speed
 
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      pending.forEach(clearTimeout);
+    };
   }, [isActive]);
 
   if (!isActive) return null;
