@@ -6,6 +6,106 @@
 > Delete or rewrite this file once the checklist AND the backlog below are empty — it is a
 > bookmark, not a plan.
 
+## ▶▶▶ 2026-08-16 (session 3) — R5 + ALL THREE HIGH BATCH-2 FINDINGS FIXED. Suite 76/76, 2202.
+
+**Every HIGH finding in the review is now closed. Seven mediums remain** (`M3`,
+`M4`, `M5`, `C3`, `C4`, `C5`, `C6`) — see `review-findings.json`, which is now
+accurate: `R13` had been fixed in `a495807` and left marked OPEN.
+
+**C2's owed harness was written first** (`test_review_batch2.py`, 21 checks for
+C2 alone). It is a real regression test, not a shape test: the pre-fix builder
+was run against the same assertions and fails three of them — no fence, no DATA
+label, and the injected `]` closing the wrapper so the image text lands *after*
+it, where the owner's own words belong.
+
+### R5 — the reload that killed the microphone. Three parts, all needed.
+
+The one that broke daily. **The old connection could not be seen to have died.**
+`starlette.websockets.WebSocket.receive()` is the ONLY place `client_state`
+becomes DISCONNECTED, and the owner connection never calls `receive()` while it
+is parked in `wait_for_wake_word` — so the socket dying was literally
+unobservable, the `finally` never ran, and the token was held by a connection
+that no longer existed. **The finding's own fix ("evict an owner whose
+`client_state` is no longer CONNECTED") could never have fired on its own.**
+
+1. **A disconnect watcher per connection** (`main._watch_for_disconnect`), the
+   one reader on the socket for its whole life. It is what flips `client_state`,
+   and it releases ownership itself rather than waiting for a `finally` that is
+   blocked in the mic thread. Bonus: `safe_send` now correctly skips a dead
+   socket, which is F-11's "Cannot call send once a close message has been sent".
+2. **`claim()` evicts a DEAD owner** — `client_state` or `application_state`
+   (starlette flips the latter on an `OSError` in `send`). A LIVE owner is never
+   displaced; two HUDs is still one mic and one listener, F-11 unchanged.
+3. **The loser re-attempts, and the mic thread stands down.**
+   `wait_for_wake_word(should_abort=…)` checks the predicate at the top of each
+   5s listen window and *leaves the `sr.Microphone()` context*, and the incoming
+   owner waits on a `mic_session` interlock before opening its own. **Handing
+   over the TOKEN without the DEVICE would have been F-11 with extra steps.**
+
+State machine extracted to `modules/voice_loop.py` (dependency-free, so the
+harness drives the real thing). `test_voice_loop_owner.py` **9 → 59 checks**,
+including a threaded run of the whole handover asserting the peak number of
+threads inside the microphone is 1. ⏳ **Still owed a live gate row: reload the
+HUD while idle, then say the wake word.**
+
+### M1 + M2 — the same fact dying twice, both closed
+
+**M2:** `MAX_ATTEMPTS` is gone. Reading `fact_drain` settles it — it acks EVERY
+verdict it reaches (opened, duplicate, quarantined, sink-refused), so **a record
+comes back unacked only when the desk HELD it**, and four holds used to
+dead-letter the backlog with no copy kept. Nothing is dropped for an offer count
+now; `OFFER_WARN_AT` logs it instead. The one genuinely undeliverable shape — an
+envelope with no usable `id`, which the desk quarantines but cannot *name* in an
+ack — is recognised up front and dead-lettered **with the ciphertext kept**
+(`fact_seal.quarantine`). Overflow eviction keeps a copy too: same defect, one
+branch over.
+
+**M1:** `strict=` on `extract_memories_from_input` / `add_memory` /
+`extract_and_persist`, **default `False` so every live path is byte-identical**.
+`fact_sink.governed_write` is the one caller passing `strict=True`, and it is
+what makes that module's documented three outcomes real: a failed extraction (no
+key, 429, timeout, unparseable reply) or a write FAULT now raises, the drain
+HOLDS, the next connect retries. An empty extraction and a duplicate still
+return `[]`/`False` — **the distinction is nothing FOUND vs nothing LOOKED**, and
+if strict raised on the former every chatty turn would be redelivered forever.
+
+> `add_memory` had M1's shape too, one door down: it returns `False` for a DB
+> error and for a duplicate alike. Under strict those part company.
+
+### C1 — an approval now names what it authorises, and covers ONE step
+
+The worker's ping said only the goal TITLE, so `/task tell mousumi I'm running
+late` → *"the task you queued needs your authorisation, Sir: <title>"* → one
+`approve task ab12cd34` sent an LLM-written message from his account **with the
+recipient and the body never shown**. `partner_messaging.confirm_prompt` is now
+split into `read_back` (the artefact) + the answer instruction, so the parked
+path quotes the identical verbatim read-back the desk shows — one definition,
+two sentences. Non-partner CONFIRM steps are quoted too, elided at 600 chars;
+**a partner send is never elided**.
+
+And `approved` was per-TASK. It now applies to `actions[0]` only — the pause
+already persists `actions[paused_at:]`, so the approved step *is* index 0 — and
+`task_queue.clear_approval` runs on every pause, so the flag cannot outlive the
+step it was granted for. `action_engine`'s comment claiming `governance_bypass`
+"is set only by main.py's post-approval re-invoke" was **factually wrong** — the
+worker is the second setter — and now says so.
+
+**Neighbour fixed with it, same class:** `agent_yield.park_for_approval` pinged
+the phone with `question_for`'s 120-character headline, while finding 15's full
+arguments rode a HUD frame that — this being the *away* path — he is by
+definition not looking at. The ping now carries
+`agent_confirm.arguments_text(...)`.
+
+### Three harnesses broke, and each was worth the noise
+
+`test_memory_source` and `test_fact_governance` both stub the extractor and
+their stubs did not accept `strict=` — **the stale-stub class this file already
+records** (`_fake_think` wedging the whole suite). `test_partner_send_gate` pins
+the list of files allowed to call `partner_registry.resolve()`, and it caught
+`worker_loop` joining it. That pin did its job: the worker is a DISPLAY caller,
+so it is on the list *with* a new check that it never grew a transport of its
+own.
+
 ## ▶▶▶ 2026-08-16 (session 2) — REVIEW BATCH 1 DONE, 15 OF 16 FIXED. Suite 75/75, 2101.
 
 **Read `review-findings.json` and `REVIEW_PLAN.md` first — they are the working state.**
@@ -58,14 +158,13 @@ backend itself · `R15` `_send_email` truncated the body at the next pipe **afte
 owner approved the whole string · `R16` `_remember_fact` stored half of any fact
 containing a colon.
 
-### ⏳ STILL OPEN — one finding
+### ✅ R5 IS FIXED (session 3, above) — it was not just a re-claim
 
-**R5 — a HUD reload permanently orphans the wake-word loop.** The old connection holds
-`_VOICE_LOOP_OWNER` blocked inside the mic thread, so its `finally` cannot run; the new
-one makes a single claim attempt, loses, and parks view-only — after telling the user
-`SYSTEM OFFLINE // STANDBY FOR VOICE INPUT`. **After a reload the mic is dead and the
-HUD says it is listening.** Fix: re-attempt the claim, and evict an owner whose
-`client_state` is no longer CONNECTED. Deliberately not rushed at the end of a budget.
+Recorded here as "re-attempt the claim, and evict an owner whose `client_state`
+is no longer CONNECTED". **That eviction could never have fired**: starlette only
+moves `client_state` inside `receive()`, and the parked owner calls it nowhere.
+The missing third part was making the disconnect *observable* at all, and the
+missing fourth was handing over the microphone DEVICE, not only the token.
 
 ### 🔁 THE PATTERN, NOW FIVE DEEP — this is the useful part
 
@@ -130,6 +229,10 @@ seal-before-parse, the parameterised SQL, decrypt-failure never reading as absen
 logging flags failing towards off, recipient resolution, and inbound Telegram auth were
 all checked and are correct.
 
+> ⬆️ **The four HIGH findings below (M1, M2, C1, C2) are ALL FIXED as of
+> session 3 — see the top of this file.** The section is kept because the
+> analysis of each defect is still the useful part.
+
 ### ▶ C2 IS FIXED. THE OTHER THREE HIGH ONES ARE NOT — START THERE.
 
 `_photo_command` in `modules/telegram_bot.py`: the vision description is now fenced
@@ -139,23 +242,16 @@ the body), and the model is told the block is DATA and not to act on anything in
 it — the wording `partner_contact` already uses for her messages. Truncated at 1200
 chars so a photo of a wall of text cannot push the caption out of attention.
 
-⚠️ **C2 HAS NO HARNESS YET — that is owed.** It was verified by hand only (a `]`-prefixed
-injection stays inside the fence, and the warning is present). Suite is 75/75, 2101,
-so nothing else broke, but this fix does not yet have a test that fails if it regresses.
-**Write that test first next session**, before touching anything else.
-
-**Still open and unfixed: M1, M2, C1** — plus every medium. See the table above and
-`review-findings.json`. M2 is the cheapest of the three (`modules/fact_outbox.py:227-235`,
-stop counting an attempt the desk merely HELD, and spill dead-letters to a file instead
-of dropping them).
+✅ **C2's harness was the first thing written in session 3** — 21 checks, and the
+pre-fix builder fails three of them.
 
 ### ⏭ WHERE TO RESTART
 
-`REVIEW_PLAN.md` has the batching rules and the area order. **Batch 2 (memory + comms)
-was launched and may not have reported — check `review-findings.json` for whether its
-findings landed.** Then: `agent-support`, `agent-runner`, `brain`, `perception`,
-`frontend`. **Run 2–3 areas at a time, never ten** — the first attempt at ten returned
-nothing and cost 38% of a quota.
+`REVIEW_PLAN.md` has the batching rules and the area order. Batch 2 reported and
+is now **fully fixed for its HIGH findings**; its seven mediums are catalogued in
+`review-findings.json` and untouched. Next areas: `agent-support`,
+`agent-runner`, `brain`, `perception`, `frontend`. **Run 2–3 areas at a time,
+never ten** — the first attempt at ten returned nothing and cost 38% of a quota.
 
 ⚠️ **`run_evals.py` went into `9b12df6` by accident** (a `git add -A` swept it up). It
 is the change that excludes six follow-up prompts from the live eval score, raising the
