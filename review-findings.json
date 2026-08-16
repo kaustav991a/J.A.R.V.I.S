@@ -1,13 +1,14 @@
 {
   "review": "pre-Electron code review, batch 1",
   "date": "2026-08-16",
-  "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code. | 2026-08-16 session 3: C2 harness written (was owed), then R5, M2, M1, C1 fixed in that order. Suite 76/76, 2202 checks. | 2026-08-16 session 4: the seven batch-2 mediums fixed. Suite 77/77, 2285 checks. THE WHOLE REVIEW BACKLOG IS NOW CLOSED.",
+  "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code. | 2026-08-16 session 3: C2 harness written (was owed), then R5, M2, M1, C1 fixed in that order. Suite 76/76, 2202 checks. | 2026-08-16 session 4: the seven batch-2 mediums fixed. Suite 77/77, 2285 checks. THE WHOLE REVIEW BACKLOG IS NOW CLOSED. | 2026-08-16 session 5 (batch 3): brain.py reviewed -- 3 findings, all fixed. agent-runner/agent-support given a BOUNDED sweep only (grep for sinks/claims + agent_files preconditions read); NOT line-by-line. Suite 78/78, 2308.",
   "areas_done": [
     "action-engine",
-    "main-api",
+    "brain (partial: prompt spine, process_command, process_stream, truthfulness guards)",
+    "comms",
     "io-agents",
-    "memory",
-    "comms"
+    "main-api",
+    "memory"
   ],
   "areas_pending": [
     "agent-support",
@@ -377,6 +378,42 @@
       "failure": "Chunk 1 is accepted and SHE RECEIVES A TRUNCATED FRAGMENT of a private message; chunk 2 fails, the loop returns False, guard.note_sent is never called, and JARVIS tells the owner 'I could not deliver that to Mousumi, Sir -- Telegram refused the message. Nothing was sent.' He re-sends, and she gets the first half twice followed by the whole thing.",
       "fix": "track how many chunks were accepted and return a tri-state, or send single-part only and refuse over-long bodies at _message_partner BEFORE the CONFIRM prompt, so the owner is told 'part of that message reached her' instead of a false denial",
       "fix_applied": "FIXED 2026-08-16 — `send_text_to_partner` returns SEND_OK / SEND_PARTIAL / SEND_FAILED instead of a bool (all three are truthy on purpose, so a caller cannot ignore the distinction by accident), and `_message_partner` reports 'part of that message reached her' on PARTIAL and marks the guard sent so a reflex re-send cannot duplicate the fragment. The real fix is upstream: `partner_messaging.MAX_SEND_CHARS = 4000` and `_message_partner` refuses an over-long body BEFORE the CONFIRM prompt, so a private message is never split across two sends. The transport refuses too, as a backstop."
+    },
+    {
+      "id": "A1",
+      "severity": "high",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "B",
+      "file": "brain.py:1796 (with brain.py:2502)",
+      "title": "A reply that dispatched NOTHING wrote the stub F-16 reads as proof an action ran",
+      "reachable_by": "process_stream on any turn where the model returns JSON with an empty or absent actions array -- the streaming path is the desk voice path.",
+      "failure": "process_stream's else branch wrote '[Action executed. Done.]' whenever full_response parsed as JSON but carried no actions. _EXECUTED_STUB_RE matches '[Action executed.', and that stub is the ONLY evidence _actions_ran_recently accepts -- so the NEXT turn's F-16 guard widened its admissible set to _CAPABILITY_CLAIMS and let 'I've opened it' / 'I've sent it' through as founded. _actions_ran_recently's own docstring says the stub is 'written from a PARSE of what was dispatched, never from what the model said about itself, which is the whole reason it can be used as evidence' -- untrue on exactly the branch where nothing was dispatched. The model could mint its own permission to claim work.",
+      "fix_applied": "FIXED 2026-08-16 -- the stub is written only when action_parser.extract_actions finds actions; the empty-action stub is gone and _EXECUTED_STUB_RE no longer matches it. test_conversational_truthfulness had TWO assertions pinning the old behaviour as correct; both rewritten."
+    },
+    {
+      "id": "A2",
+      "severity": "medium",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "C",
+      "file": "brain.py:1790",
+      "title": "The streaming path parsed actions with a bare json.loads, not the shared spine",
+      "reachable_by": "any streamed action reply the model wraps in a ```json fence or a sentence of prose, or that max_tokens truncates",
+      "failure": "process_command uses action_parser.extract_actions (fences, prose wrappers, truncation, and alias normalisation all handled); process_stream used json.loads. A fenced action reply therefore raised JSONDecodeError and the except branch wrote the RAW JSON into working memory -- the exact thing process_command's comment forbids, because it pollutes every later prompt and invites the model to re-emit the action -- while writing no evidence stub for a turn that really did act. Two paths, one policy, and the second had drifted.",
+      "fix_applied": "FIXED 2026-08-16 -- process_stream uses the shared spine. Side effect worth knowing: the stub now names the NORMALISED action type the engine dispatches (open_app -> native_app_launcher) rather than the model's alias, which is the property the stub claims for itself."
+    },
+    {
+      "id": "A3",
+      "severity": "medium",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "C",
+      "file": "brain.py:1227 and brain.py:1593",
+      "title": "The brain's security lockdown is armed by nobody, and would have been disarmed by the intruder's own words",
+      "reachable_by": "not reachable -- that is the finding",
+      "failure": "'Unrecognized voice protocol' is the phrase that arms is_locked, and it appears NOWHERE else in the repository: no module and no frontend file writes it into working memory. So is_locked has always been False, and the SECURITY LOCKDOWN PROTOCOL block in BASE_CORE, the Mousumi escape hatch and the 'Access Denied' override are all unreachable decoration. The real barrier is main.py's voice-challenge BRANCH D, which hits `continue` and returns an unrecognised person to standby without ever reaching the brain -- that barrier is sound. Second defect at the same site: the disarm scan walked EVERY message regardless of role, so had the marker ever been written, an intruder typing 'access granted' would have cleared the lock on the next turn. The comment ('if we see that he already welcomed someone') meant JARVIS's own words.",
+      "fix_applied": "FIXED 2026-08-16 -- one _security_locked() shared by both paths. A lock claim is honoured from any turn (fail-safe: the worst it does is make JARVIS refuse to talk); a DISARM is honoured only from an assistant turn. Arming deliberately NOT wired: deciding when JARVIS should refuse to speak at all is Kaustav's call, not a review fix. A harness test fails if anyone ever writes the marker without reading the docstring."
     }
   ],
   "verified_sound": [

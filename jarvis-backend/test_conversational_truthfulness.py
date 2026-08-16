@@ -65,10 +65,14 @@ _WANTED_CONSTS = {
     "_CAPABILITY_CLAIMS", "_AUTHORING_CLAIMS", "_BARE_CONVERSATIONAL",
     "_FENCE_RE", "_SENTENCE_SPLIT_RE", "_EVIDENCE_WINDOW_MSGS",
     "_EXECUTED_STUB_RE",
+    # Batch 3, finding A3: process_stream now shares ONE security scanner with
+    # process_command, so the lifted namespace needs its vocabulary too.
+    "_LOCK_MARKER", "_UNLOCK_PHRASES",
 }
 _WANTED_FUNCS = (
     "_claims_a_completion", "_actions_ran_recently", "_conversational_allowed",
     "_sentence_is_unfounded", "_strip_unfounded_conversational_claims",
+    "_security_locked",
 )
 
 _consts = [n for n in _TREE.body
@@ -256,8 +260,14 @@ def test_empty_input_is_safe():
 def test_evidence_is_read_from_executed_stubs_only():
     check(_ran([]) is False, "an empty buffer is no evidence")
     check(_ran([_stub()]) is True, "an [Executed: ...] stub is evidence")
-    check(_ran([{"role": "assistant", "content": "[Action executed. Done.]"}]) is True,
-          "the streaming path's stub counts too")
+    # ⚠️ This assertion used to read `is True`, and it was pinning the DEFECT.
+    # Review batch 3, finding A1: process_stream wrote "[Action executed. Done.]"
+    # whenever the reply parsed as JSON and carried NO actions — so a turn that
+    # dispatched nothing minted the only evidence this function accepts, and the
+    # next turn's guard admitted every capability claim as founded. The stub is
+    # no longer written, and it is no longer evidence.
+    check(_ran([{"role": "assistant", "content": "[Action executed. Done.]"}]) is False,
+          "the old empty-action stub is NOT evidence — it never meant anything ran")
     check(_ran([{"role": "assistant",
                  "content": "I have opened Chrome for you, Sir."}]) is False,
           "the model SAYING it acted is not evidence — that is the bug, not the proof")
@@ -417,8 +427,29 @@ def test_the_stream_passes_a_json_action_turn_through_untouched():
           "an action payload is never sentence-split or rewritten")
     stored = " ".join(str(m.get("content", "")) for m in buffer
                       if isinstance(m, dict) and m.get("role") == "assistant")
-    check("[Executed: open_app" in stored,
+    # `native_app_launcher`, not `open_app`: finding A2 moved this path onto the
+    # shared parse spine, which NORMALISES the model's alias to the action type
+    # the engine actually dispatches. That is the property the stub claims for
+    # itself — a parse of what was dispatched, not of what the model called it.
+    check("[Executed: native_app_launcher" in stored,
           "...and it still produces the Executed stub the NEXT turn reads as evidence")
+
+
+def test_a_json_reply_with_no_actions_leaves_no_evidence_behind():
+    """Finding A1, end to end through the real generator.
+
+    `{"actions": []}` is a turn that dispatched nothing. It must not write the
+    stub that the next turn reads as proof something ran.
+    """
+    payload = '{"actions": []}'
+    _, buffer = _build_stream([payload])
+    stored = " ".join(str(m.get("content", "")) for m in buffer
+                      if isinstance(m, dict) and m.get("role") == "assistant")
+    check("[Executed:" not in stored,
+          f"no execution stub is written for an empty action list; got {stored!r}")
+    check("[Action executed" not in stored, "and not the old one either")
+    check(_ran(buffer) is False,
+          "so the next turn still has to earn its capability claims")
 
 
 def test_the_stream_honours_evidence_from_the_previous_turn():
@@ -463,6 +494,7 @@ TESTS = [
     test_the_stream_does_not_leave_the_fabrication_in_working_memory,
     test_the_stream_leaves_a_clean_reply_alone,
     test_the_stream_passes_a_json_action_turn_through_untouched,
+    test_a_json_reply_with_no_actions_leaves_no_evidence_behind,
     test_the_stream_honours_evidence_from_the_previous_turn,
     test_the_stream_never_goes_silent,
 ]

@@ -1201,6 +1201,58 @@ _ROMANISE_NUDGE = (
 )
 
 
+#: The phrase that ARMS the brain's challenge mode.
+_LOCK_MARKER = "Unrecognized voice protocol"
+
+#: Phrases that DISARM it — things JARVIS says once someone has been admitted.
+_UNLOCK_PHRASES = ("welcome home", "access granted", "standby mode",
+                   "pleasure to see you")
+
+
+def _security_locked(working_memory) -> bool:
+    """Is the brain's challenge mode active? Read from JARVIS's own turns only.
+
+    Review batch 3, finding A3 (2026-08-16). Two things were wrong here, and
+    the second only matters because of the first.
+
+    **Nothing arms it.** `_LOCK_MARKER` appears nowhere else in this repository
+    — no module, no frontend file, writes it into working memory. So `is_locked`
+    has always been False, and the SECURITY LOCKDOWN PROTOCOL block in
+    `BASE_CORE`, the guest escape hatch, and the "Access Denied" override below
+    are all unreachable. **The real barrier is in `main.py`**: an unrecognised
+    person fails the optical scan, fails the voice challenge, and hits
+    `continue` — back to standby, never reaching this function at all. That
+    barrier is sound. This one is decoration, and decoration that looks like a
+    control is worse than no control, because the next person to read it will
+    trust it.
+
+    **And the disarm read the wrong side of the conversation.** The scan walked
+    every message regardless of role, so if the marker were ever written, an
+    intruder typing "access granted" put those words into working memory as a
+    USER turn and cleared the lock on the very next turn. The comment said "if
+    we see that he already welcomed someone" — meaning JARVIS's own words. Only
+    assistant turns are considered now.
+
+    Arming stays deliberately unchanged: wiring this to the face-auth path is a
+    behavioural decision about when JARVIS should refuse to speak at all, and
+    that is Kaustav's call, not a review fix.
+    """
+    for msg in reversed(list(working_memory or ())):
+        try:
+            content = str(msg.get("content", "") or "")
+            role = msg.get("role")
+        except AttributeError:
+            continue
+        # A lock claim is fail-SAFE, so it is honoured from any turn: the worst
+        # a forged one can do is make JARVIS refuse to talk.
+        if _LOCK_MARKER in content:
+            return True
+        # A disarm is fail-DANGEROUS, so it must come from JARVIS.
+        if role == "assistant" and any(p in content.lower() for p in _UNLOCK_PHRASES):
+            return False
+    return False
+
+
 # Notice the new 'active_user' parameter here
 def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
     print(f"[BRAIN] Processing: '{user_text}' for user: {active_user}")
@@ -1223,17 +1275,8 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
     _ltm_block   = memory_manager.format_memory_block(_ltm_records)
     
     # --- SECURITY SCANNER ---
-    is_locked = False
-    for msg in reversed(memory.get_working_memory()):
-        content = msg.get("content", "")
-        # If the last major event was the security warning, the lock is active.
-        if "Unrecognized voice protocol" in content:
-            is_locked = True
-            break
-        # If we see that he already welcomed someone or went to sleep, the lock is broken!
-        if any(x in content.lower() for x in ["welcome home", "access granted", "standby mode", "pleasure to see you"]):
-            break
-            
+    is_locked = _security_locked(memory.get_working_memory())
+
     # --- THE GUEST ESCAPE HATCH ---
     if is_locked:
         # --- MOUSUMI FAST-PASS (only during security lockdown) ---
@@ -1588,16 +1631,9 @@ def process_stream(user_text: str, active_user: str = "KAUSTAV"):
     Identical to process(), but yields text dynamically as the LLM generates it.
     This enables zero-latency TTS playback.
     """
-    # --- SECURITY SCANNER ---
-    is_locked = False
-    for msg in reversed(memory.get_working_memory()):
-        content = msg.get("content", "")
-        if "Unrecognized voice protocol" in content:
-            is_locked = True
-            break
-        if any(x in content.lower() for x in ["welcome home", "access granted", "standby mode", "pleasure to see you"]):
-            break
-    
+    # --- SECURITY SCANNER --- (one implementation, shared with process_command)
+    is_locked = _security_locked(memory.get_working_memory())
+
     # 1. Fetch relevant memories (same as process)
     semantic_context = memory.recall_semantic_context(active_user, user_text, n_results=2)
     episodic_context = episodic_memory.recall_past_sessions(active_user, user_text)
@@ -1785,17 +1821,40 @@ def process_stream(user_text: str, active_user: str = "KAUSTAV"):
             yield " Access Denied. Interaction terminated."
             full_response += " Access Denied."
             
-        try:
-            # Same past-tense stub pattern as process_command — DONE, not pending.
-            _ps_parsed = json.loads(full_response)
-            _ps_actions = _ps_parsed.get("actions", [])
-            if _ps_actions:
-                _ps_atypes = [a.get("action_type", "action") for a in _ps_actions]
-                _ps_stub = f"[Executed: {', '.join(_ps_atypes)}. Done.]"
-            else:
-                _ps_stub = "[Action executed. Done.]"
-            memory.add_to_working_memory("assistant", _ps_stub)
-        except json.JSONDecodeError:
+        # Same past-tense stub pattern as process_command, and now the same PARSE.
+        #
+        # Review batch 3, finding A1/A2 (2026-08-16). This used to be a bare
+        # `json.loads`, with an `else` branch writing "[Action executed. Done.]"
+        # whenever the reply parsed as JSON but carried NO actions. Two defects
+        # in nine lines:
+        #
+        #   A1 — `_EXECUTED_STUB_RE` matches "[Action executed." and that stub is
+        #        the ONLY evidence `_actions_ran_recently` accepts. So a reply
+        #        that did nothing at all minted the proof that something ran, and
+        #        the NEXT turn's F-16 guard admitted every tier-2 capability
+        #        claim ("I've opened it", "I've sent it") as founded. The guard's
+        #        own docstring says the stub is "written from a PARSE of what was
+        #        dispatched, never from what the model said about itself, which is
+        #        the whole reason it can be used as evidence" — which was untrue
+        #        on exactly the branch where nothing was dispatched.
+        #
+        #   A2 — `json.loads` is not the shared parse spine. `action_parser`
+        #        handles fences, prose wrappers and truncation; a plain
+        #        `json.loads` fails on all three, so a reply that really DID
+        #        carry actions fell into the except branch and wrote the raw JSON
+        #        straight into working memory — the one thing process_command's
+        #        comment forbids, because it pollutes every later prompt and
+        #        invites the model to re-emit the action.
+        from modules import action_parser
+        _ps_actions = action_parser.extract_actions(full_response)
+        if _ps_actions:
+            _ps_atypes = [a.get("action_type", "action") for a in _ps_actions]
+            memory.add_to_working_memory(
+                "assistant", f"[Executed: {', '.join(_ps_atypes)}. Done.]")
+        else:
+            # No action was dispatched, so no evidence is written. A reply that
+            # did nothing must leave the buffer looking like a reply that did
+            # nothing.
             memory.add_to_working_memory("assistant", full_response)
             
     except Exception as e:
@@ -2499,7 +2558,12 @@ _SENTENCE_SPLIT_RE = re.compile(r"((?<=[.!?])\s+)")
 # the legitimate case is a follow-up about something just done ("did you open
 # it?"), not a claim resurfacing twenty turns after the fact.
 _EVIDENCE_WINDOW_MSGS = 6
-_EXECUTED_STUB_RE = re.compile(r"\[Executed:|\[Action executed\.", re.IGNORECASE)
+# ONLY the "[Executed: <types>]" stub counts, and it is written only where
+# `action_parser` actually found actions. Finding A1 removed the second
+# alternative, "[Action executed.", which `process_stream` used to write when the
+# reply parsed as JSON and carried NO actions — a turn that did nothing minting
+# the evidence that something did. Anything looser than this is not evidence.
+_EXECUTED_STUB_RE = re.compile(r"\[Executed:", re.IGNORECASE)
 
 
 def _actions_ran_recently(messages: list, window: int = _EVIDENCE_WINDOW_MSGS) -> bool:
