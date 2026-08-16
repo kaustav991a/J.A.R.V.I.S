@@ -21,11 +21,30 @@ function Visualizer({ status }) {
   useEffect(() => {
     statusRef.current = status;
     let stream = null;
+    // Review batch 11, 2026-08-16. `getUserMedia` is ASYNC and `status` flips
+    // constantly (listening -> processing_llm -> speaking -> listening). When
+    // the status changed before the promise resolved, the cleanup below ran
+    // with `stream` still null — so it stopped NOTHING — and the promise then
+    // assigned the stream and built an AudioContext that outlived its own
+    // effect. Two leaks per race: the microphone track stays live (the browser
+    // keeps showing the mic-in-use indicator) and an AudioContext is orphaned.
+    //
+    // Chrome caps AudioContexts at about six per page, after which the
+    // constructor THROWS — so on a HUD that runs for hours the visualiser
+    // quietly stops reacting to his voice. Degradation across a session with
+    // nothing in the log, which is F-08's family.
+    let cancelled = false;
 
     if (status === "listening" || status === "waking") {
       navigator.mediaDevices
         .getUserMedia({ audio: true })
         .then((mediaStream) => {
+          if (cancelled) {
+            // We lost the race: this effect is already torn down. Hand the
+            // microphone straight back rather than holding it forever.
+            mediaStream.getTracks().forEach((track) => track.stop());
+            return;
+          }
           stream = mediaStream;
           audioContextRef.current = new (
             window.AudioContext || window.webkitAudioContext
@@ -115,6 +134,7 @@ function Visualizer({ status }) {
     }
 
     return () => {
+      cancelled = true;      // a stream still in flight releases itself above
       if (stream) stream.getTracks().forEach((track) => track.stop());
       if (
         audioContextRef.current &&
@@ -477,7 +497,11 @@ function Visualizer({ status }) {
       renderer.render(scene, camera);
     }
 
-    requestAnimationFrame(animate);
+    // Capture the FIRST frame's id too. `animate` assigns it on every later
+    // frame, but an unmount inside the ~16ms before the first callback ran left
+    // `animationFrameId` undefined — so cancelAnimationFrame was a no-op and one
+    // frame rendered through a renderer the cleanup had already disposed.
+    animationFrameId = requestAnimationFrame(animate);
 
     return () => {
       cancelAnimationFrame(animationFrameId);

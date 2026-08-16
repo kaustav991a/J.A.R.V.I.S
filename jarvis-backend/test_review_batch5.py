@@ -462,6 +462,31 @@ def test_the_calculator_never_evaluates_code():
           "and a non-finite result (1/0) is an error, not a display value")
 
 
+def test_a_microphone_stream_that_arrives_late_is_handed_back():
+    """Batch 11. getUserMedia is ASYNC and `status` flips constantly
+    (listening -> processing_llm -> speaking -> listening). When the status
+    changed before the promise resolved, the cleanup ran with `stream` still
+    null — stopping nothing — and the promise then assigned the stream and built
+    an AudioContext that outlived its own effect. The mic stays live and an
+    AudioContext is orphaned, and Chrome caps those at ~6 per page before the
+    constructor THROWS: on a HUD that runs for hours the visualiser quietly
+    stops reacting to his voice."""
+    src = (FRONTEND / "components" / "Visualizer.jsx").read_text(
+        encoding="utf-8", errors="replace")
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith(("//", "*", "/*")))
+    check("let cancelled = false" in code, "the effect tracks its own teardown")
+    check("if (cancelled)" in code,
+          "and the late-arriving stream checks it before taking the mic")
+    late = code.split("if (cancelled)", 1)[1].split("}", 1)[0]
+    check("track.stop()" in late,
+          "a stream that lost the race is stopped, not merely dropped")
+    check("cancelled = true" in code.split("return () =>", 1)[1],
+          "the cleanup sets the flag")
+    check("animationFrameId = requestAnimationFrame(animate)" in code,
+          "the first animation frame's id is captured, so cancel can reach it")
+
+
 def test_the_frontend_has_no_html_injection_sink():
     """Swept in batch 8, pinned here: React escapes by default, and the only way
     to lose that is to ask for it. `eval` was already replaced by a safe parser
