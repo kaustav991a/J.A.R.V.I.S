@@ -29,6 +29,11 @@ def _default_camera_url() -> str:
     return "http://192.168.0.106:8080/video"
 
 
+#: Where the throwaway face crop is written during identity matching. Anchored
+#: on THIS FILE, never on the process's working directory — see the note at the
+#: write site. `jarvis-backend/` is already the anchor every sibling store uses.
+_TEMP_DIR = os.path.dirname(os.path.abspath(__file__))
+
 CAMERA_URL  = os.getenv("JARVIS_CAMERA_URL") or _default_camera_url()
 CAMERA_BASE = os.getenv("JARVIS_CAMERA_BASE", CAMERA_URL.rsplit("/", 1)[0])
 
@@ -49,7 +54,42 @@ shared_optical_cache = {
     "frame_w": 0,       # native width of the analysed frame (box coords are in this space)
     "frame_h": 0,
     "camera_url": CAMERA_URL,  # where the HUD should pull the live stream from
+    # Set when the daemon loop has given up. Readers use `vision_is_fresh()`
+    # rather than this directly — a thread that DIED cannot set anything.
+    "daemon_error": None,
 }
+
+#: How old a reading may be and still be treated as "what JARVIS can see".
+#: Three times the base interval: one missed cycle is a hiccup, three is a
+#: stopped daemon. Review batch 5 — see `vision_is_fresh`.
+MAX_CACHE_AGE_S = 20.0
+
+
+def vision_is_fresh(max_age: float = MAX_CACHE_AGE_S) -> bool:
+    """Is the optical cache CURRENT, rather than merely populated?
+
+    Review batch 5, 2026-08-16. `camera_active` is a flag the daemon sets when
+    it last managed to reach the camera — and nothing ever un-sets it, because
+    the code that would is inside the loop that stopped running. So a daemon
+    that died left `camera_active: True` and a frozen `people_in_view` behind
+    it, and `brain.build_dynamic_prompt` went on injecting
+
+        AMBIENT VISUAL CONTEXT ... People detected: KAUSTAV
+
+    into every prompt from a frame taken hours earlier, with the instruction
+    "if asked 'what do you see?' — use this data directly". JARVIS describing a
+    room he cannot see is the F-16 class of failure arriving through the
+    sensors instead of through the model.
+
+    A timestamp cannot lie the same way: `last_updated` only moves when a frame
+    was actually analysed.
+    """
+    if not shared_optical_cache.get("camera_active"):
+        return False
+    last = shared_optical_cache.get("last_updated") or 0
+    if not last:
+        return False
+    return (time.time() - last) <= max_age
 
 
 class AmbientVisionDaemon:
@@ -135,11 +175,26 @@ class AmbientVisionDaemon:
         return frame
 
     def start(self):
-        if not self.running:
-            self.running = True
-            self.thread = threading.Thread(target=self._daemon_loop, daemon=True)
-            self.thread.start()
-            print("[AMBIENT VISION] Daemon started in background.", flush=True)
+        """Start the loop, or RESTART it if a previous thread has died.
+
+        `if not self.running` alone was a one-way door: an exception out of
+        `_daemon_loop` killed the thread with `running` still True, so every
+        later `start()` was a no-op and perception was gone until a full
+        restart of JARVIS. Checked against the thread itself now, which is the
+        only thing that knows whether it is alive.
+        """
+        alive = self.thread is not None and self.thread.is_alive()
+        if self.running and alive:
+            return
+        if self.running and not alive:
+            print("[AMBIENT VISION] previous daemon thread is dead — restarting.",
+                  flush=True)
+        self.running = True
+        shared_optical_cache["daemon_error"] = None
+        self.thread = threading.Thread(target=self._daemon_loop, daemon=True,
+                                       name="ambient-vision")
+        self.thread.start()
+        print("[AMBIENT VISION] Daemon started in background.", flush=True)
 
     def stop(self):
         self.running = False
@@ -147,9 +202,50 @@ class AmbientVisionDaemon:
             self.thread.join(timeout=2.0)
 
     def _daemon_loop(self):
+        """Outer shell: one bad frame must not end perception for the session.
+
+        Review batch 5, 2026-08-16. This loop had NO exception guard at all,
+        while its sibling — `modules/gesture_camera`, reading the same phone
+        stream — has stall detection, bounded reopen and a `_dead` record
+        (finding 7 put them there). One raise out of `model.predict`, `cv2`, a
+        malformed frame or DeepFace ended the thread silently: `running` stayed
+        True so `start()` would not restart it, and `camera_active` stayed True
+        so every reader went on trusting a frozen cache.
+
+        That is the mechanism this file already had the symptoms of — a camera
+        that dies later, on a machine where nothing obviously went wrong,
+        degrading across sessions rather than failing once (F-08).
+        """
         import cv2
 
+        consecutive = 0
         while self.running:
+            try:
+                self._one_pass(cv2)
+            except Exception as exc:  # noqa: BLE001 — the loop must outlive it
+                consecutive += 1
+                import traceback
+                print(f"[AMBIENT VISION] pass failed ({consecutive}): {exc}",
+                      flush=True)
+                traceback.print_exc()
+                # Nothing was analysed, so nothing in the cache is current.
+                # Saying "I see nobody" is wrong too — say "I cannot see".
+                shared_optical_cache["camera_active"] = False
+                shared_optical_cache["detections"] = []
+                if consecutive >= 5:
+                    shared_optical_cache["daemon_error"] = str(exc)
+                    print("[AMBIENT VISION] ⛔ five consecutive failures — "
+                          "standing down. Optical context is now reported as "
+                          "OFFLINE rather than stale.", flush=True)
+                    self.running = False
+                    return
+                time.sleep(min(self.idle_interval, self.interval * consecutive))
+            else:
+                consecutive = 0
+
+    def _one_pass(self, cv2):
+        """One analysis cycle. Raises freely — `_daemon_loop` owns the recovery."""
+        if True:
             time.sleep(self.interval)
 
             if not self._check_camera():
@@ -157,13 +253,13 @@ class AmbientVisionDaemon:
                 shared_optical_cache["objects_in_view"] = set()
                 shared_optical_cache["people_in_view"] = set()
                 shared_optical_cache["detections"] = []
-                continue
+                return
 
             shared_optical_cache["camera_active"] = True
 
             frame = self._grab_frame(cv2)
             if frame is None:
-                continue
+                return
 
             detected_objects = set()
             person_boxes = []
@@ -206,34 +302,48 @@ class AmbientVisionDaemon:
                     if face_crop.size == 0:
                         continue
 
-                    temp_path = "temp_ambient_face.jpg"
-                    cv2.imwrite(temp_path, face_crop)
-
+                    # Anchored on THIS FILE, and removed in a `finally`.
+                    #
+                    # It was `"temp_ambient_face.jpg"` — a bare relative path,
+                    # so it landed in whatever directory JARVIS was launched
+                    # from. That is the same defect `memory.py`'s CHROMA_PATH
+                    # had, with a worse payload: this file is a CROPPED PHOTO OF
+                    # WHOEVER IS IN THE ROOM, written unencrypted, and the repo
+                    # root is one of the places it could land — one `git add -A`
+                    # from being published. The `finally` matters because the
+                    # old cleanup was straight-line code that an exception
+                    # anywhere above it skipped, leaving the face on disk.
+                    temp_path = os.path.join(_TEMP_DIR, "temp_ambient_face.jpg")
                     best_match = None
                     best_score = 0.5
+                    try:
+                        cv2.imwrite(temp_path, face_crop)
 
-                    for name, img_path in self.identities.items():
+                        for name, img_path in self.identities.items():
+                            try:
+                                from deepface import DeepFace
+
+                                res = DeepFace.verify(
+                                    img1_path=temp_path,
+                                    img2_path=img_path,
+                                    model_name="OpenFace",
+                                    detector_backend="opencv",
+                                    enforce_detection=False,
+                                )
+                                dist = res["distance"]
+                                if dist < best_score:
+                                    best_score = dist
+                                    best_match = name
+                                if dist < 0.4:
+                                    break
+                            except Exception:
+                                continue
+                    finally:
                         try:
-                            from deepface import DeepFace
-
-                            res = DeepFace.verify(
-                                img1_path=temp_path,
-                                img2_path=img_path,
-                                model_name="OpenFace",
-                                detector_backend="opencv",
-                                enforce_detection=False,
-                            )
-                            dist = res["distance"]
-                            if dist < best_score:
-                                best_score = dist
-                                best_match = name
-                            if dist < 0.4:
-                                break
-                        except Exception:
-                            continue
-
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                        except OSError:
+                            pass
 
                     try:
                         from modules.emotion_detector import analyze_facial_emotion

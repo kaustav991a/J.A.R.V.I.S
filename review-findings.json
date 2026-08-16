@@ -1,7 +1,7 @@
 {
   "review": "pre-Electron code review, batch 1",
   "date": "2026-08-16",
-  "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code. | 2026-08-16 session 3: C2 harness written (was owed), then R5, M2, M1, C1 fixed in that order. Suite 76/76, 2202 checks. | 2026-08-16 session 4: the seven batch-2 mediums fixed. Suite 77/77, 2285 checks. THE WHOLE REVIEW BACKLOG IS NOW CLOSED. | 2026-08-16 session 5 (batch 3): brain.py reviewed -- 3 findings, all fixed. agent-runner/agent-support given a BOUNDED sweep only (grep for sinks/claims + agent_files preconditions read); NOT line-by-line. Suite 78/78, 2308. | 2026-08-16 session 6 (batch 4): agent-support read in full -- 3 findings, all fixed. agent_search/tool_calls/agent_schema/agent_errors/agent_subagents VERIFIED SOUND, do not re-raise. agent_runner + worker_loop remain partially covered. Suite 79/79, 2337.",
+  "note": "Findings are CANDIDATES until verified. Verification happens when the fix is written (the fixer re-reads the code anyway). Anything marked verified:false has not yet been confirmed against the real code. | 2026-08-16 session 3: C2 harness written (was owed), then R5, M2, M1, C1 fixed in that order. Suite 76/76, 2202 checks. | 2026-08-16 session 4: the seven batch-2 mediums fixed. Suite 77/77, 2285 checks. THE WHOLE REVIEW BACKLOG IS NOW CLOSED. | 2026-08-16 session 5 (batch 3): brain.py reviewed -- 3 findings, all fixed. agent-runner/agent-support given a BOUNDED sweep only (grep for sinks/claims + agent_files preconditions read); NOT line-by-line. Suite 78/78, 2308. | 2026-08-16 session 6 (batch 4): agent-support read in full -- 3 findings, all fixed. agent_search/tool_calls/agent_schema/agent_errors/agent_subagents VERIFIED SOUND, do not re-raise. agent_runner + worker_loop remain partially covered. Suite 79/79, 2337. | 2026-08-16 session 7 (batch 5): ambient_vision reviewed in full -- 3 findings, all fixed. gesture_camera._loop and cursor_overlay.read_stdin verified sound at the loop level. STILL NOT READ LINE-BY-LINE: agent_runner 1-330, worker_loop remainder, gesture_engine (776), cursor_overlay body (548), gesture_roi, gesture_arbiter, frontend (4240). Suite 80/80, 2361.",
   "areas_done": [
     "action-engine",
     "agent-support (agent_search, tool_calls, agent_schema, agent_errors, agent_subagents, agent_skills, agent_metrics read in full)",
@@ -9,7 +9,8 @@
     "comms",
     "io-agents",
     "main-api",
-    "memory"
+    "memory",
+    "perception (ambient_vision full; gesture_camera + cursor_overlay loop-level verified sound)"
   ],
   "areas_pending": [
     "agent-support",
@@ -451,6 +452,42 @@
       "reachable_by": "ghost_save_file (a real Save As dialog, target path model-supplied) and run_terminal_command's delete_file verb",
       "failure": "Finding R3 put enforcement_write_problem into WorkspaceAgent._resolve_safe_for_write, covering workspace_write and workspace_patch. The OTHER doors to the same files asked only protected_path_problem -- which guards the key store and the backups and says NOTHING about governance.json, shell_safety.py, url_safety.py or skills/. So the GUI save dialog could overwrite the ruleset, and delete_file could remove it outright. Deleting the rules is not softer than editing them. This is finding 14 completing finding 10, one layer over: a guard wired at one door, and there were three.",
       "fix_applied": "FIXED 2026-08-16 -- one ActionEngine._write_path_problem asks BOTH lists, wired into the ghost_save_file and _delete_file doors. The secrets list still answers first so the key store keeps its own wording. test_protected_paths' two structural assertions named the old helper and were widened to accept the superset."
+    },
+    {
+      "id": "P1",
+      "severity": "high",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "E",
+      "file": "ambient_vision.py:149",
+      "title": "The ambient-vision loop had NO exception guard — one bad frame ended perception for the session",
+      "reachable_by": "any raise inside the loop body: model.predict on a malformed frame, a cv2 error, DeepFace, frame.shape on an unexpected type",
+      "failure": "`_daemon_loop` ran the whole analysis inline with no try. One exception killed the thread while `self.running` stayed True — and `start()` was guarded by `if not self.running`, so every later start() was a no-op. Perception was gone until JARVIS was fully restarted, with nothing in the log to say so. Its SIBLING on the same phone stream, modules/gesture_camera, has stall detection, bounded reopen and a `_dead` record (finding 7 put them there); this one had none of it. This is the mechanism whose symptoms F-08 records: a camera that dies later, on a machine where nothing obviously went wrong, degrading across sessions rather than failing once.",
+      "fix_applied": "FIXED 2026-08-16 -- the body moved to `_one_pass`, wrapped in try/except with a consecutive-failure count, backoff, and a stand-down at 5 that records `daemon_error`. A failing pass sets camera_active False (I cannot see) rather than leaving a stale reading. start() checks thread.is_alive() so a dead daemon can be revived."
+    },
+    {
+      "id": "P2",
+      "severity": "high",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "B",
+      "file": "brain.py:1261 and brain.py:1646",
+      "title": "A dead daemon left camera_active True, so the brain described a room from an hours-old frame",
+      "reachable_by": "every conversational turn once the daemon has stopped (P1), and any interval where the loop is not running",
+      "failure": "`camera_active` is set by the daemon and un-set by nothing — the code that would clear it is inside the loop that stopped. So the AMBIENT VISUAL CONTEXT block kept injecting `People detected: KAUSTAV` from a frozen cache, under an instruction reading 'If asked what do you see? — use this data directly'. JARVIS describing a room he cannot see is the F-16 class of failure arriving through the sensors instead of through the model. Also sticks `intruder_detected`, which the desk-watch alert path reads.",
+      "fix_applied": "FIXED 2026-08-16 -- new ambient_vision.vision_is_fresh(): camera_active AND last_updated within MAX_CACHE_AGE_S (20s, three intervals). A timestamp only moves when a frame was really analysed, so it cannot lie the way the flag did. Both brain paths gated on it."
+    },
+    {
+      "id": "P3",
+      "severity": "medium",
+      "status": "FIXED",
+      "verified": true,
+      "root_cause": "E",
+      "file": "ambient_vision.py:209",
+      "title": "The cropped face photo was written to a bare relative path and cleaned up by skippable code",
+      "reachable_by": "every identity match, i.e. any time a person is in view",
+      "failure": "`temp_path = \"temp_ambient_face.jpg\"` resolves against the process's CWD, so the file followed whoever launched JARVIS -- the same defect memory.py's CHROMA_PATH had, with a much worse payload: an unencrypted cropped PHOTO OF WHOEVER IS IN THE ROOM, landing in the repo root when launched from there, one `git add -A` from being published. The removal was straight-line code after the match loop, so any raise above it left the image on disk.",
+      "fix_applied": "FIXED 2026-08-16 -- anchored on __file__ like every sibling store, and removed in a `finally`."
     }
   ],
   "verified_sound": [

@@ -364,6 +364,9 @@ def _build_stream(chunks, working_memory=None):
 
     fake_av = types.ModuleType("ambient_vision")
     fake_av.shared_optical_cache = {"camera_active": False}
+    # Review batch 5: the visual block is gated on FRESHNESS now, not on the
+    # bare `camera_active` flag — a dead daemon left that flag True forever.
+    fake_av.vision_is_fresh = lambda *a, **k: False
     sys.modules["ambient_vision"] = fake_av
 
     import datetime as _dt

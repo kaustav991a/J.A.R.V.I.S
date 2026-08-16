@@ -1301,8 +1301,13 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
     episodic_context = episodic_memory.recall_past_sessions(active_user, user_text)
     
     # --- Phase 5: AMBIENT VISUAL CONTEXT ---
+    # `vision_is_fresh` rather than `camera_active` (review batch 5): the flag
+    # is set by the daemon and un-set by nothing, so a dead daemon left it True
+    # and this block described a room from a frame taken hours ago — under an
+    # instruction telling the model to answer "what do you see?" from it.
+    from ambient_vision import vision_is_fresh
     visual_ctx = "Optical sensors offline."
-    if shared_optical_cache.get("camera_active"):
+    if vision_is_fresh():
         objects = list(shared_optical_cache.get("objects_in_view", set()))
         people = list(shared_optical_cache.get("people_in_view", set()))
         emotion = shared_optical_cache.get("dominant_emotion", "neutral")
@@ -1638,9 +1643,10 @@ def process_stream(user_text: str, active_user: str = "KAUSTAV"):
     semantic_context = memory.recall_semantic_context(active_user, user_text, n_results=2)
     episodic_context = episodic_memory.recall_past_sessions(active_user, user_text)
     
-    from ambient_vision import shared_optical_cache
+    # Same freshness rule as process_command — one policy, two paths.
+    from ambient_vision import shared_optical_cache, vision_is_fresh
     visual_ctx = "Optical sensors offline."
-    if shared_optical_cache.get("camera_active"):
+    if vision_is_fresh():
         objects = list(shared_optical_cache.get("objects_in_view", set()))
         people = list(shared_optical_cache.get("people_in_view", set()))
         emotion = shared_optical_cache.get("dominant_emotion", "neutral")
