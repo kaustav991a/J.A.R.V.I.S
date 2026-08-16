@@ -1753,3 +1753,216 @@ the empty-transcript branch always logs.
 
 **Left alone deliberately:** `USE_LOCAL_STT` stays `False`. Cloud remains the primary because it
 is markedly better on this owner's speech; the local model is the parachute, not the wing.
+
+---
+
+# SESSION 3 — 2026-08-16, evening. Row `4.1`, fourth attempt.
+
+Backend launched by Claude (`watchdog.py` under the venv, stdout captured), so this session has a
+complete machine-read log rather than a reconstruction. Camera off; `JARVIS_AUTO_LOCK=0`.
+
+**Row `4.1` result: FAIL — and this is the worst failure the gate has produced, because the owner
+was told it succeeded.** He reported *"it said saved, also telling me what is written in it."*
+Nothing was written. No `add.py` exists on the Desktop, in Documents, at `F:\work`, or anywhere
+else that was checked.
+
+## What is now PROVEN GOOD — two findings close here
+
+The authorisation prompt was exactly right:
+
+```
+[GOVERNANCE] action='workspace_write' -> tier=CONFIRM
+[JARVIS] Authorisation required, Sir. I would like to execute 'workspace_write' — writing
+         6 lines to C:\Users\KINGSHUK\OneDrive\Desktop\add.py. Do you authorise this action?
+```
+
+- **F-22 CLOSED.** The Desktop root survives OneDrive redirection. Verified twice: offline
+  against `_resolve_within_roots` (`desktop/add.py` → `C:\Users\KINGSHUK\OneDrive\Desktop\add.py`)
+  and live in the prompt above.
+- **F-29 CLOSED.** The prompt discloses the action, the path, and the size before asking.
+- **F-35's re-ask worked**, on its first live outing: an unintelligible answer got the question
+  again rather than silence.
+
+## F-39 — 🟠 MEDIUM-HIGH · An empty key in `.env` silently erases what the operator set on the command line
+
+`main.py:31` is `load_dotenv(override=True)`. `.env:32` is `WATCHDOG_TOKEN=` — present, empty.
+Measured, with the documented start block from `RESUME.md`:
+
+```
+WATCHDOG_TOKEN      cmdline='gate2'     -> after .env override=''
+JARVIS_UNLOCK_CODE  cmdline='jarvisout' -> after .env override='itsadmin'
+JARVIS_AUTO_LOCK    cmdline='0'         -> after .env override='0'   (survives — commented out in .env)
+```
+
+`override=True` is deliberate and mostly right: `.env` is the source of truth. But a key that is
+**present and empty** in `.env` overwrites a deliberate command-line value with nothing, and says
+so nowhere. The start block this project documents for its own live gate is therefore partly a
+placebo — two of its three exports do not reach the server.
+
+The F-25 mitigation happened to survive only because `JARVIS_AUTO_LOCK` is *commented out* rather
+than *present and blank*. That is luck, not design.
+
+**Fix:** treat a blank value in `.env` as absent, not as an override — or log every key whose
+command-line value `.env` replaces. Anything the operator sets and does not get should be loud.
+
+## F-40 — 🔴 CRITICAL · An unmatched answer to a live authorisation is dispatched as a new command
+
+`main.py:3332`:
+
+```python
+if _DESK_PENDING["cid"] is not None:
+    _is_approval = any(w in _gov_lower for w in _APPROVAL_WORDS)
+    _is_denial   = any(w in _gov_lower for w in _DENIAL_WORDS)
+    if (_is_approval or _is_denial) and _looks_short and _no_cmd_words:
+        ...consume or cancel, then continue
+    # ← NO ELSE. Execution falls through to the ordinary command path.
+```
+
+The owner answered the prompt. STT returned **`'ahead go'`** — a routine word-order scramble of
+"go ahead". Nothing matched, there is no else, so the answer to a pending authorisation was
+handed to the brain **as a fresh instruction**, while the pending slot stayed armed.
+
+From that moment there were two conversations running over one slot: the governance question,
+still open, and a brand-new turn that had no idea a question was outstanding.
+
+**The invariant this breaks:** while an authorisation is pending, the next utterance is an ANSWER.
+It is approve, deny, or unintelligible — and unintelligible already has correct handling four
+lines up (F-35's re-ask). "Unmatched" must route there, not to the brain.
+
+## F-41 — 🔴 CRITICAL · The model narrated a write it never performed, and the owner believed it
+
+Having been handed `'ahead go'` as a fresh command with no intent classification available
+(see F-44), the brain answered in prose:
+
+```
+[JARVIS] Here's a simple Python script that implements an ADD function and saves it to the
+         desktop as add.py:
+
+         # add.py
+         def add(num1, num2):
+             return num1 + num2
+         ...
+```
+
+No action was emitted. No file was written. The owner heard a description of a completed save
+plus the file's contents, and reported it as a success. Meanwhile:
+
+```
+[GOVERNANCE] [EXPIRED] Pending confirmation expired (id=6c2cc3b5…).
+[GOVERNANCE] F-35: pending confirmation cancelled — the session went to standby unanswered.
+```
+
+**This is F-30's principle at its worst hour: governance can only gate what becomes an action, and
+this never became one.** The safety system behaved perfectly — it pended, it disclosed, it
+expired unanswered, it refused to execute. And the owner still walked away believing a file had
+been written to his desktop, because a different subsystem told him so in fluent English.
+
+F-28 was a refusal reported as a success. This is *no attempt at all* reported as a success, and
+it displaced a real pending action to do it.
+
+## F-42 — 🟠 MEDIUM-HIGH · The confirm vocabulary is phrase-ordered; real speech is not
+
+`main.py:300` holds multi-word entries — `"go ahead"`, `"do it"`, `"never mind"` — matched by
+substring: `any(w in _low for w in _APPROVAL_WORDS)`. `"go ahead" in "ahead go"` is `False`.
+
+STT scrambles word order constantly; this gate has already seen "my name is ‖ Kaustav" cut in half
+(F-23) and "add dot pie" become "a d d p y" (F-34). `'ahead go'` is a completely ordinary
+transcription of what the owner said. A token-SET test matches it; a substring test cannot.
+
+`RESUME.md` also tells the operator to say **"go ahead", never "yes"** — because a single syllable
+kept failing to transcribe. So the documented answer to every confirmation in this gate is the one
+phrase whose matching is order-dependent.
+
+Note also `_no_cmd_words`: an approval containing any of `_jarvis_command_words` is rejected, so
+*"yes, write it"* would not confirm a write.
+
+## F-43 — 🟠 MEDIUM · Expiry told the console, not the owner
+
+`main.py:3296` speaks *"The authorisation request has lapsed, Sir. Nothing was done."* — but only
+on the `TIMEOUT` branch. This expiry went through the governance TTL instead, which prints and
+says nothing. The one sentence that would have corrected the owner's false belief exists in the
+code and did not fire on this path.
+
+## F-44 — 🔴 HIGH · `gemini-flash-latest` now resolves to a 20-request-per-day thinking model, and the classifier fails silently into it
+
+Straight from the router's own output:
+
+```
+* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests,
+  limit: 20, model: gemini-3.7-flash
+  quota_id: "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+[ROUTER] Gemini key #5/5 REVOKED by the provider — dropped for this process.
+[ROUTER] Every live Gemini key is quota-limited — the leg is shared-bucket, not per-key.
+```
+
+Three standing "owed by hand" notes confirmed in one log: the evergreen alias moved the model
+(**20 requests per DAY**, not 20 per minute), the four live keys share one bucket, and key #5 is
+revoked. The router already prints the shared-bucket conclusion itself.
+
+The first casualty is `classify_intent` (`brain.py:898`, `max_tokens=140`). Its very first attempt
+of the evening:
+
+```
+[BRAIN] Intent classification JSON decode error: Expecting property name enclosed in double
+        quotes: line 1 column 2 (char 1)
+[BRAIN] Persona Matrix -> MODULE: GENERAL | ...
+```
+
+`line 1 column 2 (char 1)` is a bare `{` and nothing after it. The briefing call in the same
+session returned `finish_reason is 2` (MAX_TOKENS). A thinking model spends the output budget on
+thinking; 140 tokens does not survive it.
+
+**And the fallback is invisible** — this is F-24, which was filed 🔵 LOW as "recovered, no harm on
+this turn". Tonight it had harm: `MODULE: GENERAL` never reaches the action engine, so the very
+first `4.1` attempt was dropped in full and answered with an unrelated night-mode nudge. **F-24 is
+upgraded to 🔴**: a classifier that fails into "chat" turns every instruction into conversation,
+and nothing anywhere says the classification did not happen.
+
+## Row verdicts — session 3
+
+| Row | Verdict |
+|---|---|
+| `4.1` | **FAIL** (4th distinct cause). Prompt correct, answer misrouted, nothing written, success narrated |
+| — | F-22 **CLOSED**, F-29 **CLOSED**, F-35 re-ask **CONFIRMED WORKING** |
+
+## The pattern, stated plainly
+
+Every session of this gate has found the same shape, and tonight it appeared twice in ninety
+seconds: **a failure the owner cannot distinguish from success.** F-38 was a deaf system that
+looked like an ignoring one. F-28 was a refusal that sounded like a save. F-41 is nothing at all
+that sounded like a save — and it reached him through the one channel governance does not gate,
+because prose is not an action.
+
+## F-37 — half CLOSED, half CONFIRMED OPEN, on a second `4.1` attempt the same evening
+
+A later attempt in the same session classified correctly (`MODULE: PC_OP`, on the escalation
+provider once Gemini was fully spent) and produced this:
+
+```
+[ACTION ENGINE] pre-flight refusal for 'workspace_write':
+                Format: 'filepath|file content'. Pipe separates path from content.
+[JARVIS] I couldn't act on that, Sir — the write instruction reached me malformed,
+         so nothing was written.
+```
+
+**Both halves of the `e3e9d53` fix are proven on hardware:**
+
+- The pre-flight guard caught a payload that carried the CONTRACT instead of a path, refused it,
+  and wrote nothing. No `F:\work\filepath` litter was created this time.
+- The voice sanitiser held the line: `Format: 'filepath|file content'` stayed in the console and
+  never reached TTS. The spoken sentence is plain English and honest about the outcome.
+
+**And the open half is confirmed, exactly as `RESUME.md` predicted it would be:** the model still
+emits the contract text into the payload. The guard is doing its job because the prompt is not.
+`brain.py:164`/`:384` already spell out that the angle brackets are a slot and that writing the
+literal words creates a file with that name — and the model does it anyway.
+
+This is a prompt-engineering problem on a model that is not Gemini (the Gemini leg was exhausted
+by then), so the instruction needs to survive a weaker model, not just the strong one. Track it as
+**F-37b**.
+
+## What session 3 changes about the running order
+
+`4.1` cannot pass until **F-40** and **F-42** are fixed: every attempt that reaches the
+authorisation prompt now dies at the answer, and rows `1`, `2`, `4`, `7` and `10` all end in a
+CONFIRM. Fix those two first, then re-run the row from the top.
