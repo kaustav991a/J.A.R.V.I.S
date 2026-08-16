@@ -75,12 +75,20 @@ def _title_for(payload: dict, goal: str) -> str:
 async def park_for_approval(payload: dict, *, goal: str, question: str = "",
                             queue: Any | None = None,
                             notify: Callable[..., Any] | None = None,
+                            arguments: dict | None = None,
                             user: str = "KAUSTAV") -> ParkedTask:
     """Persist one action for later authorisation and tell the owner about it.
 
     `payload` is an `action_engine` payload — the same `{"action_type","target"}`
     shape the worker executes — so an approval runs the exact call the model made,
     not a paraphrase of it.
+
+    `arguments` are the model's OWN arguments, read back verbatim in the ping.
+    `question` is capped at 120 characters — for a `gmail_send` that is the
+    recipient and about forty characters of the body — and the away path's only
+    delivery is this sentence. Finding 15 put the full arguments on the HUD
+    frame; the phone, which is the whole point of parking, still got the
+    headline. (C1's neighbour, 2026-08-16.)
     """
     if queue is None:
         from modules import task_queue as queue
@@ -97,9 +105,16 @@ async def park_for_approval(payload: dict, *, goal: str, question: str = "",
     await asyncio.to_thread(queue.mark_reported, tid)
 
     short = tid[:8]
+    detail = ""
+    try:
+        from modules import agent_confirm
+        detail = agent_confirm.arguments_text(arguments)
+    except Exception as e:  # noqa: BLE001 — a read-back must not lose the park
+        print(f"[AGENT_YIELD] argument read-back failed: {e}", flush=True)
     message = (
         f"I need your authorisation to finish that, Sir. {question or note} "
-        f"Say 'approve task {short}' and I'll run it, or 'deny task {short}' to "
+        + (f"\n\nWhat it will do, verbatim:\n{detail}\n\n" if detail else "")
+        + f"Say 'approve task {short}' and I'll run it, or 'deny task {short}' to "
         f"drop it."
     )
     delivered: dict = {}

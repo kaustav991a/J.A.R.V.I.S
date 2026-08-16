@@ -445,7 +445,11 @@ def make_away_authorizer(registry, send, goal: str, *, parked: list,
         target = str(payload.get("target", ""))
         question = agent_confirm.question_for(entry.action_type, target)
         park = await agent_yield.park_for_approval(
-            payload, goal=goal, question=question, queue=queue, notify=notify)
+            payload, goal=goal, question=question, queue=queue, notify=notify,
+            # The frame below carries these too, but the away owner is not
+            # looking at a HUD — that is what "away" means. The ping itself has
+            # to hold what he is approving.
+            arguments=call.arguments)
         parked.append(park)
         notes.append(park.message)
         await send({

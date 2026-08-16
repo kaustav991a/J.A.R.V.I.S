@@ -212,6 +212,30 @@ def describe_arguments(arguments: dict | None, limit: int = FIELD_PREVIEW) -> li
     return rows
 
 
+def arguments_text(arguments: dict | None, limit: int = FIELD_PREVIEW) -> str:
+    """`describe_arguments`, rendered for a channel that cannot draw rows.
+
+    Finding 15 gave the HUD frame the model's real arguments. The AWAY path —
+    the one that exists precisely because the owner is not at the HUD — carried
+    them on a frame he is not looking at, while the sentence that reached his
+    phone still held only the 120-character headline. So the phone approval was
+    still the half-control finding 15 describes, one door over (C1's neighbour,
+    2026-08-16).
+
+    Built from `describe_arguments` rather than beside it: one cap, one set of
+    labels, one place to change them.
+    """
+    rows = describe_arguments(arguments, limit)
+    if not rows:
+        return ""
+    lines = []
+    for row in rows:
+        suffix = (f" (+{row['full_length'] - limit} more characters)"
+                  if row["truncated"] else "")
+        lines.append(f"{row['label']}: {row['value']}{suffix}")
+    return "\n".join(lines)
+
+
 def json_ish(value: Any) -> str:
     """A non-string argument as something a person can read."""
     import json

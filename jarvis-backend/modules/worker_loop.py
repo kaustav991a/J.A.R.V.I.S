@@ -18,6 +18,17 @@ DESIGN GUARANTEES
    CONFIRM/BLOCK actions are never run unattended — they're recorded and surfaced so
    the user can authorise them interactively. This never touches the governance
    pending slot, so a background task can't hijack a voice/HUD confirmation.
+2b. AN APPROVAL IS FOR ONE STEP, AND IT NAMES WHAT IT AUTHORISES (finding C1).
+   Two halves, and both were missing. The ping used to say only the goal TITLE —
+   so "/task tell mousumi I'm running late" produced "the task you queued needs
+   your authorisation, Sir: <title>", one "approve task ab12cd34" sent an
+   LLM-authored message from his account, and **neither the recipient nor the
+   body was ever shown to him**. `main._partner_confirm_text`, the verbatim
+   read-back whose docstring says "a summary of them is not consent", was wired
+   only into the interactive path. And `approved` is a per-TASK flag, so that one
+   approval also authorised every later CONFIRM step in the same plan. The pause
+   now quotes exactly what will happen, and the authorisation covers the single
+   step it paused on — the rest re-pause and re-ask.
 3. NON-BLOCKING. All SQLite access is offloaded via asyncio.to_thread.
 4. RESULT SURFACING. If the user is actively engaged (SYSTEM_ONLINE) when a task
    finishes, J.A.R.V.I.S. announces it immediately. Otherwise the result is left
@@ -96,8 +107,13 @@ class OvernightWorker:
         actions = task.get("actions") or []
         print(f"[WORKER] >> Task {tid}: '{title}' ({len(actions)} action(s))", flush=True)
 
-        # Phase 4 item 5: the owner said "approve task <id>" → this task's
-        # CONFIRM-tier steps are authorised to run unattended (BLOCK never is).
+        # Phase 4 item 5: the owner said "approve task <id>" → the step this task
+        # PAUSED ON is authorised to run unattended (BLOCK never is).
+        #
+        # C1: that authorisation reaches step 0 and no further. The pause
+        # persists `actions[paused_at:]`, so on a resume the approved step IS
+        # actions[0]; anything CONFIRM-tier after it is a step he was never
+        # shown, and it pauses again on its own terms.
         approved = bool(task.get("approved"))
 
         try:
@@ -117,7 +133,7 @@ class OvernightWorker:
                 if tier == "AUTO" and atype in self._UNATTENDED_CONFIRM:
                     tier = "CONFIRM"
 
-                if tier == "CONFIRM" and not approved:
+                if tier == "CONFIRM" and not (approved and i == 0):
                     # Phase 4 item 5: STOP here — running later steps around a
                     # skipped one would execute the plan out of order. The
                     # remaining steps are persisted so an approval resumes
@@ -159,14 +175,20 @@ class OvernightWorker:
             if needs_confirm:
                 remaining = actions[paused_at:] if paused_at is not None else []
                 await asyncio.to_thread(task_queue.set_remaining_actions, tid, remaining)
+                # C1: an approval authorises one step. Whatever was granted for
+                # the step just executed does not carry into this one.
+                await asyncio.to_thread(task_queue.clear_approval, tid)
                 await asyncio.to_thread(task_queue.mark_needs_confirmation, tid, summary)
                 short = tid[:8]
+                detail = self._confirm_detail(remaining[0] if remaining else None)
                 await self._announce(
                     tid,
-                    f"The task you queued needs your authorisation, Sir: {title}. "
-                    f"Say 'approve task {short}' and I'll finish it, or "
+                    f"The task you queued needs your authorisation, Sir: {title}.\n\n"
+                    f"{detail}\n\n"
+                    f"Say 'approve task {short}' and I'll do exactly that, or "
                     f"'deny task {short}' to drop it.",
-                    {"status": "task_needs_confirmation", "task_id": tid, "title": title, "result": summary},
+                    {"status": "task_needs_confirmation", "task_id": tid, "title": title,
+                     "result": summary, "confirm_detail": detail},
                 )
             elif blocked and not any("step" in r and "blocked" not in r for r in results):
                 # Every step was blocked → treat as failed-by-policy.
@@ -194,6 +216,52 @@ class OvernightWorker:
                 await self._notify({"status": "task_failed", "task_id": tid, "title": title})
             except Exception:
                 pass
+
+    # -----------------------------------------------------------------------
+    # What is actually being authorised (finding C1)
+    # -----------------------------------------------------------------------
+    #: Non-partner targets are elided at this length, with a count of what is
+    #: hidden — the same shape finding 15 gave the desk's CONFIRM frame. A
+    #: partner send is NEVER elided: those exact words are the thing he is
+    #: approving.
+    _DETAIL_CAP = 600
+
+    @staticmethod
+    def _confirm_detail(action) -> str:
+        """One line the owner can act on, naming the step and its argument.
+
+        The old ping named only the goal title, which for a partner send meant
+        approving a recipient and a body he had never seen. Governance approves
+        an action by TYPE and never inspects the ARGUMENT — so if the human
+        approval is the control, the human has to be shown the argument.
+        """
+        if not isinstance(action, dict):
+            return "I could not read the step that is waiting — check the task before approving it."
+        atype = str(action.get("action_type", "")).strip() or "unknown"
+        target = action.get("target")
+        target = "" if target is None else str(target)
+
+        if atype == "message_partner":
+            # The verbatim read-back, from the module that owns it — the same
+            # text the interactive path shows. A failure here must NOT quietly
+            # degrade to "[message_partner]": fall through to the raw target,
+            # which still carries the recipient and the exact words.
+            try:
+                from modules import partner_messaging, partner_registry
+                name, body = partner_messaging.parse_target(target)
+                res = partner_registry.resolve(name)
+                display = res.display_name or name or "them"
+                return partner_messaging.read_back(display, body, "Sir")
+            except Exception as e:  # noqa: BLE001
+                print(f"[WORKER] partner read-back failed, quoting raw: {e}", flush=True)
+
+        if not target:
+            return f"The step waiting on you is [{atype}], with no argument."
+        shown = target
+        if len(shown) > OvernightWorker._DETAIL_CAP:
+            hidden = len(shown) - OvernightWorker._DETAIL_CAP
+            shown = shown[:OvernightWorker._DETAIL_CAP] + f"… (+{hidden} more characters)"
+        return f"The step waiting on you is [{atype}]:\n\n“{shown}”"
 
     # -----------------------------------------------------------------------
     # §1.1b — LLM self-correction

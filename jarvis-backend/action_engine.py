@@ -824,8 +824,17 @@ class ActionEngine:
             return await self._telegram_send_file(target)
         # ── Partner messaging: owner-approved send + owner-only pull ──────────
         elif action == "message_partner":
-            # governance_bypass is set only by main.py's post-approval re-invoke,
-            # so it is the one honest signal that THIS staging was authorised.
+            # governance_bypass means an owner approval happened, and there are
+            # exactly TWO callers that set it: main.py's post-confirmation
+            # re-invoke, and worker_loop resuming a task the owner approved.
+            #
+            # ⚠️ Until review finding C1 (2026-08-16) this comment claimed only
+            # the first, and the second was the hole: the worker's approval ping
+            # named the goal TITLE and never the recipient or the body, so
+            # "approve task ab12cd34" sent words he had never read. Both callers
+            # now read the message back verbatim before asking, so this really
+            # is the honest signal it says it is — but it is honest because of
+            # what THEY do, not because of anything checked here.
             return await self._message_partner(target, approved=governance_bypass)
         elif action == "summarize_partner_chat":
             return await asyncio.to_thread(self._summarize_partner_chat, target)

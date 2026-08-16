@@ -379,6 +379,12 @@ def test_resolve_has_no_callers_outside_the_partner_path():
     enforces that distinction, so this list staying short keeps meaning what it
     was written to mean — resolve() picks a RECIPIENT, and every new caller has
     to be looked at.
+
+    `worker_loop.py` was added 2026-08-16 (review finding C1). It is a DISPLAY
+    caller: it resolves a name only to say it back to the owner in the
+    authorisation ping — "I am ready to send this to Mousumi, verbatim: …" — for
+    a send the ENGINE will perform from the target, not from this resolution.
+    The check below pins that it never grew a transport of its own.
     """
     root = pathlib.Path(__file__).resolve().parent
     callers = set()
@@ -387,8 +393,24 @@ def test_resolve_has_no_callers_outside_the_partner_path():
             continue
         if "partner_registry.resolve(" in p.read_text(encoding="utf-8"):
             callers.add(p.name)
-    assert callers == {"action_engine.py", "main.py", "partner_contact.py"}, \
+    assert callers == {"action_engine.py", "main.py", "partner_contact.py",
+                       "worker_loop.py"}, \
         f"partner_registry.resolve() gained a caller: {sorted(callers)}"
+
+
+def test_the_worker_resolves_a_name_only_to_show_it():
+    """C1's read-back must not become a second send path.
+
+    The worker resumes an approved `message_partner` by handing the payload to
+    the ENGINE, which resolves the recipient itself. The name it resolves here
+    is for the sentence it shows the owner, and nothing else — so a transport
+    appearing in this file is a second road to a real person's phone.
+    """
+    src = (pathlib.Path(__file__).resolve().parent / "modules"
+           / "worker_loop.py").read_text(encoding="utf-8")
+    for forbidden in ("telegram_bot", "send_text_to_partner", "partner_id"):
+        assert forbidden not in src, \
+            f"the worker's read-back reached for {forbidden!r} — it must not send"
 
 
 def test_the_butler_read_path_cannot_reach_the_send_transport():

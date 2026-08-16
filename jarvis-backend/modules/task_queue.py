@@ -206,6 +206,23 @@ def set_remaining_actions(tid: str, actions: list[dict]) -> None:
         conn.close()
 
 
+def clear_approval(tid: str) -> None:
+    """Withdraw a task's authorisation. Called whenever the worker pauses.
+
+    Review finding C1: `approved` is per-TASK, so one "approve task ab12cd34"
+    used to authorise every LATER CONFIRM step in the same plan — steps the
+    owner was never shown. The worker now honours an approval for the single
+    step it paused on, and clears it again the moment it pauses on the next one,
+    so the flag can never outlive the thing it was granted for.
+    """
+    conn = _connect()
+    try:
+        conn.execute("UPDATE tasks SET approved = 0 WHERE id = ?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def approve_task(tid: str) -> bool:
     """Phase 4 item 5: owner authorised a paused task's CONFIRM-tier steps.
     Flips needs_confirmation → pending with approved=1 and resets the attempt

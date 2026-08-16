@@ -172,16 +172,26 @@ def refusal_text(reason: str, display_name: str = "them") -> str:
     return f"I won't send that message to {display_name}, Sir."
 
 
-def confirm_prompt(display_name: str, body: str, honorific: str = "Sir") -> str:
-    """The read-back. Names the resolved recipient and quotes the WHOLE message.
+def read_back(display_name: str, body: str, honorific: str = "Sir") -> str:
+    """Names the resolved recipient and quotes the WHOLE message. No instruction.
 
     Deliberately unabbreviated: the owner is authorising these exact words
     leaving his account, so a summary of them is not consent.
+
+    Split out from `confirm_prompt` for review finding C1. The interactive path
+    ends with "say 'confirm'"; a send parked in the task queue is resumed with
+    "approve task <id>" instead — different sentence, SAME read-back. Two copies
+    of this text would be two things to keep true.
     """
     text = normalise_body(body)
     return (f"Authorisation required, {honorific}. I am ready to send this to "
-            f"{display_name}, verbatim:\n\n“{text}”\n\n"
-            "Say 'confirm' to send it, or 'cancel' to drop it.")
+            f"{display_name}, verbatim:\n\n“{text}”")
+
+
+def confirm_prompt(display_name: str, body: str, honorific: str = "Sir") -> str:
+    """The interactive read-back: `read_back` plus how to answer it."""
+    return (read_back(display_name, body, honorific)
+            + "\n\nSay 'confirm' to send it, or 'cancel' to drop it.")
 
 
 def format_history(rows: list, display_name: str, disclosure: str) -> str:
