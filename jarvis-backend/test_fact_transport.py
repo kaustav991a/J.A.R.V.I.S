@@ -374,23 +374,114 @@ def test_a_quarantined_record_is_ledgered_so_a_replay_is_cheap():
     assert fs.quarantine_count() == 1, "the same poison record was quarantined twice"
 
 
-def test_a_record_the_desk_never_acks_is_dead_lettered():
-    """task_queue.MAX_ATTEMPTS, borrowed: something unackable must not wedge the
-    queue behind it forever."""
+def test_a_record_the_desk_keeps_HOLDING_is_never_dropped():
+    """Review finding M2. This test used to assert the opposite.
+
+    Four unacked offers used to dead-letter the record and REMOVE it with no
+    copy kept. But `fact_drain` acks every verdict it reaches — opened,
+    duplicate, quarantined, sink-refused — so a record only comes back unacked
+    when the desk HELD it: a locked key store, a faulting sink. That is the one
+    state the queue exists to survive.
+    """
     _reset()
     link = FakeLink()
     asyncio.run(_connect(link))
     link.up = False
-    fo.queue_fact("nobody will ever ack me")
+    fo.queue_fact("the desk cannot unwrap its key store today")
     link.up = True
 
-    for _ in range(fo.MAX_ATTEMPTS):
+    for _ in range(fo.OFFER_WARN_AT * 3):
         asyncio.run(fo.flush(link.cloud_send))
-        link.take_to_desk()               # delivered, never acked
-    assert fo.depth() == 1
+        link.take_to_desk()               # delivered, held, never acked
+    assert fo.depth() == 1, "a held record was dropped — this is M2"
+    assert fo.stats()["dead_lettered"] == 0
+    assert fo.stats()["max_offers"] >= fo.OFFER_WARN_AT, \
+        "the offer count is still tracked, it just no longer kills anything"
+
+    # And it is intact, not merely present: the desk recovers, and the fact
+    # lands in real memory.
     asyncio.run(fo.flush(link.cloud_send))
-    assert fo.depth() == 0
+    frames = [f for f in link.take_to_desk() if f["type"] == "facts"]
+    result = fd.drain_records(frames[-1]["records"])
+    assert result["stored"] == 1, f"the held fact did not survive: {result}"
+
+
+def test_an_extractor_FAILURE_holds_the_record_instead_of_acking_it():
+    """Review finding M1, end to end — the same fact dying twice with M2.
+
+    The extractor reported a rate limit by returning `[]`, which is also how it
+    says "this turn had no fact in it". `governed_write` turned that into False,
+    the drain read False as a VERDICT — ledger STORED, ack — and the cloud
+    dropped the sealed original permanently. Nothing was written and the log
+    said `0 new, N already known`.
+
+    Driven through the REAL drain with a sink that fails the way a 429 does.
+    """
+    def _rate_limited(payload):
+        raise mm.ExtractionFailedError("429 across every rotation key")
+
+    _reset(sink=_rate_limited)
+    link = FakeLink()
+    asyncio.run(_connect(link))
+    link.up = False
+    fo.queue_fact("I moved to Kolkata in March")
+    link.up = True
+
+    asyncio.run(fo.flush(link.cloud_send))
+    frames = [f for f in link.take_to_desk() if f["type"] == "facts"]
+    result = fd.drain_records(frames[-1]["records"])
+
+    assert result["held"] == 1, f"a failed extraction was not HELD: {result}"
+    assert result["ack"] == [], "the record was acked despite nothing being written"
+    assert result["stored"] == 0 and result["duplicates"] == 0, \
+        f"a failure was counted as a verdict: {result}"
+    assert fd.ledger_count() == 0, \
+        "the ledger recorded a fact that was never stored — a redelivery is now skipped"
+    assert fs.quarantine_count() == 0, "a transient failure quarantined a good record"
+    assert fo.depth() == 1, "the cloud dropped the sealed original"
+
+    # The extractor recovers, the desk reconnects, and the fact lands.
+    fd.set_sink(_memory_sink)
+    asyncio.run(fo.flush(link.cloud_send))
+    frames = [f for f in link.take_to_desk() if f["type"] == "facts"]
+    again = fd.drain_records(frames[-1]["records"])
+    assert again["stored"] == 1, f"the held fact never arrived: {again}"
+    assert _memory_rows() == 1
+
+
+def test_a_record_the_desk_could_never_ACK_is_dead_lettered_with_a_copy():
+    """The genuinely undeliverable shape — and the only one.
+
+    `fact_drain` acks by id, including records it quarantines, so an envelope
+    with no usable id is kept by the desk and named by nobody: the cloud would
+    re-offer it on every connect forever. It is recognised up front now, not
+    after four blind attempts — and the ciphertext is KEPT, because a queue that
+    quietly empties itself looks exactly like success.
+    """
+    _reset()
+    link = FakeLink()
+    asyncio.run(_connect(link))
+    link.up = False
+    fo.queue_fact("this one is fine")
+    link.up = True
+
+    before = fs.quarantine_count()
+    # What a torn spill file recovers as: an envelope with no id.
+    fo._outbox.append({"envelope": {"v": 1, "sealed": "abc"}, "attempts": 0})
+    assert fo.depth() == 2
+
+    asyncio.run(fo.flush(link.cloud_send))
+    assert fo.depth() == 1, "the undeliverable record was not removed"
     assert fo.stats()["dead_lettered"] == 1
+    assert fs.quarantine_count() == before + 1, \
+        "the sealed record was dropped without a copy being kept"
+
+    # The good record beside it was neither dropped nor delayed.
+    frames = [f for f in link.take_to_desk() if f["type"] == "facts"]
+    ids = [r["id"] for f in frames for r in f["records"]]
+    assert len(ids) == 1, f"the healthy record did not go out: {ids}"
+
+
 
 
 # ── 4. ordering and a mid-batch drop ────────────────────────────────────────
@@ -521,6 +612,7 @@ def test_a_locked_key_store_acks_nothing_and_leaves_the_backlog():
 def test_the_outbox_cap_is_announced_not_silent():
     _reset()
     asyncio.run(_connect(FakeLink()))
+    before = fs.quarantine_count()
     fo.MAX_OUTBOX, real = 5, fo.MAX_OUTBOX
     try:
         _queue(7, "capped")
@@ -528,6 +620,10 @@ def test_the_outbox_cap_is_announced_not_silent():
         assert fo.stats()["dropped_overflow"] == 2
     finally:
         fo.MAX_OUTBOX = real
+    # M2's sibling: announcing a drop is not the same as keeping it. The
+    # envelope is ciphertext, so the copy costs disk and nothing else.
+    assert fs.quarantine_count() == before + 2, \
+        "an evicted record left no copy behind — the queue emptied itself silently"
 
 
 # ── 6. the wiring is real, not just the modules ─────────────────────────────

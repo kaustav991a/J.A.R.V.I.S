@@ -14,6 +14,12 @@ and whatever it did not ack is still here, still first in line, for the next
 connect. Redelivery is therefore normal and expected — the desk's ledger, not
 this module, is what makes it harmless.
 
+**Nothing leaves this queue unacked without a copy being kept** (review finding
+M2). Redelivery is unlimited on purpose: a record comes back unacked only when
+the desk HELD it, and a hold must cost a retry rather than a fact. The two
+places that do discard — an envelope the desk could never name in an ack, and
+an overflow eviction — spill the ciphertext to `fact_seal.quarantine` first.
+
 Runs on Render, so the import discipline from fact_seal applies here too:
 stdlib + fact_seal (pynacl) only. `cloud_gateway.py` deliberately imports
 nothing from `modules/`; this and `fact_seal` are the first two, and both are
@@ -52,10 +58,29 @@ MAX_OUTBOX = 500
 # a sealed turn is ~1KB, so 25 leaves an order of magnitude of headroom.
 BATCH = 25
 
-# Same discipline as task_queue.MAX_ATTEMPTS: a record the desk will never ack
-# (corrupt beyond having a usable id) must not be redelivered forever and wedge
-# the queue behind it.
-MAX_ATTEMPTS = 3
+# ⚠️ Review finding M2, 2026-08-16. This used to be `MAX_ATTEMPTS = 3`, and
+# `flush` counted an attempt per OFFER: four reconnects and the record was
+# dead-lettered and REMOVED, with no copy kept.
+#
+# The case that produces four unacked offers is not a poison record. It is a
+# desk that cannot unwrap its key store (a rebuilt Windows profile →
+# `MemoryLockedError` out of `fact_drain`), or a sink faulting transiently. Read
+# `fact_drain.drain_records`: EVERY verdict it reaches — opened, duplicate,
+# quarantined, sink-refused — is acked. **A record comes back unacked only when
+# the desk HELD it**, and holding is the one state that must cost a retry rather
+# than a fact. `fact_drain`'s own docstring says so, and `fact_seal.quarantine`
+# deliberately keeps poison records because "a queue that quietly empties itself
+# looks exactly like success".
+#
+# So an offer count is not evidence of anything, and nothing is dropped for
+# reaching one. The genuinely un-ackable record — an envelope with no usable id,
+# which the desk quarantines but cannot name in an ack — is now recognised for
+# what it is, up front, and dead-lettered WITH the ciphertext kept.
+#
+# The wedging risk the old cap was written against does not exist here: `flush`
+# sends every queued item in chunks, so an unacked record never blocks the ones
+# behind it, and MAX_OUTBOX already bounds growth.
+OFFER_WARN_AT = 5
 
 _outbox: deque = deque()          # items: {"envelope": {...}, "attempts": int}
 _desk_public: Optional[str] = None
@@ -168,9 +193,15 @@ def queue_fact(user_text: str, who: str = "KAUSTAV", tier=None,
         global _dropped_overflow
         dropped = _outbox.popleft()
         _dropped_overflow += 1
-        print(f"[OUTBOX] ⚠ outbox full at {MAX_OUTBOX} — dropped the OLDEST record "
+        # M2's sibling: this is the other place the queue used to empty itself
+        # with nothing kept. The envelope is ciphertext, so keeping it costs
+        # only disk and it can still be drained by hand.
+        _keep_a_copy(dropped["envelope"],
+                     f"outbox overflow at {MAX_OUTBOX} — oldest evicted")
+        print(f"[OUTBOX] ⚠ outbox full at {MAX_OUTBOX} — evicted the OLDEST record "
               f"{dropped['envelope'].get('id')} to make room "
-              f"({_dropped_overflow} lost this way).", flush=True)
+              f"({_dropped_overflow} so far; each one is kept in "
+              f"{fact_seal.QUARANTINE_DIR.name}/).", flush=True)
 
     _outbox.append({"envelope": envelope, "attempts": 0})
     _persist()
@@ -209,6 +240,50 @@ def ack(ids) -> int:
     return removed
 
 
+# ── dead-lettering (M2) ─────────────────────────────────────────────────────
+
+def _unackable_reason(envelope) -> Optional[str]:
+    """Why the desk could never ack this record, or None if it could.
+
+    `fact_drain` acks by id — including the records it quarantines, precisely so
+    one poison envelope cannot be offered forever. A record with no usable id
+    falls out of that: the desk keeps it, cannot name it, and the cloud re-offers
+    it on every connect. That is the ONLY genuinely undeliverable shape, and it
+    can only come from a torn spill file, since `fact_seal.new_fact` always mints
+    an id.
+    """
+    if not isinstance(envelope, dict):
+        return "not a record"
+    ident = envelope.get("id")
+    if not isinstance(ident, str) or not ident.strip():
+        return "no usable id — the desk cannot name it in an ack"
+    return None
+
+
+def _keep_a_copy(envelope, reason: str) -> None:
+    """Never drop a sealed record without leaving the ciphertext behind.
+
+    Same discipline, and the same store, as `fact_seal.quarantine` on the desk
+    side: one place to look for everything a queue decided it could not carry.
+    """
+    try:
+        fact_seal.quarantine(envelope, reason)
+    except Exception as exc:  # noqa: BLE001
+        # Losing the FILE must not lose the SIGNAL, and must never take the
+        # gateway down on the path that is about to answer him.
+        print(f"[OUTBOX] ⛔ could not keep a copy of a dropped record: {exc}", flush=True)
+
+
+def _drop(items) -> None:
+    """Remove specific queue entries by identity — ack() cannot, it works by id
+    and these are exactly the records that have no usable one."""
+    doomed = {id(i) for i in items}
+    kept = [i for i in _outbox if id(i) not in doomed]
+    _outbox.clear()
+    _outbox.extend(kept)
+    _persist()
+
+
 # ── delivery ────────────────────────────────────────────────────────────────
 
 async def flush(send: Callable[[dict], Awaitable[None]], batch: int = BATCH) -> int:
@@ -221,18 +296,30 @@ async def flush(send: Callable[[dict], Awaitable[None]], batch: int = BATCH) -> 
     if not _outbox:
         return 0
 
-    # Dead-letter first: a record that has been offered MAX_ATTEMPTS times and
-    # never acked is not going to start working now.
+    # Dead-letter first — but only what can NEVER be acked, which is a property
+    # of the record, not of how many times it has been offered. See M2 above:
+    # counting offers dead-lettered the backlog of a desk that was holding.
     global _dead_lettered
-    poison = [item for item in _outbox if item["attempts"] >= MAX_ATTEMPTS]
+    poison = [item for item in _outbox if _unackable_reason(item["envelope"])]
     if poison:
         for item in poison:
-            print(f"[OUTBOX] ☠ dead-lettered {item['envelope'].get('id')} after "
-                  f"{item['attempts']} unacked deliveries.", flush=True)
+            reason = _unackable_reason(item["envelope"])
+            _keep_a_copy(item["envelope"], f"undeliverable: {reason}")
+            print(f"[OUTBOX] ☠ dead-lettered a record that can never be acked "
+                  f"({reason}) — kept in {fact_seal.QUARANTINE_DIR.name}/.", flush=True)
         _dead_lettered += len(poison)
-        ack([item["envelope"].get("id") for item in poison])
+        _drop(poison)
         if not _outbox:
             return 0
+
+    # Not a cap — a symptom. A record offered this many times means the desk is
+    # holding everything, which is a desk problem worth seeing in the log.
+    stuck = [i for i in _outbox if i["attempts"] and i["attempts"] % OFFER_WARN_AT == 0]
+    if stuck:
+        print(f"[OUTBOX] ⏳ {len(stuck)} sealed fact(s) have been offered "
+              f"{OFFER_WARN_AT}+ times without an ack. They are KEPT — the desk "
+              f"is holding them (locked key store? faulting sink?), and a held "
+              f"record costs a retry, never a fact.", flush=True)
 
     items = list(_outbox)
     sent = 0
@@ -286,6 +373,10 @@ def stats() -> dict:
         "dropped_no_key": _dropped_no_key,
         "dropped_overflow": _dropped_overflow,
         "dead_lettered": _dead_lettered,
+        # How many times the oldest queued record has been offered without an
+        # ack. Rising means the desk is holding — the state M2 used to resolve
+        # by deleting the backlog.
+        "max_offers": max((i["attempts"] for i in _outbox), default=0),
     }
 
 

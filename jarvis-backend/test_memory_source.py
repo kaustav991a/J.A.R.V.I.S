@@ -62,7 +62,7 @@ mig.DB_PATH = _DB
 mig.ASIDE_DIR = _TMP / "aside"
 
 
-def _fake_extract(user_text, user="KAUSTAV"):
+def _fake_extract(user_text, user="KAUSTAV", strict=False):
     """Stands in for the Groq call ONLY. add_memory, AES-256-GCM, the blind
     index and the duplicate check below it are all the production ones."""
     return [{"category": "Fact", "content": user_text}]

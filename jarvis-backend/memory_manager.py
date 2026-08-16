@@ -69,6 +69,40 @@ _TABLE = "memories"
 _ENC_COLUMN = "content"
 
 
+# ── "it failed" is not "there was nothing" (review finding M1) ───────────────
+#
+# Every function below reports a fault by returning the same value it uses for
+# "nothing to do": `[]`, or `False`. For a live turn that is right — a memory
+# extraction must never cost him his reply, and the next sentence he says gets
+# another go.
+#
+# For a DRAINED CLOUD FACT it is fatal. `fact_sink.governed_write` returns
+# `saved > 0`, and `fact_drain` reads False as a verdict — "the sink saw it and
+# declined it" — so it ledgers the record STORED and acks it. The cloud then
+# drops the sealed envelope permanently and the ledger guarantees the redelivery
+# is skipped. **A Groq rate limit therefore destroyed the fact and logged
+# `0 new, N already known`.** That path is unattended by definition: there is no
+# next sentence, and nobody sees it happen.
+#
+# So the callers that cannot afford the ambiguity pass `strict=True` and get an
+# exception instead. `fact_drain` treats any non-FactSealError as a FAULT and
+# HOLDS the record for the next connect — "a locked key store must cost a retry,
+# not a fact", now true of a rate-limited extractor too. Every live caller keeps
+# the old contract exactly, because the default is unchanged.
+class MemoryOperationError(RuntimeError):
+    """A memory operation FAILED — as distinct from finding or storing nothing."""
+
+
+class ExtractionFailedError(MemoryOperationError):
+    """The extractor could not run: no key, a rate limit, a timeout, a reply
+    that would not parse. Nothing is known about whether this turn held a fact."""
+
+
+class MemoryWriteError(MemoryOperationError):
+    """The row could not be written. NOT raised for a duplicate — that is a
+    successful outcome with nothing new in it."""
+
+
 def _encryption_on() -> bool:
     return _crypto.keys_ready()
 
@@ -224,6 +258,7 @@ def add_memory(
     category: MemoryCategory = "Fact",
     user: str = "KAUSTAV",
     source: str = SOURCE_DESK,
+    strict: bool = False,
 ) -> bool:
     """
     Persist a single memory to the database.
@@ -236,6 +271,10 @@ def add_memory(
         source   : How it arrived — SOURCE_DESK (default, and what every live
                    write is) or SOURCE_CLOUD (drained from the PC-off backlog).
                    Defaulted so every existing caller keeps its exact behaviour.
+        strict   : raise `MemoryWriteError` on a WRITE FAULT instead of returning
+                   False (finding M1). A duplicate still returns False under
+                   strict — it is a successful outcome with nothing new in it,
+                   and the caller must be free to ack the record.
 
     Returns:
         True  — memory was inserted successfully.
@@ -305,6 +344,10 @@ def add_memory(
         return False
     except Exception as exc:
         print(f"[MEMORY_MANAGER] add_memory error: {exc}", flush=True)
+        if strict:
+            # A drained cloud fact: returning False here would be read as
+            # "already known" and the sealed original destroyed. M1.
+            raise MemoryWriteError(f"add_memory failed: {exc}") from exc
         return False
     finally:
         conn.close()
@@ -677,14 +720,33 @@ def is_prompt_echo(content: str) -> bool:
     return any(token in normalised for token in _PROMPT_NONSENSE_TOKENS)
 
 
+def _extraction_failed(reason: str, detail: object, strict: bool) -> list:
+    """One place where a failure is reported, so the two contracts cannot drift.
+
+    Loud either way; the only difference is whether the caller is told in a form
+    it can act on. See the M1 note at the top of this module.
+    """
+    _mem_err(reason, detail)
+    if strict:
+        raise ExtractionFailedError(reason)
+    return []
+
+
 def extract_memories_from_input(
     user_text: str,
     user: str = "KAUSTAV",
+    strict: bool = False,
 ) -> list[dict]:
     """
     Fire a fast, lightweight LLM call to extract permanent memories from a
     single user utterance.  Returns a list of extracted memory dicts, or []
     if nothing permanent was detected.
+
+    `strict=True` (finding M1) raises `ExtractionFailedError` when the CALL
+    failed — no key, a rate limit, a timeout, a reply that would not parse —
+    rather than reporting it as "this turn had no fact in it". A turn that
+    genuinely holds nothing still returns `[]` under strict; the distinction is
+    between *nothing found* and *nothing looked*.
 
     This function is designed to run in a background thread via asyncio.to_thread()
     so it never blocks the main event loop.
@@ -711,10 +773,9 @@ def extract_memories_from_input(
         return []
 
     if not has_groq_keys():
-        _mem_err(
+        return _extraction_failed(
             "GROQ_API_KEY / GROQ_API_KEYS missing — cannot run Memory OS extraction.",
-        )
-        return []
+            None, strict)
 
     raw = ""
     try:
@@ -735,8 +796,8 @@ def extract_memories_from_input(
 
         msg = completion.choices[0].message if completion.choices else None
         if msg is None or not msg.content:
-            _mem_err("Groq returned empty message content for extraction")
-            return []
+            return _extraction_failed(
+                "Groq returned empty message content for extraction", None, strict)
 
         raw = msg.content.strip()
         print(f"[MEMORY_MANAGER] Extraction raw response: {raw[:200]}", flush=True)
@@ -755,9 +816,12 @@ def extract_memories_from_input(
                 try:
                     parsed = json.loads(stripped)
                 except json.JSONDecodeError:
-                    return []
+                    return _extraction_failed(
+                        "extraction reply would not parse even de-fenced",
+                        raw[:300], strict)
             else:
-                return []
+                return _extraction_failed(
+                    "extraction reply would not parse", raw[:300], strict)
 
         # Canonical shape: {"memories": [...]}
         items_list: list | None = None
@@ -781,13 +845,15 @@ def extract_memories_from_input(
                     elif parsed == {} or all(k not in parsed for k in ("memories", "category")):
                         return []
                     else:
-                        _mem_err("Unexpected JSON object shape (expected 'memories' array)", parsed)
-                        return []
+                        return _extraction_failed(
+                            "Unexpected JSON object shape (expected 'memories' array)",
+                            parsed, strict)
         elif isinstance(parsed, list):
             items_list = parsed
         else:
-            _mem_err("Top-level JSON must be an object or list", type(parsed).__name__)
-            return []
+            return _extraction_failed(
+                "Top-level JSON must be an object or list",
+                type(parsed).__name__, strict)
 
         if items_list is None:
             return []
@@ -814,9 +880,15 @@ def extract_memories_from_input(
 
         return results
 
+    except MemoryOperationError:
+        # Already reported by _extraction_failed. Re-raised rather than caught
+        # below, or strict mode would be swallowed by the very handler it exists
+        # to correct.
+        raise
     except Exception as exc:
-        _mem_err("extract_memories_from_input failed (API timeout, rate limit, or unexpected error)", exc)
-        return []
+        return _extraction_failed(
+            "extract_memories_from_input failed (API timeout, rate limit, or "
+            "unexpected error)", exc, strict)
 
 
 # =============================================================================
@@ -824,7 +896,8 @@ def extract_memories_from_input(
 # =============================================================================
 
 def extract_and_persist(user_text: str, user: str = "KAUSTAV",
-                        source: str = SOURCE_DESK) -> int:
+                        source: str = SOURCE_DESK,
+                        strict: bool = False) -> int:
     """
     Convenience wrapper: extract memories from user_text then persist each one.
 
@@ -836,8 +909,13 @@ def extract_and_persist(user_text: str, user: str = "KAUSTAV",
     `source` defaults to SOURCE_DESK, so every live path — brain.py, main.py,
     streaming_daemon.py — is untouched. modules/fact_sink.py is the one caller
     that passes SOURCE_CLOUD.
+
+    `strict` (finding M1) makes a FAILURE raise rather than return 0. 0 under
+    strict means what it says: the turn held no new fact — the extractor ran and
+    found nothing, or everything it found was already known. Nothing else can
+    produce it.
     """
-    extracted = extract_memories_from_input(user_text, user)
+    extracted = extract_memories_from_input(user_text, user, strict=strict)
     saved = 0
     for mem in extracted:
         ok = add_memory(
@@ -845,6 +923,7 @@ def extract_and_persist(user_text: str, user: str = "KAUSTAV",
             category=mem["category"],   # type: ignore[arg-type]
             user=user,
             source=source,
+            strict=strict,
         )
         if ok:
             saved += 1

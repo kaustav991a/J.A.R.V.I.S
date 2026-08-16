@@ -81,7 +81,7 @@ _BRAIN_SRC = _HERE.joinpath("brain.py").read_text(encoding="utf-8")
 _REAL_CHECK = gm.check
 
 
-def _fake_extract(user_text, user="KAUSTAV"):
+def _fake_extract(user_text, user="KAUSTAV", strict=False):
     """Stands in for the Groq extraction call ONLY.
 
     Everything downstream of it — add_memory, AES-256-GCM, the content_hash blind
@@ -581,7 +581,10 @@ def test_a_turn_with_nothing_worth_keeping_is_acked_not_held():
     """Live, a turn that yields no memory stores none and moves on. Same here —
     holding it would re-offer it forever."""
     _reset()
-    mm.extract_memories_from_input = lambda text, user="KAUSTAV": []
+    # `strict` is the M1 keyword the cloud sink now passes. A stub that does not
+    # accept it fails the call rather than the assertion, which is a much more
+    # confusing way to find out.
+    mm.extract_memories_from_input = lambda text, user="KAUSTAV", strict=False: []
     try:
         envelope = _seal(user_text="thanks, that is all")
         result = fd.drain_records([envelope])

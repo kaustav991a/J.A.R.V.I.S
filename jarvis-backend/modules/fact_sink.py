@@ -36,6 +36,13 @@ THREE OUTCOMES, AND THE DIFFERENCE MATTERS
                        stays in the cloud outbox and comes back on the next
                        connect. A locked key store must cost a retry, not a fact.
 
+The third outcome only became real on 2026-08-16 (review finding M1). The
+extractor reported its own failures — a missing key, a 429 across every rotation
+key, a timeout, an unparseable reply — by returning `[]`, which is also how it
+says "this turn had no fact in it". So a rate limit took the FIRST road, not the
+third: nothing written, ledgered STORED, acked, and the cloud dropped the sealed
+original for good. `strict=True` below is what separates them.
+
 WHAT THIS DELIBERATELY DOES NOT DO
 ----------------------------------
   * It does not call `brain.extract_and_store_memory`. That wrapper swallows
@@ -223,7 +230,14 @@ def governed_write(payload: dict) -> bool:
     # were byte-identical in the store until 2026-08-02.
     from memory_manager import SOURCE_CLOUD, extract_and_persist
 
-    saved = extract_and_persist(text, who, source=SOURCE_CLOUD)
+    # strict=True is finding M1, and it is the difference between the three
+    # outcomes above being real and being decorative. Without it a rate-limited
+    # extractor returns [] — the same value it uses for "this turn had no fact"
+    # — this function returns False, and the drain reads False as a VERDICT:
+    # ledger STORED, ack, and the cloud destroys the sealed original. Under
+    # strict the failure raises, the drain holds the record, and the next
+    # connect tries again.
+    saved = extract_and_persist(text, who, source=SOURCE_CLOUD, strict=True)
     print(f"[FACT_SINK] governed write for {who} ({tier}), source={SOURCE_CLOUD}: "
           f"{saved} new memory row(s).", flush=True)
     return saved > 0
