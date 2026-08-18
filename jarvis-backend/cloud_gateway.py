@@ -719,20 +719,84 @@ def _groq_transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
 
 _TAVILY_KEY = (os.getenv("TAVILY_API_KEY") or "").strip()
 
+# How far back a time-sensitive lookup may reach. Tavily honours `days` only on
+# the news topic, which is why `fresh` below switches both of them together.
+_TAVILY_FRESH_DAYS = int(os.getenv("TAVILY_FRESH_DAYS", "14"))
 
-def _tavily_lookup(query: str) -> str:
+
+def _date_label(raw: object) -> str:
+    """One comparable shape for a source's publication date.
+
+    Tavily returns `published_date` on news results and omits it everywhere else,
+    in a format that has been both ISO and RFC 1123 depending on the source. So
+    normalise what parses and pass the rest through truncated rather than dropping
+    it: a strange-looking date still tells the model how old a claim is, and no
+    date at all is precisely what let a 2025 monsoon article be read back as this
+    morning's forecast.
+    """
+    import datetime as _dt
+
+    s = str(raw or "").strip()
+    if not s:
+        # Stated out loud on purpose. An undated snippet sitting among dated ones
+        # reads as "recent enough not to need one", which is the original mistake.
+        return "date unknown"
+    try:
+        return _dt.date.fromisoformat(s[:10]).isoformat()
+    except ValueError:
+        pass
+    for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z"):
+        try:
+            return _dt.datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return s[:24]
+
+
+def _dated_block(body: str) -> str:
+    """Stamp a lookup with today's date, so age needs no arithmetic to see.
+
+    The phone's envelope already carries local wall time (`src/lib/ask.ts`), but
+    that only ever said what *today* is — it never said how old the *evidence*
+    was. A model asked about rain on 2026-08-17, handed undated 2025 prose, had
+    nothing to weigh it against and warned about that year's monsoon as though it
+    were the afternoon's forecast.
+    """
+    import datetime as _dt
+
+    if not body:
+        return ""
+    today = _dt.datetime.now(_OPERATOR_TZ).date().isoformat()
+    return (f"- Today is {today}. Every source below carries its publication date; "
+            f"treat an old one as history, never as current conditions.\n{body}")
+
+
+def _tavily_lookup(query: str, fresh: bool = False) -> str:
     """Grounding via Tavily (same provider the desk uses). Better than DDG for
-    current facts/scores. Uses the REST API over urllib — no extra dependency."""
+    current facts/scores. Uses the REST API over urllib — no extra dependency.
+
+    `fresh` asks for a dated window rather than a nudge. Appending "latest result
+    today" to the query — which is all recency used to mean here — is a hint to
+    the ranker, not a filter, and a well-ranked article from last year satisfies
+    it completely.
+    """
     import json as _json
     import urllib.request
 
-    payload = _json.dumps({
+    body = {
         "api_key": _TAVILY_KEY,
         "query": query,
         "search_depth": "basic",
         "max_results": 5,
         "include_answer": True,
-    }).encode()
+    }
+    if fresh:
+        # `days` is honoured on the news topic only, so the two travel together.
+        # Not applied to every query: restricting "what is a pangolin" to the news
+        # of the last fortnight is a different kind of wrong answer.
+        body["topic"] = "news"
+        body["days"] = _TAVILY_FRESH_DAYS
+    payload = _json.dumps(body).encode()
     req = urllib.request.Request(
         "https://api.tavily.com/search", data=payload,
         headers={"Content-Type": "application/json"}, method="POST",
@@ -746,7 +810,7 @@ def _tavily_lookup(query: str) -> str:
         title = r.get("title", "")
         content = r.get("content", "")
         if content:
-            bits.append(f"- {title}: {content}")
+            bits.append(f"- [{_date_label(r.get('published_date'))}] {title}: {content}")
     return "\n".join(bits)
 
 
@@ -759,11 +823,15 @@ def _ddg_lookup(query: str) -> str:
             title = r.get("title", "")
             body = r.get("body", "")
             if body:
-                bits.append(f"- {title}: {body}")
+                # DDG carries no publication date at all. Marked rather than left
+                # bare, so a Tavily block and a DDG one cannot be told apart by the
+                # model as "dated" versus "current".
+                bits.append(f"- [date unknown] {title}: {body}")
     return "\n".join(bits)
 
 
-# Time-sensitive intents benefit from an explicit recency nudge in the query.
+# Time-sensitive intents get a dated window from Tavily, and — since DuckDuckGo
+# offers no such filter — the old query nudge when DDG is the one answering.
 _RECENCY_HINTS = ("score", "match", "news", "latest", "today", "current",
                   "price", "stock", "weather", "result", "who won", "live")
 
@@ -774,22 +842,22 @@ def _web_lookup(query: str) -> str:
     if not WEB_LOOKUP:
         return ""
     q = query.strip()
-    # Nudge time-sensitive queries toward fresh results.
-    if any(h in q.lower() for h in _RECENCY_HINTS):
-        q = f"{q} latest result today"
+    fresh = any(h in q.lower() for h in _RECENCY_HINTS)
+    # DDG gets the nudge because it has nothing better; Tavily gets `days`.
+    ddg_q = f"{q} latest result today" if fresh else q
     try:
         if _TAVILY_KEY:
-            out = _tavily_lookup(q)
+            out = _tavily_lookup(q, fresh=fresh)
             if out:
-                return out
+                return _dated_block(out)
             # fall through to DDG if Tavily returned nothing
-        return _ddg_lookup(q)
+        return _dated_block(_ddg_lookup(ddg_q))
     except Exception as e:  # noqa: BLE001
         print(f"[CLOUD] web lookup skipped: {e}", flush=True)
         # Last-ditch: try DDG if Tavily was the one that failed.
         if _TAVILY_KEY:
             try:
-                return _ddg_lookup(q)
+                return _dated_block(_ddg_lookup(ddg_q))
             except Exception:
                 pass
         return ""
@@ -2810,10 +2878,25 @@ async def app_link(websocket: WebSocket):
         Forced past the push quiet gap on purpose: this is an answer to something he
         asked a moment ago, not a status notification, and rate-limiting it would
         mean choosing to lose a reply because an unrelated push went out earlier.
+
+        **`_app_clients` is consulted before the write, not just after it.** A
+        successful `send_json` was the only evidence used here, and it is not
+        evidence: a peer's close arrives on the ASGI *receive* channel, and during a
+        turn this handler is blocked in `think()`, so the disconnect has not been
+        consumed yet. The write therefore succeeds into a connection nobody is
+        holding, `emit()` reports it delivered, and the push never fires. Proved on
+        the phone on 2026-08-18 — backgrounding the app mid-answer produced no
+        notification at all, three attempts running.
+
+        The list is only trustworthy because the app was fixed the same day to close
+        its socket on the way out (`LinkMachine.suspend`, jarvis-mobile). Measured
+        after that change: `apps_linked` goes 1 -> 0 when the phone leaves. Before
+        it, this guard would have made things worse — the list was full of phantoms,
+        so it would have suppressed the very push it is here to trigger.
         """
-        if await say("speaking", answer):
+        if _app_clients and await say("speaking", answer):
             return
-        print("[CLOUD] reply outlived the socket; pushing instead", flush=True)
+        print("[CLOUD] no phone holding the socket; pushing the reply instead", flush=True)
         await _push_all("J.A.R.V.I.S.", answer, {"kind": "reply"}, force=True)
 
     async def keepalive() -> None:

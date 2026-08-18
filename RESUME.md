@@ -7,6 +7,62 @@
 >
 > Read this, then `JARVIS_MASTER_ROADMAP.md` (the single source of truth).
 
+## ⚠️ UNVERIFIED — 2026-08-18, two cloud-gateway fixes that were NOT run
+
+**Landed on `feat/cloud-gateway` from the laptop, and the suite was never run on
+them: that machine has no Python at all.** `test_web_freshness.py` (11 checks) is
+written and registered in `run_harnesses.py` but has **never executed**. Run it
+first, with the venv:
+
+```
+jarvis-backend\venv\Scripts\python.exe run_harnesses.py
+```
+
+Expect 81 harnesses, not 80. If the new one fails, the two changes below are the
+only suspects — nothing else was touched.
+
+**Neither fix does anything until Render redeploys.** Both are in
+`jarvis-backend/cloud_gateway.py`, which is what `render.yaml` runs.
+
+1. **`deliver()` consults `_app_clients` before trusting the write.** A reply to a
+   phone that had been pocketed vanished — no notification, three attempts running
+   on the device on 2026-08-18. `emit()` treated a successful `send_json` as proof
+   of delivery, and it is not: a peer's close arrives on the ASGI *receive* channel,
+   and during a turn the handler is blocked in `think()`, so the disconnect has not
+   been consumed. The write succeeds into a connection nobody holds and the push
+   never fires.
+   **This fix depends on a jarvis-mobile change of the same day** — `LinkMachine.suspend`
+   closes the socket when the app backgrounds, so `_app_clients` is finally truthful
+   (measured: `apps_linked` 1 → 0 when the phone leaves). Before that the list was
+   full of phantoms and this guard would have *suppressed* the push it exists to
+   trigger. The two repos have to move together; do not revert one alone.
+2. **Web lookups carry publication dates.** He was warned about rain using a **2025**
+   monsoon article. Nothing was broken: the phone already sends local wall time, so
+   the model knew what *today* was — it never knew how old the *evidence* was,
+   because `_tavily_lookup` discarded Tavily's `published_date`. Snippets are now
+   `- [2025-06-14] title: content`, undated ones say `[date unknown]` out loud, the
+   block is stamped with today's date, and recency-hinted queries ask for
+   `topic="news"` + `days` instead of appending "latest result today" to the query —
+   which was a hint to the ranker, not a filter, and a well-ranked year-old article
+   satisfied it completely.
+
+**OWED BY HAND, and it is env-only:** `GROQ_VISION_MODEL` is still
+`meta-llama/llama-4-scout-17b-16e-instruct` at `cloud_gateway.py:105` — 404 since
+2026-08-14 — and `render.yaml` has no key for it. Photos therefore fail on both
+providers: Gemini vision is quota-dead (`/health` showed `vision.gemini_ok: 0`,
+`last_error_was_quota: true`) and the Groq fallback does not exist. **Set
+`GROQ_VISION_MODEL=qwen/qwen3.6-27b`** — checked 2026-08-18, it is the only
+vision-capable model Groq still serves, it is production rather than preview, and
+it takes the base64 data URI `see()` already builds. Put it in `render.yaml` too, or
+a Blueprint re-sync will drop a dashboard-only value.
+
+**A Render restart wipes in-process state, and it cost real data on 2026-08-18.**
+Changing one env var redeployed the service and `/health` went from
+`facts_known: 17` to `0`, `has_desk_key: true` to `false`, and
+`fact_outbox.depth: 26` to `0` — the desk's public key and 26 sealed turns, gone,
+because both live in process RAM. This is the concrete argument for the roadmap's
+"gateway memory out of process RAM" item; it is no longer hypothetical.
+
 ## STATE — 2026-08-16
 
 **Branch `feat/cloud-gateway`, pushed, in sync.** Suite **80/80 harnesses,

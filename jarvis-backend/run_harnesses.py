@@ -162,6 +162,7 @@ _KNOWN_AT_LAST_EDIT = [
     "test_store_retirement.py",
     "test_tool_call.py",
     "test_watchdog_policy.py",
+    "test_web_freshness.py",
     "test_working_memory_lock.py",
 ]
 
