@@ -44,12 +44,21 @@ The guard was asking a question nothing had answered.
    enough — it stays non-empty after *this* phone leaves, and the answer belongs
    to this connection.
 
-### Why it was not pushed
+### Pushed WITHOUT the suite, deliberately, and the suite is owed
 
-A fault here takes out `/app-link` entirely — every phone, every turn. The change
-is small and localised, but it is untested, and the one suite that would catch a
-mistake cannot run on this machine. **Run `run_harnesses.py` with the venv, then
-push.** The mobile side is already deployed and does not depend on this landing.
+Raised as a risk and overruled on purpose: a fault here takes out `/app-link`
+entirely — every phone, every turn — and it went out untested because bug C had
+already survived two attempts and the alternative was leaving it broken for
+another day.
+
+**So the first thing on the desk is .** Expect **81** harnesses, not 80: 
+has still never executed. Three commits are now unproven by it — `15b8f72`,
+`a1c4892` and this one — and if it comes back red, the app-link handler is the
+first place to look, because it is the only one of the three that changed
+control flow.
+
+**If `/app-link` is refusing connections, revert this commit first and ask
+questions after.** The phone falls back to nothing when that socket is gone.
 
 ---
 
