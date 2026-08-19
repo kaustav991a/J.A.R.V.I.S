@@ -1578,6 +1578,32 @@ _app_clients: set = set()
 
 # push_token -> platform, for phones that are not holding a socket right now.
 _push_targets: dict = {}
+
+# What each phone calls its notification channels, keyed by push token.
+#
+# Not persisted, and it does not need to be: the app registers on every launch,
+# and until it does the defaults below apply. Android drops a notification sent
+# to a channel that does not exist, so guessing here is not a small mistake — it
+# is a push that Expo accepts and nobody ever sees.
+_push_channels: dict = {}
+
+# Where a phone that has not registered its channels is assumed to listen.
+#
+# Kept in step with jarvis-mobile's `notify.ts` — and the whole point of the
+# registration above is that this file should never again be the thing that has
+# to be remembered. These are the floor, not the contract.
+DEFAULT_CHANNELS = {"general": "general-v8", "watch": "desk-watch-v2"}
+
+
+def _channel_for(token: str, kind: str) -> str:
+    """The channel THIS phone calls `kind`, or the current default.
+
+    Android silently discards a notification addressed to a channel that does not
+    exist, so this lookup is the difference between a push that arrives and one
+    that Expo accepts and nobody ever sees.
+    """
+    named = _push_channels.get(token) or {}
+    return named.get(kind) or DEFAULT_CHANNELS.get(kind) or kind
 _last_push_at: float = 0.0
 
 
@@ -1613,7 +1639,7 @@ def _save_push_targets() -> None:
 
 
 def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
-                        channel: str = "general") -> dict:
+                        kind: str = "general") -> dict:
     """POST one batch to Expo. Blocking on purpose — the caller threads it.
 
     Returns the DECODED reply, not a truncated string. Expo answers HTTP 200 even
@@ -1623,12 +1649,18 @@ def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
     worked, which is this project's recurring failure shape.
     """
     payload = json.dumps([
-        # The channel must be one the app created at startup (`general` or
-        # `desk-watch`); Android drops a notification addressed to a channel that
-        # does not exist. `desk-watch` is the MAX-importance one, so a lock
-        # countdown can interrupt where a status change should not.
+        # Resolved PER PHONE, from what that phone said it created. Android
+        # drops a notification addressed to a channel that does not exist, and
+        # this file used to name `general` and `desk-watch` outright — both of
+        # which the app has since renamed and deleted, `general` eight times
+        # over. Every reply push in between was accepted by Expo and discarded
+        # by Android, which is why bug C survived three separate fixes to the
+        # socket that were all, individually, correct.
+        #
+        # `watch` is the MAX-importance one, so a lock countdown can interrupt
+        # where a status change should not.
         {"to": t, "title": title, "body": body, "data": data,
-         "priority": "high", "channelId": channel}
+         "priority": "high", "channelId": _channel_for(t, kind)}
         for t in tokens
     ]).encode("utf-8")
     req = urllib.request.Request(
@@ -1645,7 +1677,7 @@ def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
 
 
 async def _push_all(title: str, body: str, data: Optional[dict] = None,
-                    channel: str = "general", force: bool = False) -> None:
+                    kind: str = "general", force: bool = False) -> None:
     """Push to every registered phone.
 
     `force` skips the quiet gap, and exactly one caller uses it: the desk watch.
@@ -1664,7 +1696,7 @@ async def _push_all(title: str, body: str, data: Optional[dict] = None,
     sent = list(_push_targets)
     try:
         out = await asyncio.to_thread(
-            _expo_push_blocking, sent, title, body, data or {}, channel)
+            _expo_push_blocking, sent, title, body, data or {}, kind)
     except Exception as e:  # noqa: BLE001
         # a push that cannot be delivered must never take the desk link down
         print(f"[CLOUD] push failed: {e}", flush=True)
@@ -2091,7 +2123,7 @@ async def _relay_watch(frame: dict) -> None:
          "image": frame.get("image"),
          "user": frame.get("user"),
          "trigger": trigger},
-        channel="desk-watch",
+        kind="watch",
         force=True)
 
 
@@ -2811,6 +2843,32 @@ async def app_push_register(request: Request):
     platform = str((body or {}).get("platform") or "?").strip()[:16]
     if not token:
         return Response(status_code=400)
+
+    """The phone also says which notification channels it created.
+
+    Android DROPS a notification addressed to a channel that does not exist, and
+    the app has renamed its everyday channel eight times chasing a mute-briefing
+    bug — `general` -> `general-v2` -> ... -> `general-v8` — deleting the old ones
+    as it went. This gateway went on addressing `general`, so every reply push
+    since that first rename was accepted by Expo and silently discarded by
+    Android. Measured on the device on 2026-08-19: `push_targets: 1`, the gateway
+    correctly deciding to push, and no notification ever arriving.
+
+    So the phone is the authority on its own channel names, because it is the
+    only thing that knows them. Absent — an older build — the defaults below
+    still apply, which is why those were moved forward too.
+    """
+    channels = (body or {}).get("channels")
+    if isinstance(channels, dict):
+        named = {
+            str(k)[:32]: str(v)[:64]
+            for k, v in channels.items()
+            if isinstance(k, str) and isinstance(v, str) and v.strip()
+        }
+        if named:
+            _push_channels[token] = named
+            print(f"[CLOUD] push channels for this phone: {named}", flush=True)
+
     fresh = token not in _push_targets
     _push_targets[token] = platform
     _save_push_targets()
