@@ -2900,7 +2900,12 @@ async def app_link(websocket: WebSocket):
         it, this guard would have made things worse — the list was full of phantoms,
         so it would have suppressed the very push it is here to trigger.
         """
-        if _app_clients and await say("speaking", answer):
+        # `alive`, not `_app_clients`. That set is global: with a second phone
+        # attached — a release build installed beside the debug one is enough —
+        # it stays non-empty after THIS phone leaves, and this answer belongs to
+        # this connection. `alive` is now set the moment `reader()` sees the
+        # disconnect, and `emit()` checks it again before writing.
+        if alive and await say("speaking", answer):
             return
         print("[CLOUD] no phone holding the socket; pushing the reply instead", flush=True)
         await _push_all("J.A.R.V.I.S.", answer, {"kind": "reply"}, force=True)
@@ -2928,7 +2933,52 @@ async def app_link(websocket: WebSocket):
                     await emit({"status": "sync", "type": "telemetry", "data": data})
             await asyncio.sleep(APP_TELEMETRY_SECS)
 
-    helpers = [asyncio.create_task(keepalive()), asyncio.create_task(vitals())]
+    inbox: asyncio.Queue = asyncio.Queue()
+
+    async def reader() -> None:
+        """Always be awaiting `receive`, so a disconnect is noticed when it happens.
+
+        This is what makes `deliver()`'s `_app_clients` check mean anything, and
+        without it that check was asking a question nothing had answered.
+
+        The loop below used to call `websocket.receive()` itself, which meant
+        nothing was awaiting the receive channel for the whole length of a turn.
+        A peer's close arrives on that channel — so when the phone was pocketed
+        mid-answer the disconnect simply sat there unread: `alive` stayed true,
+        `_app_clients` still held this socket, `send_json` wrote into a dead
+        connection without raising, `emit()` reported success, and the push that
+        should have carried the answer never fired.
+
+        Measured on the phone on 2026-08-19: a question sent one second before
+        backgrounding produced no notification at all in fifty seconds, with
+        `push_targets: 1` — the token was there, nothing ever asked to use it.
+
+        Draining here costs one task per connection and makes the disconnect
+        prompt. `receive()` must now be called from ONE place only: two coroutines
+        awaiting the same ASGI channel is undefined.
+        """
+        nonlocal alive
+        try:
+            while True:
+                msg = await websocket.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                await inbox.put(msg)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            # Before the queue sentinel, not after: the turn in flight may reach
+            # `deliver()` at any moment, and the whole point is that it finds an
+            # honest answer to "is anyone still holding this socket".
+            alive = False
+            _app_clients.discard(websocket)
+            await inbox.put({"type": "websocket.disconnect"})
+
+    helpers = [
+        asyncio.create_task(keepalive()),
+        asyncio.create_task(vitals()),
+        asyncio.create_task(reader()),
+    ]
 
     await say("online",
               "Desk is online — full control through the cloud."
@@ -2936,7 +2986,9 @@ async def app_link(websocket: WebSocket):
               "Cloud brain only, so PC control is off until the desk wakes.")
     try:
         while True:
-            msg = await websocket.receive()
+            # from the reader's queue, never from the socket: `receive()` is
+            # awaited in exactly one place now, and that place is `reader()`
+            msg = await inbox.get()
             if msg.get("type") == "websocket.disconnect":
                 break
 

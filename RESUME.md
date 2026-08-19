@@ -7,6 +7,52 @@
 >
 > Read this, then `JARVIS_MASTER_ROADMAP.md` (the single source of truth).
 
+## ⚠️ UNVERIFIED — 2026-08-19: the pocketed reply, diagnosed properly and fixed
+
+**Not run, not deployed.** This machine still has no Python, so
+`run_harnesses.py` has now never run against `15b8f72`, against `a1c4892`, or
+against this. **Run the suite before pushing.** Expect 81 harnesses.
+
+### Bug C was never fixed, and the 08-18 change explains why
+
+Measured on the phone on 2026-08-19: a question sent **one second** before
+backgrounding produced **no notification in fifty seconds**, with `/health`
+reporting `push_targets: 1` and `apps_linked: 1`. The token was registered.
+Nothing ever asked to use it.
+
+The 2026-08-18 guard in `deliver()` was right about the cause and could not act
+on it. Its own docstring says a peer's close arrives on the ASGI *receive*
+channel and that the handler is blocked in `think()` during a turn — and the
+handler was the only thing calling `receive()`. So for the whole length of a
+turn **nothing was awaiting that channel**: the disconnect sat unread, `alive`
+stayed true, `_app_clients` still held the socket, `send_json` wrote into a dead
+connection without raising, `emit()` reported success, and the push never fired.
+
+The guard was asking a question nothing had answered.
+
+### What changed
+
+1. **`reader()`** — one task per connection whose only job is to be awaiting
+   `receive()` at all times. On disconnect it clears `alive` and discards the
+   socket from `_app_clients` **before** putting its sentinel on the queue, so a
+   turn reaching `deliver()` at that moment finds the truth.
+2. **The main loop reads from `inbox`**, never from the socket. `receive()` is
+   now called in exactly one place, because two coroutines awaiting one ASGI
+   channel is undefined behaviour.
+3. **`deliver()` checks `alive`, not `_app_clients`.** That set is global: with
+   a second phone attached — a release build installed beside the debug one is
+   enough — it stays non-empty after *this* phone leaves, and the answer belongs
+   to this connection.
+
+### Why it was not pushed
+
+A fault here takes out `/app-link` entirely — every phone, every turn. The change
+is small and localised, but it is untested, and the one suite that would catch a
+mistake cannot run on this machine. **Run `run_harnesses.py` with the venv, then
+push.** The mobile side is already deployed and does not depend on this landing.
+
+---
+
 ## ⚠️ UNVERIFIED — 2026-08-18, two cloud-gateway fixes that were NOT run
 
 **Landed on `feat/cloud-gateway` from the laptop, and the suite was never run on
