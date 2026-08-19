@@ -21,6 +21,24 @@ services:
       # have started 404ing on the 16th while every harness stayed green.
       - key: GROQ_MODEL
         value: openai/gpt-oss-120b
+      # The vision leg, and it was 404ing for five days without anything saying so.
+      #
+      # `meta-llama/llama-4-scout-17b-16e-instruct` — still the code default in
+      # cloud_gateway.py, deliberately — was retired by Groq and answers
+      # `404 model_not_found`. With Gemini's vision quota also exhausted
+      # (`/health` read `vision.gemini_ok: 0`, `last_error_was_quota: true`),
+      # BOTH legs were dead and every photo failed.
+      #
+      # `qwen/qwen3.6-27b` checked 2026-08-18: the only vision-capable model Groq
+      # still serves, production rather than preview, and it takes the base64 data
+      # URI `see()` already builds.
+      #
+      # Declared HERE and not only in the dashboard. A dashboard-only value is
+      # dropped the next time this Blueprint is re-synced, silently, and the
+      # symptom is photos failing again weeks later with nothing in the diff to
+      # explain it.
+      - key: GROQ_VISION_MODEL
+        value: qwen/qwen3.6-27b
       # Which brain answers what. `groq` everywhere is the configuration that has
       # been in production; set any of these to `gemini` to switch that capability
       # alone. A switch needs no deploy, and every Gemini failure falls back to

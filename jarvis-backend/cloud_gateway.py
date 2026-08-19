@@ -102,6 +102,12 @@ GROQ_MODEL = (os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b").strip()
 # into a 404 with no warning. Left in place rather than replaced with a guess that
 # would age the same way: set GROQ_VISION_MODEL to something current, or point
 # LLM_PROVIDER_VISION at gemini, which is what was actually done.
+#
+# 2026-08-19: `render.yaml` now DECLARES `GROQ_VISION_MODEL=qwen/qwen3.6-27b`, so
+# a Blueprint deploy always carries a live id and this default is never reached
+# there. It stays dead on purpose — as the record of how a hardcoded model id
+# fails, and so that a deploy which somehow arrives without the variable fails
+# loudly at the call rather than quietly answering with something unintended.
 GROQ_VISION_MODEL = (os.getenv("GROQ_VISION_MODEL")
                      or "meta-llama/llama-4-scout-17b-16e-instruct").strip()
 GROQ_WHISPER_MODEL = (os.getenv("GROQ_WHISPER_MODEL") or "whisper-large-v3").strip()
