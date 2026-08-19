@@ -51,8 +51,14 @@ entirely — every phone, every turn — and it went out untested because bug C 
 already survived two attempts and the alternative was leaving it broken for
 another day.
 
-**So the first thing on the desk is .** Expect **81** harnesses, not 80: 
-has still never executed. Three commits are now unproven by it — `15b8f72`,
+**So the first thing on the desk is:**
+
+```
+jarvis-backend\venv\Scripts\python.exe run_harnesses.py
+```
+
+Expect **81** harnesses, not 80: `test_web_freshness.py` has still never
+executed. Three commits are now unproven by it — `15b8f72`,
 `a1c4892` and this one — and if it comes back red, the app-link handler is the
 first place to look, because it is the only one of the three that changed
 control flow.
