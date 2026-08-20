@@ -7,16 +7,109 @@
 >
 > Read this, then `JARVIS_MASTER_ROADMAP.md` (the single source of truth).
 
-## 🏠 START HERE — 2026-08-20, 5:30 PM. The photo answered with a search request.
+## 🏠 START HERE — 2026-08-20, 6:35 PM
 
 **First job on the desk, before anything else:**
 
 ```bash
-python run_harnesses.py   # expect 81 + 4 /app-commute + 8 reasoning-leak + 17 vision-marker
+python run_harnesses.py
+# expect 81 + 4 /app-commute + 8 reasoning-leak + 17 vision-marker + 17 durable-state
 ```
 
-Two days of Python-side work has never been executed on a machine with Python.
-That is the whole of the risk in this repo.
+Four days of Python-side work has never been executed by an interpreter with the
+real imports. That is the whole of the risk in this repo.
+
+### Branch state, which matters more than usual right now
+
+| Branch | Head | Deployed? |
+| --- | --- | --- |
+| `feat/cloud-gateway` | `97841a0` vision-marker fix | **yes** — Render watches this |
+| `fix/durable-state` | `6f96b4c` | no, deliberately |
+
+**Merge `fix/durable-state` after tonight's 7:00–7:20 PM window.** Pushing it
+before would have wiped the state it exists to protect, 25 minutes before the
+first briefing was ever due. `git merge fix/durable-state && git push` from
+`feat/cloud-gateway` is the whole of the deploy.
+
+### Two things fixed this evening
+
+**1. A photo answered with the search it wanted.** A motorcycle captioned "what is
+this bike? what is the mileage?" came back at 17:15 as its entire reply:
+
+    [[LOOKUP: Royal Enfield Hunter 350 mileage ARAI real world]]
+
+`see()` was a parallel implementation of `think()` that never got think()'s
+post-processing while sharing the persona that TEACHES that marker. Three defects
+from one omission: the search never ran so the question was never answered; a
+`[[REMEMBER:]]` over a photo leaked AND was discarded; and the raw line entered
+the rolling history to be replayed as context forever. Fixed with a shared
+`_resolve_markers()`. **Deployed and confirmed working on the device.**
+
+The subtle half is `see()`'s transcript — the second pass runs on the *text* leg,
+so the base64 image is swapped for the `[sent a photo]` stand-in the history
+already uses. What the model saw travels in its own first reply.
+
+**2. A deploy disarmed the briefing, twice, and said nothing.** The commute
+schedule, the push addresses and the two once-a-day markers were JSON files beside
+the module. Render wipes the disk on every **deploy** — not every restart, which is
+why it read as working for a week. The 5:35 PM deploy took `commute.departures` and
+`push_targets` to 0 with 85 minutes left before the window.
+
+The recovery that already existed was not enough: the phone re-uploads on cloud
+connect, but that is gated on `link.status === 'open'`, and a photo answers over
+plain HTTP. So the app looked connected while the gateway could reach nobody by
+push. Opening the app to get a socket was what restored it, by hand.
+
+Now in Postgres beside the facts: `gateway_state(key, val, at)`. One table with a
+key, not a column per feature. `_restore_state()` is awaited **before** the loops
+start, and a stored schedule goes back through `_clean_commute` on the way in.
+`/health` gains `memory.state_durable`, because a schedule backed by Render's disk
+and one backed by Postgres look identical from outside until the next deploy.
+
+### Tonight, and nothing is needed for it
+
+The first push-delivered briefing is due **7:00–7:20 PM**
+(`COMMUTE_FIRE_WINDOW_MIN` 20, tick 60s). As of 6:35 PM the gateway is armed:
+`push_targets: 1`, `commute: {tz: Asia/Calcutta, departures: 1, days_on: 5}`.
+Office coordinates are confirmed — the place was named while standing in it.
+UptimeRobot pings `/health` every 5 minutes, which closes the free-tier
+spin-down hole.
+
+Look for `[CLOUD] briefing pushed for Office (2026-08-20)`. If nothing arrives,
+the log line names which half failed rather than leaving it to guesswork.
+
+`memory.ready` reads false until the first chat turn — lazy load, not a
+regression. It does block "he speaks first", which needs a stored fact naming
+today.
+
+### What is proved, and how
+
+- **The gateway boots.** The vision fix deployed from a change no interpreter had
+  ever imported, and `/health` answered 200 throughout. That was the real risk and
+  it did not materialise.
+- **The photo fix works on the device.** Confirmed by the operator, which is
+  better evidence than any harness.
+- **The logic of both fixes ran green** against standalone copies — 17 checks
+  each, in an online interpreter. The vision one includes a check that runs `see()`
+  *as it shipped* and asserts the leak, so it demonstrates the bug rather than only
+  asserting the fix.
+- **Nothing else has run.** `run_harnesses.py` has never seen any of it, and the
+  standalone checks covered logic, not imports.
+
+### Still open
+
+- `LLM_PROVIDER_VISION=gemini` is dashboard-only, undeclared in `render.yaml` —
+  the trap that file's own comments warn about. Declare it, or set vision to
+  `groq`.
+- `surface="desk"` is unreachable: a linked desk answers with its own brain, so
+  `think()` is never called there. Harmless.
+- **Declared rules** — spec written and awaiting review at
+  `jarvis-mobile/docs/superpowers/specs/2026-08-20-declared-rules-design.md`. The
+  queue is in `jarvis-mobile/NEXT.md`, rewritten this evening.
+- **Omnipresence** needs its own spec, and the `APP_TOKEN` split comes first: one
+  credential currently gates the socket, push registration, `/app-commute` and
+  `/app-state` alike. A token that can register a push and a token that can read
+  someone's day should not be the same string.
 
 ### What was found and fixed this evening
 
