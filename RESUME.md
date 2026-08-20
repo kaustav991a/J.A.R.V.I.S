@@ -48,7 +48,39 @@ saw it. It is exactly why `run_harnesses.py` matters more than usual here:
 nothing Python-side has run on the laptop, so a second one would not surface
 until Render tried to boot.
 
-## ⚠️ UNVERIFIED — 2026-08-20: the photo that answered with its own thinking
+### What IS proved, and what is still only written
+
+Worth separating, because "unverified" was doing too much work:
+
+- **The gateway imports and runs.** `/health` answers with a `commute` block,
+  which the previous build could not have done — it carried the SyntaxError. So
+  the deployed build is the fixed one, scheduler included.
+- **The ported logic is right.** All 38 checks of the pure functions —
+  `_strip_reasoning`, `_answerable`, `_js_weekday`, `_hour_label`,
+  `_due_departure`, `_briefing_text` — were run against a standalone copy on
+  2026-08-20 and passed: the unterminated think block, the fire window at both
+  edges, never-early, once-a-day per departure, rain / storm / quiet wording, the
+  wrong-hours case, and a window that wraps midnight.
+- **The OTA is published.** Runtime `ff3e7ae81ec0bea0`, update group
+  `ad5740a1-4f54-4837-b71b-721d4746a925`, from commit `d87e291`.
+
+Still NOT proved, and neither is a formality:
+
+- **`run_harnesses.py` has never run.** The standalone check covered logic, not
+  the harness files themselves, and not the `/app-commute` route tests which need
+  FastAPI's TestClient. Run it on the desk.
+- **No briefing has ever been delivered by push.** `/health` read
+  `commute.departures: 0` after the OTA was published, because the phone only
+  uploads once the new bundle is running and the Places screen is touched. Until
+  that number is non-zero the gateway has nothing scheduled.
+
+**Known and deliberate:** the window label prints whole hours, so a 6:30 PM
+departure reads `(6 PM–9 PM)`. Inherited from `hourLabel(d.hour)` on the phone,
+which ignores minutes. Left matched rather than fixed on one side only.
+
+---
+
+## ⚠️ PARTLY VERIFIED — 2026-08-20: the photo that answered with its own thinking
 
 **Not run, not deployed. Still no Python on this machine**, so neither the new
 harnesses nor the existing 81 have been executed. Run `run_harnesses.py` on the
