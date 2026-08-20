@@ -200,6 +200,10 @@ APP_TELEMETRY_SECS = float(os.getenv("APP_TELEMETRY_SECS", "15"))
 # nothing here needs a service account or a new dependency.
 EXPO_PUSH_URL = os.getenv("EXPO_PUSH_URL", "https://exp.host/--/api/v2/push/send")
 _PUSH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_push_tokens.json")
+# The commute schedule the phone uploaded, so a redeploy does not silently stop
+# the morning briefing. Same ephemeral-disk caveat as the push tokens above: the
+# phone re-sends on every cloud connect, so a lost file costs one reconnect.
+_COMMUTE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_commute.json")
 # A desk that flaps must not become a burst of identical notifications.
 APP_PUSH_MIN_GAP_SECS = float(os.getenv("APP_PUSH_MIN_GAP_SECS", "300"))
 
@@ -414,6 +418,53 @@ def _run_rotated(call_fn):
     raise last_exc or RuntimeError("Groq key rotation exhausted.")
 
 
+# ── Reasoning models say their thinking out loud, and it must not be shipped ──
+#
+# `<think>...</think>` is what a reasoning model emits before its answer. On
+# 2026-08-19 at 19:16 a photo went to `qwen/qwen3.6-27b` — the Groq vision
+# fallback, reached because Gemini's free vision quota was exhausted — and the
+# phone displayed the ENTIRE monologue and no answer at all:
+#
+#     <think>
+#     The user has sent a photo of what appears to be a smartwatch on a wrist.
+#     ... Given the user has a dog named Kitty, it might be related ...
+#     The user's prompt is just "The operator sent this photo without a caption"
+#
+# Three separate failures in one bubble. It leaked the reasoning, it leaked the
+# facts block and the injected prompt along with it, and it ran out of
+# `max_tokens` mid-thought so the answer was never reached — the reply was cut
+# off with no closing tag. Vision itself was fine: the model read the watch face,
+# the date and the blurred stairs behind it correctly. Only the packaging was
+# wrong, which is why /health showed nothing amiss.
+_THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN = re.compile(r"<think\b[^>]*>.*\Z", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Remove a model's thinking, leaving only what it meant to say.
+
+    Applied to every completion rather than to the Groq leg alone, because which
+    provider serves which capability is a runtime switch and Gemini's thinking
+    models emit the same tag. One place, so a provider change cannot bring this
+    back.
+
+    The unterminated case is deliberate, and it is the one that actually
+    happened: a `<think>` with no `</think>` means the token budget ran out
+    mid-thought, so everything from the tag onward is monologue and there is no
+    answer behind it. Dropping it leaves an empty string, which the caller turns
+    into an admission rather than an empty bubble.
+
+    Not attempted here: Groq's `reasoning_format="hidden"`. It is the tidier fix
+    where it applies and it is model-specific — Groq answers 400 for a model that
+    does not reason — so it cannot be sent unconditionally, and nothing here can
+    verify which of the configured ids accept it. Stripping needs no such
+    knowledge and covers both providers.
+    """
+    out = _THINK_BLOCK.sub("", text or "")
+    out = _THINK_OPEN.sub("", out)
+    return out.strip()
+
+
 def _groq_complete(messages: list[dict], model: str = "") -> str:
     """Blocking Groq chat completion with key rotation. Call via asyncio.to_thread."""
     def _call(client):
@@ -421,7 +472,12 @@ def _groq_complete(messages: list[dict], model: str = "") -> str:
             model=model or GROQ_MODEL,
             messages=messages,
             temperature=0.6,
-            max_tokens=700,
+            # 700 was the budget for an ANSWER, and a reasoning model spends it on
+            # thinking first. The photo above never reached its reply because the
+            # monologue alone exceeded it. Raised so the thinking a reasoning
+            # model insists on doing cannot starve the sentence the operator
+            # actually reads.
+            max_tokens=2000,
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -689,10 +745,21 @@ def _complete(messages: list[dict], model: str = "", capability: str = "text") -
                 messages, GEMINI_VISION_MODEL if capability == "vision" else GEMINI_MODEL
             )
             _brain_stats[capability]["gemini_ok"] += 1
-            return out
+            return _answerable(_strip_reasoning(out))
         except Exception as e:  # noqa: BLE001
             _note_fallback(capability, e)
-    return _groq_complete(messages, groq_model)
+    return _answerable(_strip_reasoning(_groq_complete(messages, groq_model)))
+
+
+def _answerable(text: str) -> str:
+    """Never hand back an empty bubble.
+
+    A reply that is empty once its thinking is removed means the model spent the
+    whole budget deciding what to say. Saying so is the honest report; an empty
+    message reads as the app having broken, which is the failure shape this
+    project keeps having to unlearn.
+    """
+    return text or "I thought my way past the end of my answer, sir. Ask me again."
 
 
 def _transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
@@ -1613,6 +1680,92 @@ def _desk_connected() -> bool:
 
 # ── Push, and the desk announcement that uses it ─────────────────────────────
 
+# ── The commute schedule, and why the gateway holds one ──────────────────────
+#
+# The morning briefing was a local job on the phone, and measured on the device
+# on 2026-08-20 it cannot be: `expo-background-task` requires a connected network
+# for every run (`BackgroundTaskScheduler.kt:108`), and the app's uid reads
+# `Network: 108 (blocked=REASON_APP_BACKGROUND|REASON_APP_STANDBY)` with
+# `#netAvail=0` while sitting in the RARE standby bucket. The work was not being
+# deferred, it was stopped — logcat caught the pending worker running 200ms after
+# a cold launch and then re-queueing into a window it would be blocked in again.
+# So the app was the only thing that could unblock its own briefing, which is
+# exactly how it was reported: "it arrives after I open the app".
+#
+# A high-priority push is exempt from all three restrictions, and this gateway can
+# already send one. What it could not do is know WHEN — so the phone now tells it.
+#
+# One schedule, not one per phone. This whole system has a single operator and a
+# single `APP_TOKEN`; facts are global here for the same reason.
+_commute: dict = {}
+
+
+def _load_commute() -> None:
+    global _commute
+    try:
+        with open(_COMMUTE_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        _commute = data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        _commute = {}
+
+
+def _save_commute() -> None:
+    try:
+        with open(_COMMUTE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_commute, fh)
+    except Exception:  # noqa: BLE001
+        # an unwritable file costs a re-send on the next connect, not a feature
+        pass
+
+
+def _clean_commute(body: dict) -> Optional[dict]:
+    """Read the upload, or return None if it cannot be trusted.
+
+    Rejecting outright rather than repairing. A schedule half-understood is worse
+    than none: it would fire a notification at a time nobody chose, which is the
+    one thing this feature must never do — a briefing arriving from a setting the
+    operator turned off would teach him to distrust every other one.
+    """
+    tz = str((body or {}).get("tz") or "").strip()[:64]
+    if not tz:
+        return None
+
+    days = (body or {}).get("days")
+    if not isinstance(days, list) or len(days) != 7:
+        return None
+    # indexed the way JavaScript's `Date.getDay()` counts, 0 = Sunday, because
+    # that is what the phone means by it. Python's `weekday()` starts on Monday,
+    # and the scheduler must convert rather than assume.
+    days = [bool(d) for d in days]
+
+    rows = (body or {}).get("departures")
+    if not isinstance(rows, list):
+        return None
+    out = []
+    for r in rows[:8]:
+        if not isinstance(r, dict):
+            continue
+        try:
+            hour, minute = int(r.get("hour")), int(r.get("minute"))
+            lat, lon = float(r.get("lat")), float(r.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        place_id = str(r.get("place_id") or "").strip()[:32]
+        if not place_id:
+            continue
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            continue
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            continue
+        out.append({
+            "place_id": place_id,
+            "label": str(r.get("label") or place_id).strip()[:32],
+            "hour": hour, "minute": minute, "lat": lat, "lon": lon,
+        })
+    return {"tz": tz, "days": days, "departures": out}
+
+
 def _load_push_targets() -> None:
     """Read the saved addresses, if the disk still has them.
 
@@ -2129,6 +2282,8 @@ async def _relay_watch(frame: dict) -> None:
 
 _load_push_targets()
 
+_load_commute()_load_commute()
+
 
 def _queue_offline_fact(ident: dict, text: str, reply: str) -> None:
     """Seal and queue a turn the desk never saw — BEFORE the reply goes out.
@@ -2213,6 +2368,14 @@ async def health():
             "apps_linked": len(_app_clients),
             # how many phones can be reached while holding no socket
             "push_targets": len(_push_targets),
+            # Named rather than counted alone: "the phone thinks it told me" and
+            # "I have a schedule" have to be distinguishable from outside, or a
+            # briefing that never fires has no diagnosis but guesswork.
+            "commute": {
+                "tz": _commute.get("tz"),
+                "departures": len(_commute.get("departures") or []),
+                "days_on": sum(1 for d in (_commute.get("days") or []) if d),
+            },
             # Counts only — how deep the sealed backlog is and whether anything
             # was lost. No fact, sealed or otherwise, is exposed here.
             "fact_outbox": fact_outbox.stats() if fact_outbox is not None else None}
@@ -2878,6 +3041,57 @@ async def app_push_register(request: Request):
         print(f"[CLOUD] push target registered ({platform}) - "
               f"{len(_push_targets)} total.", flush=True)
     return {"ok": True, "targets": len(_push_targets)}
+
+
+@app.post("/app-commute")
+async def app_commute(request: Request):
+    """The phone hands over WHEN it wants to be briefed, and where about.
+
+    The briefing itself is not here yet — this stores the schedule the scheduler
+    will read. Landing the contract first because the phone half is what needed
+    proving: it is the side that holds `KnownPlace`, and until it uploads
+    coordinates the gateway has nothing to forecast against.
+
+    Gated by the same credential as the socket and the push registration. It is a
+    weaker secret than those two — a schedule is not a brain — but it decides when
+    a notification wakes him up, and that is not nothing.
+
+    Idempotent by replacement, not by merge. The phone is the authority on this
+    setting, so a departure it has switched off must travel as an absence and
+    silence the gateway; merging would leave a briefing firing on a schedule the
+    operator had already turned off, which is the worst thing this feature could
+    do to its own credibility.
+    """
+    if not APP_TOKEN:
+        return Response(status_code=503)
+    auth = request.headers.get("authorization", "")
+    presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    if not hmac.compare_digest(presented, APP_TOKEN):
+        peer = request.client.host if request.client else "?"
+        print(f"[CLOUD] REFUSED commute sync from {peer}", flush=True)
+        return Response(status_code=401)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return Response(status_code=400)
+
+    global _commute
+    clean = _clean_commute(body or {})
+    if clean is None:
+        # 400 rather than a partial store: see `_clean_commute`. A schedule the
+        # gateway understood differently from the phone is the one failure mode
+        # worth refusing outright.
+        print("[CLOUD] commute sync REFUSED - unreadable schedule", flush=True)
+        return Response(status_code=400)
+
+    _commute = clean
+    _save_commute()
+    # the times, not the coordinates: these logs are readable by anyone with the
+    # Render dashboard, and where he lives is not a thing to print there
+    when = ", ".join(f"{d['label']} {d['hour']:02d}:{d['minute']:02d}"
+                     for d in clean["departures"]) or "nothing scheduled"
+    print(f"[CLOUD] commute schedule stored ({clean['tz']}): {when}", flush=True)
+    return {"ok": True, "departures": len(clean["departures"])}
 
 
 @app.websocket("/app-link")
