@@ -181,6 +181,44 @@ APP_TOKEN = (os.getenv("APP_TOKEN") or BRIDGE_SECRET or "").strip()
 # this id outright as a second line of defence.
 APP_CHAT_ID = int(os.getenv("APP_CHAT_ID", "-90001"))
 
+# ── One assistant, not three copies of one ───────────────────────────────────
+#
+# The comment above says the phone "gets a session of its own rather than sharing
+# Telegram's", and that was deliberate. It is being overruled, deliberately.
+#
+# The cost only became obvious in use: ask something at the desk, pick up the
+# phone an hour later, and he has no idea what was just discussed. Ask on the
+# phone, open Telegram, same again. Three surfaces, three separate memories, one
+# person talking — which is not a presence, it is three copies of one wearing the
+# same name. The film's JARVIS is the same JARVIS in the car as in the workshop.
+#
+# So ROUTING and MEMORY are separated. APP_CHAT_ID stays exactly as it is for
+# routing and for the relay's refusal — that defence is load-bearing and nothing
+# here touches it. What changes is which key the rolling history is filed under.
+#
+# **Only the operator's own surfaces merge.** A VIP's conversation is theirs;
+# merging Mousumi's chat into his would be a privacy failure dressed as a
+# feature, and it is why this maps one specific pair of ids rather than
+# collapsing everything into one.
+APP_MEMORY_SHARED = (os.getenv("APP_MEMORY_SHARED", "1").strip() == "1")
+
+
+def _memory_key(chat_id: int) -> int:
+    """Which conversation this turn is REMEMBERED under.
+
+    Distinct from `chat_id`, which says where a reply GOES. The phone's turns are
+    filed under the operator's Telegram chat so both surfaces read one history —
+    and the desk, which speaks to the gateway as the operator, is already there.
+
+    Falls through untouched when `TELEGRAM_USER_ID` is unset (the app must work on
+    a gateway with no Telegram wiring at all) and when the flag is off, so the old
+    behaviour is one environment variable away rather than a revert.
+    """
+    if not APP_MEMORY_SHARED or chat_id != APP_CHAT_ID:
+        return chat_id
+    owner = (os.getenv("TELEGRAM_USER_ID") or "").strip()
+    return int(owner) if owner.lstrip("-").isdigit() else chat_id
+
 # The phone re-probes when no frame has arrived for 30s (LinkMachine.tick), which
 # on an idle socket would mean a teardown-and-reconnect every half minute. A
 # status frame with no message refreshes that clock without writing to the HUD's
@@ -1017,8 +1055,13 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     written to `history`: the caller used to prepend it to `text`, which meant every
     remembered turn carried a stale copy of his coordinates and the model spent the
     conversation comparing them ("still overcast", "still in Presidency Division").
+
+    The history is keyed by `_memory_key`, not by `chat_id`: where a reply GOES
+    and what the assistant REMEMBERS are different questions, and the operator's
+    surfaces answer the second one together. See the note on `APP_MEMORY_SHARED`.
     """
-    history = await _history_for(chat_id)
+    mem = _memory_key(chat_id)
+    history = await _history_for(mem)
 
     grounding = ""
     lookup_failed = False
@@ -1097,15 +1140,18 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     reply = _LOOKUP_MARKER.sub("", reply or "").strip()
 
     # what he actually said, not what he said plus a page of coordinates
-    await _history_add(chat_id, "user", text)
-    await _history_add(chat_id, "assistant", reply)
+    await _history_add(mem, "user", text)
+    await _history_add(mem, "assistant", reply)
     return reply
 
 
 async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: str) -> str:
     """Answer a Telegram photo through the Groq vision model, in persona and
     with the same rolling per-chat memory as think()."""
-    history = await _history_for(chat_id)
+    # the same key `think` uses: one conversation across his surfaces, so a photo
+    # sent from the phone is something the desk can be asked about afterwards
+    mem = _memory_key(chat_id)
+    history = await _history_for(mem)
 
     import datetime as _dt
     now = _dt.datetime.now(_OPERATOR_TZ)
@@ -1129,8 +1175,8 @@ async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: s
 
     # Store a text stand-in for the image so follow-up turns keep context
     # without re-sending base64 through the chat model.
-    await _history_add(chat_id, "user", f"[sent a photo] {question}")
-    await _history_add(chat_id, "assistant", reply)
+    await _history_add(mem, "user", f"[sent a photo] {question}")
+    await _history_add(mem, "assistant", reply)
     return reply
 
 
@@ -3620,8 +3666,12 @@ async def app_link(websocket: WebSocket):
                         # the weather, and put a copy of his coordinates in memory
                         # on every turn.
                         ctx = await _where_context(where, text) if where else ""
-                        # APP_CHAT_ID keys `think`'s rolling memory, so the phone
-                        # gets its own thread rather than replaying Telegram's.
+                        # APP_CHAT_ID is still what a reply is ROUTED by. What it
+                        # is remembered under is now `_memory_key`, which files
+                        # the phone under the operator's own thread — see the
+                        # note on APP_MEMORY_SHARED. The comment here used to say
+                        # the phone got a thread of its own, which was true and
+                        # was the problem.
                         answer = await think(APP_CHAT_ID, text,
                                              ident["who"], ident["honorific"],
                                              context=ctx)
