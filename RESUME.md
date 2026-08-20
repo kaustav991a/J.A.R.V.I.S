@@ -7,6 +7,145 @@
 >
 > Read this, then `JARVIS_MASTER_ROADMAP.md` (the single source of truth).
 
+## 🏠 PICK THIS UP — pushed 2026-08-20 from the laptop, NOTHING RUN
+
+**No Python on the laptop, so none of this has been executed — not the new
+harnesses and not the existing 81.** That is the first job here:
+
+```bash
+python run_harnesses.py   # expect 81 + 4 new /app-commute + 8 reasoning-leak
+```
+
+**Two changes, both in `cloud_gateway.py`:**
+
+1. **A reasoning model's thinking was being shipped as the answer.** A photo sent
+   on 2026-08-19 at 19:16 came back as the model's entire `<think>` monologue —
+   leaking the facts block and the injected prompt with it — and ran out of
+   `max_tokens` before generating any reply at all. Fixed with
+   `_strip_reasoning()` + `_answerable()` in `_complete()`, and `max_tokens`
+   700 → 2000. New harness: `test_reasoning_leak.py`.
+2. **`POST /app-commute`** — the phone now uploads its briefing schedule, because
+   the local job on the phone provably cannot deliver one. Stored, persisted,
+   reported in `/health`, refused outright when unreadable. Four checks added to
+   `test_app_link.py`.
+
+**Decision owed, not made:** `LLM_PROVIDER_VISION=gemini` lives in the Render
+dashboard and is **not declared in `render.yaml`**, which is the trap that file's
+own comments warn about. Vision has never once succeeded through Gemini
+(`/health`: `gemini_ok: 0`, quota exhausted), so every photo pays a 429 before
+reaching the Groq leg that actually answers. Either declare it, or set vision to
+`groq`.
+
+**Next step, and it is the one that makes the briefing work:** nothing reads the
+stored schedule. A scheduler beside the existing startup tasks, the Open-Meteo
+read moved server-side, then `_push_all(kind="general", data={"kind":
+"commute"})`. Mind `APP_PUSH_MIN_GAP_SECS` — the quiet gap will swallow a
+briefing that lands behind an unrelated push.
+
+## ⚠️ UNVERIFIED — 2026-08-20: the photo that answered with its own thinking
+
+**Not run, not deployed. Still no Python on this machine**, so neither the new
+harnesses nor the existing 81 have been executed. Run `run_harnesses.py` on the
+desk before pushing.
+
+### What he saw
+
+2026-08-19, 19:16 IST. A photo sent from the phone's camera button came back as
+the model's entire internal monologue and no answer at all — read off the device
+the next morning:
+
+    <think>
+    The user has sent a photo of what appears to be a smartwatch on a wrist.
+    The watch face shows the time "07:16 PM" and the date "WED 08/19".
+    ...
+    Given the user has a dog named Kitty, it might be related, but it's hard to
+    be certain.
+    The user's prompt is just "The operator sent this photo without a caption —
+    react to it helpfully."
+
+Cut off there. No closing tag, no reply behind it.
+
+**Three failures in one bubble**, and only the first is cosmetic:
+
+1. the reasoning was displayed as the answer;
+2. it carried the **facts block and the injected caption prompt** out with it, so
+   a private note and the shape of the system prompt were both on screen;
+3. `max_tokens=700` was spent thinking, so **the answer was never generated.** It
+   was not badly worded. It did not exist.
+
+### Why nothing caught it
+
+The path was ordinary. `/health` read `vision.gemini_ok: 0`,
+`last_error_was_quota: true` — the free Gemini key's vision quota was exhausted,
+as it has been for every photo ever sent — so `_complete` fell back to Groq's
+`GROQ_VISION_MODEL=qwen/qwen3.6-27b`, which is a **reasoning model**. Nothing was
+misconfigured. The fallback leg simply had a property the primary did not, and no
+test asked about it.
+
+**Vision itself was fine**, which is the part worth keeping: the model read the
+watch face, the date on it, and the blurred stairs behind it correctly. Only the
+packaging was wrong, which is why `/health` showed nothing amiss.
+
+### Fixed
+
+- **`_strip_reasoning()`** removes `<think>` blocks, and an **unterminated** one
+  takes everything after it — that is the case that shipped, and a regex for
+  balanced pairs alone would have passed the whole monologue through.
+- Applied in **`_complete()`**, not on the Groq leg, because which provider serves
+  which capability is a runtime switch and Gemini's thinking models emit the same
+  tag.
+- **`_answerable()`** turns an empty result into an admission. A blank bubble
+  reads as the app being broken.
+- **`max_tokens` 700 → 2000**, so thinking cannot starve the sentence he reads.
+- **`test_reasoning_leak.py`** pins all of it, including the verbatim leak.
+
+**Not attempted:** Groq's `reasoning_format="hidden"`. Tidier where it applies,
+model-specific (Groq answers 400 for a model that does not reason), and nothing
+here can verify which configured ids accept it. Stripping needs no such knowledge.
+
+**Worth deciding separately:** `LLM_PROVIDER_VISION=gemini` is set in the Render
+dashboard and **not declared in `render.yaml`** — exactly the trap that file's own
+comments warn about. Vision has never once succeeded through Gemini
+(`gemini_ok: 0`), so every photo pays a 429 round-trip before reaching the leg
+that actually answers. Either declare it, or point vision at `groq`, whose qwen
+model is proved to read the base64 data URI `see()` builds.
+
+---
+
+## ⚠️ UNVERIFIED — 2026-08-20: the gateway now holds the commute schedule
+
+Same caveat — not run, not deployed.
+
+The phone's morning briefing cannot fire on its own, and it is not a quota
+problem. Measured on the device, uid `10495`: `countInWindow=0` on both job
+quotas, but `Network: 108 (blocked=REASON_APP_BACKGROUND|REASON_APP_STANDBY)` and
+`#netAvail=0` in the RARE standby bucket. `expo-background-task` hardcodes
+`setRequiredNetworkType(NetworkType.CONNECTED)`, so the work sits on a constraint
+Android will not satisfy. Logcat caught the pending worker running **200ms after a
+cold launch** — the app is the only thing that can unblock its own briefing, which
+is exactly how it was reported.
+
+A high-priority push is exempt from all of that, and this gateway already sends
+one correctly. What it could not do is know *when*.
+
+**Added:** `POST /app-commute` (bearer `APP_TOKEN`, same gate as the socket),
+`_commute` persisted to `app_commute.json`, `_clean_commute()` which refuses a
+schedule it cannot read rather than repairing one, and a `commute` block in
+`/health`. Four checks in `test_app_link.py`.
+
+**Replacement, never merge.** A departure the phone switched off must travel as an
+absence and silence the gateway. Merging would leave a briefing firing on a
+schedule the operator had already turned off.
+
+**Still owed, and this is the step that makes it work:** nothing reads the stored
+schedule yet. A scheduler beside the existing startup tasks (`cloud_gateway.py`,
+`@app.on_event("startup")`), the Open-Meteo read moved server-side, then
+`_push_all(kind="general", data={"kind": "commute"})`. Mind
+`APP_PUSH_MIN_GAP_SECS` — the quiet gap will swallow a briefing that lands behind
+an unrelated push.
+
+---
+
 ## ⚠️ UNVERIFIED — 2026-08-19: the pocketed reply, diagnosed properly and fixed
 
 **Not run, not deployed.** This machine still has no Python, so
