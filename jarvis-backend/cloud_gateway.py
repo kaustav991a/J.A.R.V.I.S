@@ -1082,6 +1082,61 @@ _LOOKUP_FAILED_NUDGE = (
 )
 
 
+async def _resolve_markers(reply: str, transcript: list, honorific: str) -> str:
+    """Act on the machinery a reply carries, then remove every trace of it.
+
+    Shared by `think()` and `see()` because it was NOT, and that cost a visible
+    bug: a photo asking after a motorcycle's mileage was answered, in full, with
+
+        [[LOOKUP: Royal Enfield Hunter 350 mileage ARAI real world]]
+
+    `see()` was a parallel implementation that never got this block while sharing
+    the persona that teaches the marker — so the model obeyed its instructions and
+    the gateway printed them. The search never ran, the question was never
+    answered, and the raw line went into the rolling history to be read back as
+    context on every following turn. A `[[REMEMBER: …]]` stated over a photo was
+    unstorable for the same reason.
+
+    One function rather than a second copy, because a third caller is precisely how
+    this happened once already.
+
+    `transcript` is what the second pass should be asked WITH, and it is the
+    caller's job because the two paths differ: `think()` hands over its own
+    messages unchanged, while `see()` must swap the base64 image for a text
+    stand-in — the second pass runs on the text leg, which cannot read an image and
+    would pay for the tokens anyway. What the model saw survives in its own first
+    reply, which is appended here.
+    """
+    asked = _LOOKUP_MARKER.search(reply or "")
+    if asked and WEB_LOOKUP:
+        query = asked.group(1).strip()[:200]
+        print(f"[CLOUD] model asked for a lookup: {query!r}", flush=True)
+        snippets = await asyncio.to_thread(_web_lookup, query)
+        second = list(transcript)
+        # its own request belongs in the transcript, or the second pass reads as
+        # though the results arrived from nowhere
+        second.append({"role": "assistant", "content": reply})
+        second.append({
+            "role": "system",
+            "content": (_SECOND_PASS_NUDGE + "\n\n" + snippets) if snippets else
+                       _LOOKUP_FAILED_NUDGE.format(honorific=honorific),
+        })
+        # Once only. A model that can ask twice can ask forever, and a loop that
+        # bills a free tier per iteration is not a loop worth having.
+        reply = await asyncio.to_thread(_complete, second, "", "text")
+
+    # Stored before the marker is stripped, and stored even if the write fails, so a
+    # fact he stated is at least true for this process.
+    for fact in _REMEMBER_MARKER.findall(reply or ""):
+        await remember_fact(fact)
+
+    # Stripped whether or not they were acted on. A marker that reaches the operator
+    # is worse than no marker at all: it is punctuation from the machinery, in a chat
+    # that is supposed to read like someone talking.
+    reply = _REMEMBER_MARKER.sub("", reply or "")
+    return _LOOKUP_MARKER.sub("", reply or "").strip()
+
+
 async def think(chat_id: int, text: str, who: str, honorific: str,
                 context: str = "", surface: str = "") -> str:
     """Run one turn through the cloud brain, with rolling per-chat memory.
@@ -1148,44 +1203,14 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
 
     reply = await asyncio.to_thread(_complete, messages, "", "text")
 
-    # ── The model asked for a search: run it and let it answer properly ──────
+    # The search it asked for, the facts it was told to keep, and the markers
+    # removed — one extra round trip, and the operator sees one grounded reply.
+    # This is what replaces "I'll look up the breed standards for you", a sentence
+    # that was never followed by anything because nothing runs between turns.
     #
-    # One extra round trip, and the operator sees one grounded reply. This is what
-    # replaces "I'll look up the breed standards for you" — a sentence that was
-    # never followed by anything, because nothing runs between turns.
-    #
-    # Once only. A model that can ask twice can ask forever, and a loop that bills
-    # a free tier per iteration is not a loop worth having.
-    asked = _LOOKUP_MARKER.search(reply or "")
-    if asked and WEB_LOOKUP:
-        query = asked.group(1).strip()[:200]
-        print(f"[CLOUD] model asked for a lookup: {query!r}", flush=True)
-        snippets = await asyncio.to_thread(_web_lookup, query)
-        second = list(messages)
-        # its own request belongs in the transcript, or the second pass reads as
-        # though the results arrived from nowhere
-        second.append({"role": "assistant", "content": reply})
-        second.append({
-            "role": "system",
-            "content": (_SECOND_PASS_NUDGE + "\n\n" + snippets) if snippets else
-                       _LOOKUP_FAILED_NUDGE.format(honorific=honorific),
-        })
-        reply = await asyncio.to_thread(_complete, second, "", "text")
-
-    # ── Anything it was told to remember ────────────────────────────────────
-    #
-    # Stored before the marker is stripped, and stored even if the write fails, so a
-    # fact he stated is at least true for this process. A turn history cannot carry
-    # this: it scrolls off in twelve messages, which is how his dog fell out of the
-    # conversation while still being the subject of it.
-    for fact in _REMEMBER_MARKER.findall(reply or ""):
-        await remember_fact(fact)
-
-    # Stripped whether or not they were acted on. A marker that reaches the operator
-    # is worse than no marker at all: it is punctuation from the machinery, in a chat
-    # that is supposed to read like someone talking.
-    reply = _REMEMBER_MARKER.sub("", reply or "")
-    reply = _LOOKUP_MARKER.sub("", reply or "").strip()
+    # `messages` unchanged: a text turn's transcript is already what the second
+    # pass should read. See `see()` for the half that is not.
+    reply = await _resolve_markers(reply, messages, honorific)
 
     # what he actually said, not what he said plus a page of coordinates
     await _history_add(mem, "user", text)
@@ -1226,6 +1251,22 @@ async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: s
     })
 
     reply = await asyncio.to_thread(_complete, messages, "", "vision")
+
+    # ── The same machinery a text turn gets, and for the same reasons ────────
+    #
+    # This path had none of it, and a photo of a motorcycle came back as the
+    # literal string `[[LOOKUP: Royal Enfield Hunter 350 mileage ARAI real world]]`
+    # — the persona teaches the marker and this function used the persona, so the
+    # model was following instructions the gateway then failed to carry out.
+    #
+    # The transcript handed over is text-only. The second pass runs on the text
+    # leg: it cannot read the image, and sending a megabyte of base64 to a model
+    # that will ignore it is a cost with no upside. The stand-in below is the same
+    # one the history keeps, and what the model actually SAW travels in its own
+    # first reply, which `_resolve_markers` appends.
+    grounded = [m for m in messages if not isinstance(m.get("content"), list)]
+    grounded.append({"role": "user", "content": f"[sent a photo] {question}"})
+    reply = await _resolve_markers(reply, grounded, honorific)
 
     # Store a text stand-in for the image so follow-up turns keep context
     # without re-sending base64 through the chat model.

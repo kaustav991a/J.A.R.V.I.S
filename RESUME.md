@@ -7,6 +7,80 @@
 >
 > Read this, then `JARVIS_MASTER_ROADMAP.md` (the single source of truth).
 
+## 🏠 START HERE — 2026-08-20, 5:30 PM. The photo answered with a search request.
+
+**First job on the desk, before anything else:**
+
+```bash
+python run_harnesses.py   # expect 81 + 4 /app-commute + 8 reasoning-leak + 17 vision-marker
+```
+
+Two days of Python-side work has never been executed on a machine with Python.
+That is the whole of the risk in this repo.
+
+### What was found and fixed this evening
+
+A photo of a motorcycle, captioned "what is this bike? what is the mileage?",
+came back on the device at 17:15 as its entire reply:
+
+    [[LOOKUP: Royal Enfield Hunter 350 mileage ARAI real world]]
+
+The vision half was right — it read the bike off the tank. `see()` was a parallel
+implementation of `think()` that never got `think()`'s post-processing, while
+sharing the persona that TEACHES that marker. So the model obeyed its
+instructions and the gateway printed them.
+
+Three defects from the one omission, and the leak is the least of them:
+
+1. **the search never ran**, so the question asked was never answered;
+2. `[[REMEMBER: …]]` stated over a photo leaked the same way **and was
+   discarded** — a fact given with a picture was unstorable;
+3. the raw reply went into the rolling history (`see()`, formerly line 1229), so
+   a leaked marker became context on every following turn. Memory is
+   Supabase-backed, so **that line survives restarts** and is still in the
+   history now. Worth clearing.
+
+**The fix is one shared `_resolve_markers()`**, called by both paths, rather than
+a second copy of the block — a third caller is exactly how this happened once.
+The subtle half is `see()`'s transcript: the second pass runs on the **text** leg,
+so the base64 image is swapped for the same `[sent a photo] {caption}` stand-in
+the history uses. What the model saw travels in its own first reply, which the
+resolver appends.
+
+Why the morning's `<think>` fix did not already cover this: that one went into
+`_complete()`, which both legs share. This one lived in `think()` alone.
+
+### What is proved, and how
+
+- **The logic is right.** All 17 checks ran green in an online interpreter on
+  2026-08-20 against a standalone copy — including one that runs `see()` *as it
+  shipped* and asserts the leak, so the harness demonstrates the bug rather than
+  only asserting the fix.
+- **`test_vision_markers.py` has never run**, and neither has anything else here.
+  It is picked up automatically by `run_harnesses.py`'s `test_*.py` glob. The
+  standalone check covered logic, not imports — and the last push carried a
+  `_load_commute()_load_commute()` SyntaxError that only a real import would have
+  caught.
+
+### Also true as of this evening
+
+- The phone applied the OTA and `/health` now reads `memory.ready: true`,
+  `facts_known: 16`, `apps_linked: 1`, `push_targets: 1`,
+  `commute: {tz: Asia/Calcutta, departures: 1, days_on: 5}`. The gateway finally
+  has a schedule to fire against.
+- **The first push-delivered briefing is due tonight, 7:00–7:20 PM**, window
+  `COMMUTE_FIRE_WINDOW_MIN` 20, tick 60s. Look for
+  `[CLOUD] briefing pushed for Office (2026-08-20)`.
+- UptimeRobot is now pinging `/health` every 5 minutes, which closes the free-tier
+  spin-down hole that would have killed the loop before 19:00. `/health` was
+  stone cold earlier today, so this mattered.
+- Office coordinates are confirmed correct — the operator was standing in the
+  office when the place was named, so tonight's forecast is for the right place.
+- `LLM_PROVIDER_VISION=gemini` is still dashboard-only, undeclared in
+  `render.yaml`. Vision is answering.
+
+---
+
 ## 🏠 PICK THIS UP — pushed 2026-08-20 from the laptop, NOTHING RUN
 
 **No Python on the laptop, so none of this has been executed — not the new
