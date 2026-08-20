@@ -2276,6 +2276,173 @@ async def _commute_loop() -> None:
         await asyncio.sleep(COMMUTE_TICK_SECS)
 
 
+# ── Speaking first ───────────────────────────────────────────────────────────
+#
+# Everything this assistant has ever said has been an answer. Asked for directly
+# on 2026-08-20: "make the app interact with me autonomously, without sending my
+# chat." That is the difference between a very good assistant app and the thing
+# it is named after — the film's JARVIS starts sentences.
+#
+# The commute briefing was the first unprompted thing the phone ever received, and
+# it proved the delivery: a high-priority push reaches a phone that is asleep, in a
+# pocket, with the app closed. This reuses that path for something that is not on a
+# timetable.
+#
+# THE DESIGN CONSTRAINT, and it is the whole of it: **he must be worth reading.**
+# A machine that speaks unprompted is one bad week away from being muted, and a
+# muted assistant cannot say the one thing that mattered. So:
+#
+#   * at most one unprompted remark a day, and never two in a row on the same
+#     subject;
+#   * only when something is actually true today that was not true yesterday —
+#     nothing generated for the sake of speaking;
+#   * silence is the default and needs no excuse. There is no "nothing to report"
+#     message, because that is the message you learn to swipe away;
+#   * and it is a REMARK, not a briefing. One or two sentences, in his voice.
+#
+# The quiet hours are not negotiable either. Nothing goes out before NUDGE_FROM_H
+# or after NUDGE_UNTIL_H, whatever it thinks it has noticed.
+NUDGE_ENABLED = (os.getenv("NUDGE_ENABLED", "1").strip() == "1")
+NUDGE_TICK_SECS = float(os.getenv("NUDGE_TICK_SECS", "900"))
+NUDGE_FROM_H = int(os.getenv("NUDGE_FROM_H", "9"))
+NUDGE_UNTIL_H = int(os.getenv("NUDGE_UNTIL_H", "21"))
+_NUDGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_nudge.json")
+
+# what was said unprompted, and when: {"day": "YYYY-MM-DD", "about": "<subject>"}
+_nudge: dict = {}
+
+
+def _load_nudge() -> None:
+    global _nudge
+    try:
+        with open(_NUDGE_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        _nudge = data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        _nudge = {}
+
+
+def _save_nudge() -> None:
+    try:
+        with open(_NUDGE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_nudge, fh)
+    except Exception:  # noqa: BLE001
+        # An unwritable file means he could speak twice in a day. That is the
+        # failure to prefer over the alternative — a lost marker that silenced him
+        # permanently would be indistinguishable from the feature not existing.
+        pass
+
+
+def _nudge_subject(facts: list, now) -> Optional[tuple]:
+    """What is worth remarking on today, as (subject, prompt), or None.
+
+    None is the expected answer most of the time and needs no apology. This looks
+    for a fact that is ABOUT today rather than merely stored — a date that has
+    arrived, a day named. Anything else is a fact he already knows and mentioning
+    it unprompted is reciting.
+
+    Deliberately narrow. The temptation is to hand the whole fact list to a model
+    and ask "anything interesting?", which produces a remark every single day
+    because a model asked for something will always find something. The judgement
+    of WHETHER to speak is made here, in code, and only the WORDING is the model's.
+    """
+    today = now.strftime("%Y-%m-%d")
+    weekday = now.strftime("%A").lower()
+    day_num = str(now.day)
+    month = now.strftime("%B").lower()
+
+    for fact in facts:
+        low = str(fact).lower()
+        # a fact naming today's date, in either order people write it
+        dated = (f"{day_num} {month}" in low or f"{month} {day_num}" in low
+                 or today in low)
+        # or naming today's weekday as something recurring
+        named_day = weekday in low
+        if not (dated or named_day):
+            continue
+        return (
+            str(fact)[:120],
+            "Something you were told about him is true TODAY: "
+            f"\"{fact}\". Remark on it in ONE short sentence, as though you had "
+            "just remembered it — the way someone who knows him would mention it "
+            "in passing. Do not greet him, do not list anything, do not offer "
+            "help, and do not explain that you remembered. If it does not "
+            "actually warrant saying out loud, reply with exactly: SKIP",
+        )
+    return None
+
+
+async def _nudge_tick() -> None:
+    """One pass. Silent unless something is genuinely true today."""
+    if not NUDGE_ENABLED or not _push_targets:
+        return
+    import datetime as _dt
+    now = _dt.datetime.now(_OPERATOR_TZ)
+    if not (NUDGE_FROM_H <= now.hour < NUDGE_UNTIL_H):
+        return
+
+    today = now.strftime("%Y-%m-%d")
+    if _nudge.get("day") == today:
+        return
+
+    facts = await _facts()
+    if not facts:
+        return
+    found = _nudge_subject(facts, now)
+    if not found:
+        return
+    subject, instruction = found
+    # the same subject twice is how a remark becomes a nag
+    if _nudge.get("about") == subject:
+        return
+
+    ident = next((i for i in _IDENTITIES.values() if i["tier"] == _ADMIN_TIER), None)
+    if not ident:
+        return
+
+    try:
+        said = await think(APP_CHAT_ID, instruction, ident["who"],
+                           ident["honorific"], surface="app")
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] nudge could not be worded: {e}", flush=True)
+        return
+
+    said = (said or "").strip()
+    # The model's own veto, and it is honoured. Asked whether something is worth
+    # saying, a model that answers "no" is more trustworthy than one that never
+    # does — and the marker is still written, so it does not reconsider all day.
+    if not said or said.upper().startswith("SKIP"):
+        _nudge.update({"day": today, "about": subject})
+        _save_nudge()
+        print("[CLOUD] nudge declined by the brain; nothing sent.", flush=True)
+        return
+
+    await _push_all("J.A.R.V.I.S.", said,
+                    data={"kind": "reply", "unprompted": True},
+                    kind="general", force=True)
+    _nudge.update({"day": today, "about": subject})
+    _save_nudge()
+    print(f"[CLOUD] spoke first: {said[:80]}", flush=True)
+
+
+async def _nudge_loop() -> None:
+    """Watch for something worth saying, and say almost nothing.
+
+    Quarter-hourly, which for at most one remark a day is generous — but the
+    window it is looking for is "today", and a tick that costs a dictionary lookup
+    when there is nothing to say can afford to be frequent. Every exception is
+    caught and printed: a loop that died quietly would be a feature that silently
+    stopped existing, which is this project's recurring failure shape.
+    """
+    print("[CLOUD] unprompted-remark loop started.", flush=True)
+    while True:
+        try:
+            await _nudge_tick()
+        except Exception as e:  # noqa: BLE001
+            print(f"[CLOUD] nudge tick failed: {e}", flush=True)
+        await asyncio.sleep(NUDGE_TICK_SECS)
+
+
 async def _broadcast_app(payload: dict) -> None:
     """One frame to every attached phone, dropping the ones that have gone."""
     for ws in list(_app_clients):
@@ -2665,6 +2832,7 @@ _load_push_targets()
 
 _load_commute()
 _load_briefed()
+_load_nudge()
 
 
 def _queue_offline_fact(ident: dict, text: str, reply: str) -> None:
@@ -3765,6 +3933,9 @@ async def _startup():
     # the loop would never run, which is the same silence this whole change
     # exists to remove.
     asyncio.create_task(_commute_loop())
+    # Same placement and the same reason: speaking first has nothing to do with
+    # Telegram, and every return below is about the bot.
+    asyncio.create_task(_nudge_loop())
 
     if not BOT_TOKEN:
         print("[CLOUD] ❌ TELEGRAM_BOT_TOKEN missing — gateway will not respond.", flush=True)
