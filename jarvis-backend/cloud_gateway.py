@@ -203,6 +203,43 @@ APP_CHAT_ID = int(os.getenv("APP_CHAT_ID", "-90001"))
 APP_MEMORY_SHARED = (os.getenv("APP_MEMORY_SHARED", "1").strip() == "1")
 
 
+# ── Which surface he is speaking from, and what it can do ────────────────────
+#
+# Since the memory became shared, one history holds turns typed at the desk, sent
+# from the phone and sent through Telegram, and nothing in it says which. He was
+# inferring it by accident: a phone turn arrives carrying a location block and a
+# Telegram turn does not — a hint, not a statement, and one that vanishes the
+# moment location sharing is switched off.
+#
+# It matters in a specific way rather than a general one. At the desk "open that
+# file" is a thing that can be done; on the phone it is not, and offering it is
+# worse than declining, because the offer looks like the work happening. The
+# surface also decides what he HAS: the desk has hands, the cloud only talks.
+#
+# One line, stated rather than implied. Kept short on purpose — this rides on
+# every turn, and a paragraph about the transport is a paragraph not spent on the
+# question.
+SURFACE_NOTE = {
+    "app": ("He is speaking from the phone app. You can answer, look at photos and "
+            "remember things; you cannot touch his PC unless the desk is linked."),
+    "telegram": ("He is speaking through Telegram. Same reach as the phone app: "
+                 "answers and memory, no direct control of his PC unless the desk "
+                 "is linked."),
+    "desk": ("He is speaking at the desk, where you have full control of the "
+             "machine."),
+}
+
+
+def _surface_line(surface: str) -> str:
+    """The one line naming where a turn came from, or nothing.
+
+    Unknown surfaces return an empty string rather than a guess: saying the wrong
+    thing about what he can reach is worse than saying nothing, because he acts on
+    it.
+    """
+    return SURFACE_NOTE.get(surface, "")
+
+
 def _memory_key(chat_id: int) -> int:
     """Which conversation this turn is REMEMBERED under.
 
@@ -1046,7 +1083,7 @@ _LOOKUP_FAILED_NUDGE = (
 
 
 async def think(chat_id: int, text: str, who: str, honorific: str,
-                context: str = "") -> str:
+                context: str = "", surface: str = "") -> str:
     """Run one turn through the cloud brain, with rolling per-chat memory.
 
     `context` is per-turn background — the phone's location and measured weather.
@@ -1059,6 +1096,11 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     The history is keyed by `_memory_key`, not by `chat_id`: where a reply GOES
     and what the assistant REMEMBERS are different questions, and the operator's
     surfaces answer the second one together. See the note on `APP_MEMORY_SHARED`.
+
+    `surface` names where the turn came from, which one shared history cannot say
+    on its own. Ephemeral like `context` and for the same reason: the surface is
+    true of this turn, not of the conversation, and a remembered copy would have
+    him telling you tomorrow where you stood yesterday.
     """
     mem = _memory_key(chat_id)
     history = await _history_for(mem)
@@ -1090,6 +1132,12 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     system = _PERSONA.format(who=who, honorific=honorific) + date_ctx + await _facts_block() + grounding
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
+    # Before the location block, because it frames it: "he is on the phone" is
+    # what makes "he is at the office" mean he is standing there rather than
+    # that a machine there reported it.
+    said_surface = _surface_line(surface)
+    if said_surface:
+        messages.append({"role": "system", "content": said_surface})
     if context:
         messages.append({"role": "system", "content": context})
     if _has_indic_script(text):
@@ -1145,7 +1193,8 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     return reply
 
 
-async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: str) -> str:
+async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: str,
+              surface: str = "") -> str:
     """Answer a Telegram photo through the Groq vision model, in persona and
     with the same rolling per-chat memory as think()."""
     # the same key `think` uses: one conversation across his surfaces, so a photo
@@ -1160,6 +1209,11 @@ async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: s
     question = caption.strip() or "The operator sent this photo without a caption — react to it helpfully."
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
+    # a photo comes from a surface too, and what he can do about what he sees
+    # depends on which one
+    said_surface = _surface_line(surface)
+    if said_surface:
+        messages.append({"role": "system", "content": said_surface})
     if _has_indic_script(question):
         messages.append({"role": "system", "content": _ROMANISE_NUDGE})
     messages.append({
@@ -1540,7 +1594,8 @@ def _build_dispatcher():
             return
         try:
             reply = await think(message.chat.id, text,
-                                ident["who"], ident["honorific"])
+                                ident["who"], ident["honorific"],
+                                surface="telegram")
         except Exception as e:  # noqa: BLE001
             print(f"[CLOUD] think() fault: {e}\n{traceback.format_exc()}", flush=True)
             reply = "I hit a fault reaching my reasoning core just now — try again in a moment."
@@ -1595,7 +1650,8 @@ def _build_dispatcher():
             await message.bot.download(message.photo[-1], destination=buf)  # largest size
             b64 = base64.b64encode(buf.getvalue()).decode()
             reply = await see(message.chat.id, b64, message.caption or "",
-                              ident["who"], ident["honorific"])
+                              ident["who"], ident["honorific"],
+                              surface="telegram")
         except Exception as e:  # noqa: BLE001
             print(f"[CLOUD] photo vision fault: {e}\n{traceback.format_exc()}", flush=True)
             reply = "My visual cortex faltered on that one — send it again in a moment."
@@ -2773,7 +2829,8 @@ async def _forward_to_desk(message, ident: dict, text: str) -> bool:
                           f"{_DESK_REPLY_TIMEOUT:.0f}s — answering from the cloud brain.", flush=True)
                     try:
                         reply = await think(message.chat.id, text,
-                                            ident["who"], ident["honorific"])
+                                            ident["who"], ident["honorific"],
+                                            surface="telegram")
                     except Exception:  # noqa: BLE001
                         reply = ("The desk link stalled on that one — I couldn't get "
                                  "an answer through. Try again in a moment.")
@@ -3638,7 +3695,8 @@ async def app_link(websocket: WebSocket):
                     await say("thinking")
                     try:
                         answer = await see(APP_CHAT_ID, photo, text,
-                                           ident["who"], ident["honorific"])
+                                           ident["who"], ident["honorific"],
+                                           surface="app")
                     except Exception as e:  # noqa: BLE001
                         await say("error", _excuse("look at that picture", e))
                         await say("online")
@@ -3674,7 +3732,7 @@ async def app_link(websocket: WebSocket):
                         # was the problem.
                         answer = await think(APP_CHAT_ID, text,
                                              ident["who"], ident["honorific"],
-                                             context=ctx)
+                                             context=ctx, surface="app")
                     except Exception as e:  # noqa: BLE001
                         await say("error", _excuse("answer that", e))
                         await say("online")
