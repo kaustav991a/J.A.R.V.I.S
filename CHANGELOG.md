@@ -5,6 +5,113 @@ This file follows the spirit of [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [The Briefing Leaves the Phone, and a Model Stops Thinking Out Loud] — 2026-08-20
+
+Two changes the device found, not the roadmap. Both are in `cloud_gateway.py`.
+**Neither has been executed** — the machine they were written on has no Python, so
+`run_harnesses.py` is owed on the desk before either reaches Render.
+
+### Fixed
+
+- **A reasoning model's thinking was being shipped as the answer.** A photo sent
+  from the phone on 2026-08-19 at 19:16 came back as the model's entire
+  `<think>` monologue and no reply at all. Three failures in one bubble: the
+  reasoning was displayed as the answer, it carried the facts block and the
+  injected caption prompt out with it — a private note and the shape of the system
+  prompt, both on screen — and `max_tokens=700` was spent thinking, so the answer
+  was never generated. Not badly worded. Nonexistent.
+
+  The path was ordinary, which is why nothing caught it. `/health` read
+  `vision.gemini_ok: 0` with `last_error_was_quota: true` — the free Gemini vision
+  quota has been exhausted for every photo ever sent — so `_complete` fell back to
+  `GROQ_VISION_MODEL=qwen/qwen3.6-27b`, a reasoning model. Nothing was
+  misconfigured; the fallback leg simply had a property the primary did not.
+
+  **Vision itself was fine**, and that is worth recording: the model read the watch
+  face, the date on it and the blurred stairs behind it correctly. Only the
+  packaging was wrong, which is why `/health` showed nothing amiss and why this
+  needed a harness rather than a metric.
+
+  `_strip_reasoning()` removes the blocks, and an **unterminated** one takes
+  everything after it — the case that actually shipped, and one a regex for
+  balanced pairs would have passed straight through. Applied in `_complete()`
+  rather than on the Groq leg, because which provider serves which capability is a
+  runtime switch and Gemini's thinking models emit the same tag. `_answerable()`
+  turns an empty result into an admission: a blank bubble reads as the app being
+  broken. `max_tokens` 700 → 2000. New harness `test_reasoning_leak.py`.
+
+  *Not attempted:* Groq's `reasoning_format="hidden"`. Tidier where it applies,
+  model-specific — Groq answers 400 for a model that does not reason — and nothing
+  available could verify which configured ids accept it.
+
+### Added
+
+- **The morning briefing is now scheduled and sent from here.** It was a
+  WorkManager job on the phone, and measured on the device it cannot be. Uid
+  `10495`, before the app was opened: both job quotas at `countInWindow=0` — so
+  the throttling theory the mobile repo had been carrying was wrong — but
+  `Network: 108 (blocked=REASON_APP_BACKGROUND|REASON_APP_STANDBY)` and
+  `#netAvail=0` in the RARE standby bucket. `expo-background-task` hardcodes
+  `setRequiredNetworkType(NetworkType.CONNECTED)`, so the work sat on a constraint
+  Android would not satisfy. Not deferred — stopped. Logcat then caught the pending
+  worker running **200 ms after a cold launch** and re-queueing into a window it
+  would be blocked in again, which is exactly how it was reported: "the briefing
+  arrives after I open the app."
+
+  A high-priority push is exempt from all three restrictions — the timely wake, the
+  network read, and the process being alive to post — and this gateway already sent
+  those correctly. What it could not do was know *when*.
+
+  **`POST /app-commute`** takes the schedule from the phone, gated by the same
+  `APP_TOKEN` as the socket. **Replacement, never merge:** a departure the phone
+  switched off must travel as an absence and silence the gateway, because a
+  briefing arriving from a setting the operator turned off is the worst thing this
+  feature could do to its own credibility. `_clean_commute()` refuses an upload it
+  cannot read rather than repairing one; a single unusable row is dropped instead,
+  since refusing the whole thing would take a working departure down with it.
+
+  **`_commute_loop`** ticks every 60 s, `_due_departure` decides whether anything
+  is owed, `_forecast_blocking` reads Open-Meteo in a thread, `_briefing_text`
+  writes it in the phone's voice, and `_push_all(..., force=True)` sends it.
+  `_briefed` holds the once-a-day mark in `app_briefed.json`.
+
+  Four decisions worth not re-litigating:
+
+  - **The loop starts first in `_startup`**, above the Telegram checks. Every
+    return below that point is about the bot, and the briefing has nothing to do
+    with Telegram — underneath them it would never run with `BOT_TOKEN` missing or
+    `PUBLIC_URL` unset.
+  - **It fires at the departure time or up to 20 minutes after, never before.** The
+    phone's window was ±30 minutes because Android chose when its job ran; nothing
+    chooses for this loop.
+  - **`force=True`, the second caller ever to use it.** The quiet gap exists so a
+    flapping desk cannot become a burst of identical notifications. A briefing
+    cannot burst — once per departure per day — and losing it because a status push
+    went out four minutes earlier would be the gap policing the one thing it was
+    never meant to.
+  - **A failed forecast does not consume the day.** No mark is written, so the next
+    tick tries again. Announcing "all clear" when the lookup failed would be the
+    one genuinely dishonest message this feature could send, and the phone had to
+    be talked out of exactly that.
+
+  The wording is a **second copy** of `jarvis-mobile/src/lib/commute.ts`,
+  deliberately: the phone keeps its version as a fallback and for PREVIEW, the
+  button that proves the channel and the permission without waiting on anything.
+  `test_commute_briefing.py` is what keeps the two honest.
+
+  `/health` now reports the stored schedule, so "the phone thinks it told me" and
+  "I have a schedule" stay distinguishable from outside.
+
+### Known, and not yet decided
+
+- **`LLM_PROVIDER_VISION=gemini` lives only in the Render dashboard**, undeclared
+  in `render.yaml` — precisely the trap that file's own comments warn about, since
+  a Blueprint re-sync drops it silently. Vision has never once succeeded through
+  Gemini, so every photo pays a 429 round trip before reaching the leg that
+  answers. Either declare it or point vision at `groq`.
+
+---
+
 ## [A Butler Who Can Carry a Message — and Remember Who Said What] — 2026-07-26
 
 Two owner-facing capabilities around the Telegram gateway, which until now could message

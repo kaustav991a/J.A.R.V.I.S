@@ -33,6 +33,24 @@ The queue below is unchanged and nothing jumps it: **finish the gate → the
 capability pass (introspection action + skill installer + a public-API
 shortlist, as ONE reviewable change) → the torch move → Electron → mobile.**
 
+### Since then, from the phone — 2026-08-20
+
+Two gateway changes that did jump the queue, because both were live defects the
+device found rather than roadmap work. Neither has been run: **still no Python on
+the laptop**, so `run_harnesses.py` on the desk is owed before any deploy.
+
+- **A reasoning model's thinking was shipped as the answer.** A photo came back as
+  the model's entire `<think>` monologue, leaking the facts block and the injected
+  prompt, and spent its whole `max_tokens` before generating a reply. Vision
+  itself was fine. Fixed with `_strip_reasoning` / `_answerable` in `_complete`
+  and `max_tokens` 700 → 2000.
+- **The morning briefing moved off the phone.** `expo-background-task` requires a
+  connected network on every run and the app's uid has none in the background, so
+  the job only ever ran when the app was opened. `POST /app-commute` plus
+  `_commute_loop` now schedule it here and deliver it by high-priority push.
+
+Both are written up with their measurements in `RESUME.md`.
+
 ---
 
 ## 1. North Star

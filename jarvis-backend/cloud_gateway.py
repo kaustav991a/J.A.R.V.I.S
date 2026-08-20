@@ -1895,6 +1895,285 @@ async def _push_all(title: str, body: str, data: Optional[dict] = None,
               f"{len(dead)} unregistered, errors={failed}", flush=True)
 
 
+# ── The briefing the gateway sends itself ────────────────────────────────────
+#
+# Ported from jarvis-mobile `src/lib/commute.ts`, deliberately rather than
+# shared. The phone keeps its copy as a fallback and for PREVIEW, which is the
+# button that proves the channel and the permission without waiting on anything.
+# Two copies of the thresholds is a real cost; the alternative was a phone
+# fetching a forecast it has no network to fetch.
+#
+# Why any of this is here is in `_load_commute` above: the device job cannot run.
+COMMUTE_TICK_SECS = float(os.getenv("COMMUTE_TICK_SECS", "60"))
+# How long after a departure time a briefing may still go out. Not slop for a
+# scheduler — this loop is punctual — but for a redeploy or a cold start landing
+# inside the minute that mattered. Past this it is stale: a warning about rain on
+# your way out is worth nothing once you have already left.
+COMMUTE_FIRE_WINDOW_MIN = int(os.getenv("COMMUTE_FIRE_WINDOW_MIN", "20"))
+OPEN_METEO_URL = os.getenv("OPEN_METEO_URL", "https://api.open-meteo.com/v1/forecast")
+
+# The thresholds, in one place so they can be argued with — the same values and
+# the same names the phone uses.
+RAIN_CHANCE = 50
+RAIN_MM = 0.4
+HOT_C = 35.0
+COLD_C = 12.0
+WINDY_KMH = 40.0
+_THUNDER = {95, 96, 99}
+
+# place_id -> the day it was last briefed, so the same umbrella is not announced
+# three times. Per departure, so the morning cannot silence the evening.
+_briefed: dict = {}
+_BRIEFED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_briefed.json")
+
+
+def _load_briefed() -> None:
+    global _briefed
+    try:
+        with open(_BRIEFED_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        _briefed = {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        _briefed = {}
+
+
+def _save_briefed() -> None:
+    try:
+        with open(_BRIEFED_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_briefed, fh)
+    except Exception:  # noqa: BLE001
+        # Worth naming: an unwritable file means a briefing could repeat after a
+        # restart. That is the failure to prefer — a second umbrella notice is an
+        # annoyance, a missed one is the whole feature.
+        pass
+
+
+def _commute_zone(name: str):
+    """The operator's zone, or UTC.
+
+    Falling back rather than raising: a schedule with an unreadable zone is still
+    better acted on late than not at all, and /health reports the tz it was
+    given, so a wrong one is visible rather than silent.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001
+        import datetime as _dt
+        return _dt.timezone.utc
+
+
+def _js_weekday(when) -> int:
+    """Sunday-first, the way the phone indexes its `days` array.
+
+    `Date.getDay()` counts 0 = Sunday; Python's `weekday()` counts 0 = Monday.
+    Converted here, once, because getting it wrong is a briefing that arrives on
+    the wrong days and reads as a scheduling bug rather than an off-by-one.
+    """
+    return (when.weekday() + 1) % 7
+
+
+def _hour_label(hour: int) -> str:
+    """`7 PM`. The meridiem is always printed.
+
+    A window that read `08:00-11:00` on a briefing its owner had set for the
+    evening is the reason: 24-hour digits are unambiguous only to a reader
+    already thinking in them.
+    """
+    twelve = 12 if hour % 12 == 0 else hour % 12
+    return f"{twelve} {'AM' if hour % 24 < 12 else 'PM'}"
+
+
+def _due_departure(now, sched: dict) -> Optional[dict]:
+    """Which departure wants briefing now, if any, and not already done today.
+
+    Fires at the time or shortly after, never before. The phone's window was
+    ±30 minutes because Android chose when its job ran; nothing chooses for this
+    loop, so early delivery would be a decision rather than a symptom — and a
+    warning about the walk out is worth less the earlier it arrives.
+    """
+    days = sched.get("days") or []
+    if len(days) != 7 or not days[_js_weekday(now)]:
+        return None
+    today = now.strftime("%Y-%m-%d")
+    minutes_now = now.hour * 60 + now.minute
+    for d in sched.get("departures") or []:
+        try:
+            target = int(d["hour"]) * 60 + int(d["minute"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (target <= minutes_now <= target + COMMUTE_FIRE_WINDOW_MIN):
+            continue
+        if _briefed.get(d.get("place_id")) == today:
+            continue
+        return d
+    return None
+
+
+def _forecast_blocking(lat: float, lon: float, tz: str) -> Optional[dict]:
+    """Read Open-Meteo. Blocking on purpose — the caller threads it.
+
+    None for any failure, and the caller stays SILENT on a None. Announcing "all
+    clear" when the lookup failed would be the one genuinely dishonest message
+    this feature could send, and the phone learned that expensively: a briefing
+    that could not tell "the morning is fine" from "I could not find out" marked
+    the day done and went quiet until tomorrow, where it failed identically.
+    """
+    url = (f"{OPEN_METEO_URL}?latitude={lat:.4f}&longitude={lon:.4f}"
+           "&hourly=temperature_2m,precipitation_probability,precipitation,"
+           "weather_code,wind_speed_10m"
+           f"&forecast_days=2&timezone={urllib.parse.quote(tz)}")
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
+            raw = resp.read().decode("utf-8", "replace")
+        out = json.loads(raw)
+        return out if isinstance(out, dict) else None
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] commute forecast failed: {e}", flush=True)
+        return None
+
+
+def _briefing_text(data: dict, dep: dict, today: str) -> Optional[tuple]:
+    """The briefing, or None when the forecast said nothing about these hours.
+
+    The voice is the phone's and the four rules travel with it: the figure comes
+    first and the remark second, the remark never replaces the instruction, `sir`
+    is spent once and the title spends it, and there are no exclamation marks.
+    Understatement is the whole instrument.
+    """
+    hourly = (data or {}).get("hourly") or {}
+    times = hourly.get("time") or []
+    if not times:
+        return None
+
+    # the departure hour and the two after it, matched by local hour rather than
+    # by index: the array starts at midnight, but only in the API's timezone
+    wanted = {(int(dep["hour"]) + n) % 24 for n in (0, 1, 2)}
+    rows = []
+    for i, iso in enumerate(times):
+        date, _, clock = str(iso).partition("T")
+        if date != today:
+            continue
+        try:
+            if int(clock[:2]) in wanted:
+                rows.append(i)
+        except ValueError:
+            continue
+    # answered, but not about the hours being asked about. Still an absence of
+    # knowledge rather than a quiet morning, so the day is not consumed
+    if not rows:
+        return None
+
+    def pick(key):
+        arr = hourly.get(key) or []
+        return [float(arr[i]) for i in rows
+                if i < len(arr) and isinstance(arr[i], (int, float))]
+
+    temps, chances = pick("temperature_2m"), pick("precipitation_probability")
+    mm, winds, codes = pick("precipitation"), pick("wind_speed_10m"), pick("weather_code")
+
+    max_chance = max(chances) if chances else 0.0
+    total_mm = sum(mm)
+    max_temp = max(temps) if temps else None
+    min_temp = min(temps) if temps else None
+    max_wind = max(winds) if winds else 0.0
+    storm = any(int(c) in _THUNDER for c in codes)
+
+    notes = []
+    if storm:
+        notes.append("Thunderstorms forecast. Leave early or wait it out — "
+                     "either beats the alternative.")
+    if max_chance >= RAIN_CHANCE or total_mm >= RAIN_MM:
+        near = f", around {total_mm:.1f} mm" if total_mm >= RAIN_MM else ""
+        notes.append(f"A {round(max_chance)}% chance of rain on your way out{near}. "
+                     "An umbrella, unless you've grown fond of arriving wet.")
+    if max_temp is not None and max_temp >= HOT_C:
+        notes.append(f"It reaches {round(max_temp)}°C today. Water, and something "
+                     "for your head — I would rather not arrange the hospital visit.")
+    if min_temp is not None and min_temp <= COLD_C:
+        notes.append(f"Down to {round(min_temp)}°C. The jacket you keep ignoring "
+                     "would be appropriate.")
+    if max_wind >= WINDY_KMH:
+        notes.append(f"Gusts to {round(max_wind)} km/h. Mind the hair.")
+
+    hour = int(dep["hour"])
+    window = f"{_hour_label(hour)}–{_hour_label((hour + 3) % 24)}"
+    label = dep.get("label") or dep.get("place_id") or "there"
+
+    # A quiet day is announced too, and it carries the figures. Silence was
+    # indistinguishable from the feature being broken and was read that way for
+    # four days straight — so the reassurance is not the word "fine", it is
+    # numbers that can be disagreed with if they are wrong.
+    if not notes:
+        degrees = "" if max_temp is None else f"{round(max_temp)}°C, "
+        return (f"Nothing in your way from {label}, sir",
+                f"Nothing to carry. {degrees}a {round(max_chance)}% chance of rain, "
+                f"wind {round(max_wind)} km/h ({window}). Do try to enjoy it.")
+
+    # named, because two of these arrive in a day and a shade holding both has to
+    # say which door each one is about
+    return (f"Before you leave {label}, sir", f"{' '.join(notes)} ({window})")
+
+
+async def _commute_tick() -> None:
+    """One pass. Does nothing at all outside a departure window."""
+    if not _commute or not _push_targets:
+        return
+    import datetime as _dt
+    now = _dt.datetime.now(_commute_zone(_commute.get("tz") or "UTC"))
+    dep = _due_departure(now, _commute)
+    if not dep:
+        return
+
+    today = now.strftime("%Y-%m-%d")
+    data = await asyncio.to_thread(
+        _forecast_blocking, float(dep["lat"]), float(dep["lon"]),
+        _commute.get("tz") or "UTC")
+    if data is None:
+        # NOT marked briefed: the day stays open for the next tick. A failed
+        # lookup must not consume the day, which is the mistake the phone made
+        # and then had to be talked out of.
+        return
+    said = _briefing_text(data, dep, today)
+    if said is None:
+        return
+
+    title, body = said
+    # `force`, and only the second caller ever to use it. Read the note on the
+    # quiet gap in `_push_all`: it exists so a flapping desk cannot become a
+    # burst of identical notifications. A briefing cannot burst — once per
+    # departure per day, held down by `_briefed` — and it is the only push here
+    # the operator actually asked for by name. Dropping it because a status
+    # notification went out four minutes earlier would be the gap deciding
+    # against the one thing it was never meant to police.
+    await _push_all(title, body,
+                    data={"kind": "commute", "place_id": dep.get("place_id")},
+                    kind="general", force=True)
+    _briefed[dep.get("place_id")] = today
+    _save_briefed()
+    print(f"[CLOUD] briefing pushed for "
+          f"{dep.get('label') or dep.get('place_id')} ({today})", flush=True)
+
+
+async def _commute_loop() -> None:
+    """Watch the clock the phone cannot.
+
+    A minute's granularity against a twenty-minute window: nothing here needs to
+    be exact, and a tick that costs nothing when no departure is due can afford
+    to be frequent. Every exception is caught and printed — a loop that died
+    quietly would put this feature back exactly where it started, correct in
+    theory and never arriving.
+    """
+    print("[CLOUD] commute briefing loop started.", flush=True)
+    while True:
+        try:
+            await _commute_tick()
+        except Exception as e:  # noqa: BLE001
+            print(f"[CLOUD] commute tick failed: {e}", flush=True)
+        await asyncio.sleep(COMMUTE_TICK_SECS)
+
+
 async def _broadcast_app(payload: dict) -> None:
     """One frame to every attached phone, dropping the ones that have gone."""
     for ws in list(_app_clients):
@@ -2282,7 +2561,8 @@ async def _relay_watch(frame: dict) -> None:
 
 _load_push_targets()
 
-_load_commute()_load_commute()
+_load_commute()
+_load_briefed()
 
 
 def _queue_offline_fact(ident: dict, text: str, reply: str) -> None:
@@ -3371,6 +3651,13 @@ async def app_link(websocket: WebSocket):
 
 @app.on_event("startup")
 async def _startup():
+    # FIRST, and above the Telegram checks on purpose. Every return below this
+    # point is about the bot — a missing BOT_TOKEN, an unset PUBLIC_URL — and the
+    # briefing has nothing to do with Telegram. Started under either of those and
+    # the loop would never run, which is the same silence this whole change
+    # exists to remove.
+    asyncio.create_task(_commute_loop())
+
     if not BOT_TOKEN:
         print("[CLOUD] ❌ TELEGRAM_BOT_TOKEN missing — gateway will not respond.", flush=True)
         return

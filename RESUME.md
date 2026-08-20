@@ -36,11 +36,17 @@ own comments warn about. Vision has never once succeeded through Gemini
 reaching the Groq leg that actually answers. Either declare it, or set vision to
 `groq`.
 
-**Next step, and it is the one that makes the briefing work:** nothing reads the
-stored schedule. A scheduler beside the existing startup tasks, the Open-Meteo
-read moved server-side, then `_push_all(kind="general", data={"kind":
-"commute"})`. Mind `APP_PUSH_MIN_GAP_SECS` — the quiet gap will swallow a
-briefing that lands behind an unrelated push.
+**The scheduler is built too**, in the same session — see the briefing entry
+below. All four steps are in: the endpoint, the loop, the forecast server-side,
+and the quiet gap. What is NOT done is running any of it.
+
+**One defect worth knowing about.** The first push of this work carried a
+`_load_commute()_load_commute()` line at module scope — a SyntaxError that would
+have failed the import outright. Found and fixed the same session, before any
+deploy; the live gateway answered `/health` 200 throughout, so production never
+saw it. It is exactly why `run_harnesses.py` matters more than usual here:
+nothing Python-side has run on the laptop, so a second one would not surface
+until Render tried to boot.
 
 ## ⚠️ UNVERIFIED — 2026-08-20: the photo that answered with its own thinking
 
@@ -137,12 +143,31 @@ schedule it cannot read rather than repairing one, and a `commute` block in
 absence and silence the gateway. Merging would leave a briefing firing on a
 schedule the operator had already turned off.
 
-**Still owed, and this is the step that makes it work:** nothing reads the stored
-schedule yet. A scheduler beside the existing startup tasks (`cloud_gateway.py`,
-`@app.on_event("startup")`), the Open-Meteo read moved server-side, then
-`_push_all(kind="general", data={"kind": "commute"})`. Mind
-`APP_PUSH_MIN_GAP_SECS` — the quiet gap will swallow a briefing that lands behind
-an unrelated push.
+**Built in the same session.** `_commute_loop` ticks every 60s, `_due_departure`
+decides whether anything is owed, `_forecast_blocking` reads Open-Meteo in a
+thread, `_briefing_text` writes it in the phone's voice, and
+`_push_all(..., force=True)` sends it. `_briefed` holds the once-a-day mark,
+persisted to `app_briefed.json`.
+
+Four decisions not worth re-litigating:
+
+- **The loop starts FIRST in `_startup`**, above the Telegram checks. Every
+  return below that point is about the bot, and the briefing has nothing to do
+  with Telegram — started underneath them it would never run under a missing
+  `BOT_TOKEN` or an unset `PUBLIC_URL`.
+- **It fires at the departure time or up to 20 minutes after, never before.** The
+  phone's window was ±30 minutes because Android chose when its job ran. Nothing
+  chooses for this loop.
+- **`force=True` on the push**, the second caller ever to use it. The quiet gap
+  exists so a flapping desk cannot become a burst; a briefing is once per
+  departure per day and cannot burst. Dropping it because a status push went out
+  four minutes earlier would be the gap policing the one thing it was never for.
+- **A failed forecast does not consume the day.** No mark is written, so the next
+  tick tries again — the mistake the phone made and had to be talked out of.
+
+**The wording is a second copy** of `src/lib/commute.ts`, deliberately: the phone
+keeps its version as a fallback and for PREVIEW. `test_commute_briefing.py` is
+what keeps the two honest.
 
 ---
 
