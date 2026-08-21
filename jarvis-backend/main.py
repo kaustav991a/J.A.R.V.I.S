@@ -306,6 +306,65 @@ _DENIAL_WORDS: frozenset[str] = frozenset({
     "nevermind", "never mind", "don't",
 })
 
+# Apostrophes a transcriber might produce, or drop. Removed from both the list
+# above and the utterance, so a spoken "dont" answers an entry spelled "don't".
+_CONFIRM_APOSTROPHES = "'’ʼ‘`´"
+
+
+def _confirm_tokens(text: str) -> set[str]:
+    """The words of an utterance, apostrophes closed up, punctuation gone."""
+    folded = "".join(
+        "" if ch in _CONFIRM_APOSTROPHES else (ch if ch.isalnum() else " ")
+        for ch in (text or "").lower()
+    )
+    return set(folded.split())
+
+
+def _read_confirmation_answer(text: str) -> str | None:
+    """Read an answer to a CONFIRM-tier prompt: "approve", "deny", or None.
+
+    `None` means the utterance is NOT an answer, and the caller must not treat
+    it as one. All three governance doors — Telegram, /api/backdoor and the
+    voice loop — go through here, because the same three bugs were open at all
+    three and root cause #4 says a class fixed one site at a time stays open.
+
+    Three properties, each of which the live gate found the hard way:
+
+    * **Whole words, not substrings.** Every door matched with
+      `any(w in text for w in WORDS)`, so `"no"` matched "now", "know" and
+      "nothing", and `"stop"` matched "stopwatch". F-42. Matching is on tokens.
+    * **Every word of a phrase, in any order.** `"go ahead"` has to survive
+      "go right ahead"; a transcript is not a keyboard.
+    * **Denial breaks a tie.** "no, go ahead" holds one of each, and approval
+      was tested first, so it EXECUTED. F-40. A gate whose whole purpose is to
+      not act by accident must resolve ambiguity towards doing nothing.
+
+    The command-word veto stays a SUBSTRING test on purpose. It is not a match,
+    it is a refusal to guess: an utterance carrying "open" or "write" is a
+    command, whatever else it contains, and over-refusing here is safe — the
+    caller re-asks. Tightening it would let more utterances be read as
+    approvals, which is the wrong direction for this particular guard.
+    """
+    raw = (text or "").strip()
+    if not raw or len(raw) >= 60:
+        return None
+    low = raw.lower()
+    if any(w in low for w in _jarvis_command_words):
+        return None
+    tokens = _confirm_tokens(raw)
+    if not tokens:
+        return None
+
+    def _said(entry: str) -> bool:
+        want = _confirm_tokens(entry)
+        return bool(want) and want <= tokens
+
+    if any(_said(e) for e in _DENIAL_WORDS):
+        return "deny"
+    if any(_said(e) for e in _APPROVAL_WORDS):
+        return "approve"
+    return None
+
 # Phase 4 item 5: deterministic queued-task approve/deny — "approve task 3fa9c2d1"
 # resumes a worker task that paused on a CONFIRM-tier step; "deny task …" drops it.
 _TASK_APPROVAL_RE = re.compile(
@@ -1674,11 +1733,10 @@ async def run_remote_command(command_text: str, channel) -> None:
     sess = await SESSIONS.get_or_create(channel)
     _gov_pending = sess.pending.get("governance")
     if _gov_pending:
-        _low = command_text.lower().strip()
-        _is_approval = any(w in _low for w in _APPROVAL_WORDS)
-        _is_denial = any(w in _low for w in _DENIAL_WORDS)
-        _is_decision = ((_is_approval or _is_denial) and len(_low) < 60
-                        and not any(w in _low for w in _jarvis_command_words))
+        _answer = _read_confirmation_answer(command_text)
+        _is_approval = _answer == "approve"
+        _is_denial = _answer == "deny"
+        _is_decision = _answer is not None
         if _is_decision:
             sess.pending.pop("governance", None)
             cid = _gov_pending.get("cid")
@@ -1710,9 +1768,17 @@ async def run_remote_command(command_text: str, channel) -> None:
         # A new, unrelated command supersedes the open question — cancel the
         # staged action so a stray "yes" minutes later can't run it out of
         # context, then process the new command normally.
+        # F-43: it is cancelled either way, but he is told. Before this the
+        # cancellation existed only in the log, so from his side the question
+        # he had been asked simply stopped existing, and he had no way to know
+        # whether the staged action was still waiting on him.
         governance_manager.cancel_pending(_gov_pending.get("cid"))
         sess.pending.pop("governance", None)
         print(f"[REMOTE:{kind}] Pending confirmation superseded by a new command — cancelled.", flush=True)
+        await channel.reply(
+            f"That wasn't a yes or a no, {honor} — I've cancelled the action "
+            f"I was waiting on and I'll take this as a new instruction."
+        )
 
     # ── Phase 4 item 5: queued-task approve/deny (deterministic, admin-only) ─
     # A worker task paused on a CONFIRM step reports "say 'approve task <id>'".
@@ -2084,13 +2150,10 @@ async def backdoor_command(req: BackdoorRequest):
     #
     # An approval must only ever resolve the prompt the approver was shown.
     if _DESK_PENDING["cid"] is not None:
-        _gov_lower = _cmd_lower
-        _is_approval = any(w in _gov_lower for w in _APPROVAL_WORDS)
-        _is_denial   = any(w in _gov_lower for w in _DENIAL_WORDS)
-        _looks_short = len(_cmd_lower) < 60
-        _no_cmd_words = not any(w in _gov_lower for w in _jarvis_command_words)
+        _answer = _read_confirmation_answer(command_text)
+        _is_approval = _answer == "approve"
 
-        if (_is_approval or _is_denial) and _looks_short and _no_cmd_words:
+        if _answer is not None:
             if _is_approval:
                 # By id, always. Never `None` — see the block comment above.
                 approved_payload = governance_manager.consume_pending(_DESK_PENDING["cid"])
@@ -2123,6 +2186,27 @@ async def backdoor_command(req: BackdoorRequest):
                 await safe_send_all({"status": "complete", "result": msg})
                 asyncio.create_task(speaker.speak_text(msg))
             return {"status": "success"}
+
+        # F-43 at this door. There is no loop here to re-ask inside — this is one
+        # request, one response — so the prompt cannot be left open on the
+        # chance that the next call answers it. It fell through with the pending
+        # STILL ARMED, which is the state a stray later "yes" resolves out of
+        # context. Cancel it, say so, and treat the utterance as the command it
+        # evidently is. Same conclusion as the remote door reaches above.
+        #
+        # NOT `_partner_note_denial`: its own docstring restricts it to explicit
+        # refusals, because a noted denial is TERMINAL and stops the send being
+        # re-attempted. He did not refuse anything here — he said something that
+        # was not an answer. Recording that as a refusal would permanently block
+        # a message he never declined.
+        governance_manager.cancel_pending(_DESK_PENDING["cid"])
+        _DESK_PENDING["cid"] = None
+        _dropped = ("That wasn't a yes or a no, Sir — I've cancelled the action "
+                    "I was waiting on and I'll take this as a new instruction.")
+        print("[GOVERNANCE] F-43: a pending confirmation got a non-answer — "
+              "cancelled before the command was processed.", flush=True)
+        await safe_send_all({"status": "complete", "result": _dropped})
+        asyncio.create_task(speaker.speak_text(_dropped))
     # ─────────────────────────────────────────────────────────────────────
 
     # --- PENDING NOTEPAD/FILE DECISION INTERCEPT ---
@@ -3252,6 +3336,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     # every understood turn so it can never accumulate across a
                     # session and mute a later prompt.
                     _confirm_reasks = 0
+                    # ...and which prompt it is counting. The budget belongs to
+                    # the PROMPT, not to the turn — see the reset below.
+                    _confirm_reask_cid = None
 
                     while True:
                         if _fd_pending:
@@ -3309,7 +3396,18 @@ async def websocket_endpoint(websocket: WebSocket):
                         # If he heard an actual command, process it
                         if command_text:
                             command_lower = command_text.lower().strip()
-                            _confirm_reasks = 0   # F-35: a turn landed
+                            # F-35 reset it here on every landed turn, which was
+                            # right while the only re-ask came from a FAILED
+                            # transcription — those `continue` above this line
+                            # and never reach it. The F-43 branch below breaks
+                            # that: a non-answer to a live prompt is itself a
+                            # landed turn, so an unconditional reset here would
+                            # zero the budget on every pass and re-ask forever.
+                            # The budget belongs to the prompt, so it is keyed to
+                            # the prompt's id and survives until that changes.
+                            if _DESK_PENDING["cid"] != _confirm_reask_cid:
+                                _confirm_reask_cid = _DESK_PENDING["cid"]
+                                _confirm_reasks = 0
 
                             # ── Barge-in (voice path): cut JARVIS off mid-speech ──
                             # Only fires when he is actually speaking, so a bare "stop"/
@@ -3330,12 +3428,9 @@ async def websocket_endpoint(websocket: WebSocket):
                             # resolve the prompt the speaker was shown, not whatever
                             # Telegram or the overnight worker staged a moment ago.
                             if _DESK_PENDING["cid"] is not None:
-                                _gov_lower = command_lower
-                                _is_approval = any(w in _gov_lower for w in _APPROVAL_WORDS)
-                                _is_denial = any(w in _gov_lower for w in _DENIAL_WORDS)
-                                _looks_short = len(command_lower) < 60
-                                _no_cmd_words = not any(w in _gov_lower for w in _jarvis_command_words)
-                                if (_is_approval or _is_denial) and _looks_short and _no_cmd_words:
+                                _answer = _read_confirmation_answer(command_text)
+                                _is_approval = _answer == "approve"
+                                if _answer is not None:
                                     if _is_approval:
                                         # By id, always. Never `None`.
                                         approved_payload = governance_manager.consume_pending(_DESK_PENDING["cid"])
@@ -3368,6 +3463,55 @@ async def websocket_endpoint(websocket: WebSocket):
                                         await safe_send({"status": "complete", "result": msg})
                                         asyncio.create_task(speaker.speak_text(msg))
                                     continue
+                                else:
+                                    # F-43: the missing else, and the whole
+                                    # reason row 4.1 could not pass. While a
+                                    # prompt is open the next utterance is an
+                                    # ANSWER — approve, deny, or not understood.
+                                    # There was no third branch: an utterance
+                                    # that was none of those fell straight
+                                    # through and ran as a command WITH THE
+                                    # PROMPT STILL ARMED. He was never told his
+                                    # answer had not landed, and the pinned id
+                                    # sat there for a stray "yes" minutes later
+                                    # to resolve out of context.
+                                    #
+                                    # A failed transcription is already handled
+                                    # above ("I didn't catch that"). This is the
+                                    # other kind: heard perfectly, not an answer.
+                                    # Both draw on one budget, so the total
+                                    # badgering per prompt stays capped at two.
+                                    _t = "Madam" if active_user == "MOUSUMI" else "Sir"
+                                    if _confirm_reasks < 2:
+                                        _confirm_reasks += 1
+                                        _re_ask = (f"That wasn't a yes or a no, {_t}. "
+                                                   f"Confirm, or cancel?")
+                                        print(f"[GOVERNANCE] F-43: a live confirmation got a "
+                                              f"non-answer — re-asking "
+                                              f"({_confirm_reasks}/2).", flush=True)
+                                        await safe_send({"status": "pending_confirmation",
+                                                         "action": "reask", "result": _re_ask})
+                                        await speaker.speak_text(_re_ask)
+                                        continue
+                                    # Budget spent. Cancel it, SAY SO, and then
+                                    # act on what he actually said — which is
+                                    # what the remote door does, and it is the
+                                    # only reading that leaves nothing armed.
+                                    #
+                                    # NOT `_partner_note_denial`: that records a
+                                    # TERMINAL refusal and is documented for
+                                    # explicit denials only. He never refused —
+                                    # he said something that was not an answer.
+                                    governance_manager.cancel_pending(_DESK_PENDING["cid"])
+                                    _DESK_PENDING["cid"] = None
+                                    _dropped = (f"I've cancelled the action I was waiting on, "
+                                                f"{_t}. Acting on what you just said.")
+                                    print("[GOVERNANCE] F-43: re-ask budget spent — pending "
+                                          "cancelled, and the utterance is treated as a "
+                                          "command.", flush=True)
+                                    await safe_send({"status": "complete", "result": _dropped})
+                                    await speaker.speak_text(_dropped)
+                                    # deliberately NO `continue`: fall through
 
                             sleep_phrases = ["go to sleep", "shut down", "lock the system", "sleep now", "stand down", "power down"]
                             if any(x in command_lower for x in sleep_phrases) or command_lower == "sleep":
