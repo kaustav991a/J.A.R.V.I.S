@@ -1,4 +1,8 @@
 import { createRoot } from "react-dom/client";
+// F-26: declared once, here, rather than fetched from a CDN by three
+// different files. Must precede the view stylesheets so the faces exist
+// before anything asks for them.
+import "./fonts.css";
 import "./index.css";
 import App from "./App.jsx";
 import NotchView from "./NotchView.jsx";

@@ -2,7 +2,9 @@
    SIDECAR VIEW — right-edge slim panel overlay
    ═══════════════════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Poppins:wght@300;400;500;600&display=swap');
+// F-26: the Google Fonts @import was here, in BOTH this file and the
+// other view's stylesheet, so the built CSS carried it twice. The faces
+// are declared once now, locally, in src/fonts.css.
 
 .sidecar-root {
   width: 100vw;

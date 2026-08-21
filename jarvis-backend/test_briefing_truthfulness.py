@@ -192,12 +192,20 @@ def test_generate_briefing_actually_passes_its_output_through_the_guard():
         if isinstance(n, ast.FunctionDef) and n.name == "generate_briefing":
             fn = n
     check(fn is not None, "generate_briefing found")
+    # Anywhere inside the returned expression, not only as its outermost call.
+    # F-09's reopened half added a SECOND guard around this one — the state-claim
+    # guard, for the four sources the briefing narrated without reading — and the
+    # original assertion, which demanded that this be the top-level call, failed
+    # on a change that strengthened exactly what it was protecting. The property
+    # is that the output cannot reach the caller without passing through here.
     wired = False
     for n in ast.walk(fn) if fn else []:
-        if (isinstance(n, ast.Return) and isinstance(n.value, ast.Call)
-                and isinstance(n.value.func, ast.Name)
-                and n.value.func.id == "_strip_unfounded_action_claims"):
-            wired = True
+        if not (isinstance(n, ast.Return) and n.value is not None):
+            continue
+        for sub in ast.walk(n.value):
+            if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                    and sub.func.id == "_strip_unfounded_action_claims"):
+                wired = True
     check(wired,
           "the model's output is returned THROUGH the guard — unwired, it is dead code")
 

@@ -82,8 +82,8 @@ for rows that a solo failure might invalidate.
 
 ## Running
 
-- [ ] `cd jarvis-backend && .env\Scripts\python.exe watchdog.py` — **venv interpreter, always.** `watchdog.py` builds the server command from `sys.executable`, so system python gives `No module named uvicorn` and takes the server down. Watchdog owns uvicorn; don't launch uvicorn directly
-- [ ] React HUD open in the browser
+- [ ] `cd jarvis-backend && venv\Scripts\python.exe watchdog.py` — **venv interpreter, always.** `watchdog.py` builds the server command from `sys.executable`, so system python gives `No module named uvicorn` and takes the server down. Watchdog owns uvicorn; don't launch uvicorn directly
+- [ ] React HUD open in the browser at `/hud/` (see row `0.3` — `/` is a JSON health string)
 - [ ] Telegram bot reachable from your phone
 - [ ] Android TV **powered on and on the same network** (needed by 11.1–11.4 and 23b.4–23b.6)
 - [ ] Phone camera app streaming (JARVIS's camera source)
@@ -186,9 +186,9 @@ Do these first; they are the bulk. Work the blocks in order — reboots are batc
 
 | # | Do | Pass |
 |---|---|---|
-| 0.1 | `cd jarvis-backend && .env\Scripts\python.exe watchdog.py` | Watchdog banner, uvicorn boots, no traceback, **and no `⚠️  CONFIG NOT LOADED` line** |
+| 0.1 | `cd jarvis-backend && venv\Scripts\python.exe watchdog.py` | Watchdog banner, uvicorn boots, no traceback, **and no `⚠️  CONFIG NOT LOADED` line** |
 | 0.2 | Watch the boot console | `[GOVERNANCE] Ruleset loaded`, **one of** `[TELEGRAM] ✅ Gateway online` **or** `[BRIDGE] ✅ Linked to cloud front door` (never both — one consumer per bot token), `[ROUTINES]` + overwatch + ambient start |
-| 0.3 | Open the HUD in the browser | Renders; `/ws` connects; no console errors |
+| 0.3 | Open the HUD at **`http://127.0.0.1:8000/hud/`** — trailing slash included | Renders; `/ws` connects; no console errors. `GET /` returns JSON by design, not the HUD — F-18 cost a live minute here |
 | 0.4 | Check `.env` | `JARVIS_LLM_MODE=cloud_first`, `TELEGRAM_USER_ID` = your numeric id, token set |
 | 0.5 | `curl http://127.0.0.1:8009/health` | `watchdog: alive` |
 

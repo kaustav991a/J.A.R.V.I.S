@@ -1,0 +1,134 @@
+/*
+ * fonts.css — the HUD's typefaces, served from this build and nowhere else.
+ *
+ * F-26. Orbitron is *the* JARVIS display face, and it was fetched from
+ * fonts.gstatic.com on every boot, from three places at once:
+ *
+ *   index.html          <link> to fonts.googleapis.com/css2?family=Orbitron…
+ *   NotchView.scss:5    the same @import, which Vite inlines into the bundle
+ *   SidecarView.scss:5  the same @import again — the built CSS carried it twice
+ *
+ * So a packaged build asked Google for one stylesheet three times per load, and
+ * `dist/` contained zero .woff2, .woff or .ttf files. The HUD's identity
+ * depended on a third-party CDN being reachable AND on that CDN not retiring an
+ * asset — and it had retired one: the live 404 was a Google Fonts v2 hash that a
+ * cached stylesheet still pointed at, which is why the titles were rendering in
+ * a fallback.
+ *
+ * ELECTRON_SHIP_PLAN.md is next after the gate, and a packaged desktop
+ * assistant that renders in Times New Roman when the network is down, and phones
+ * a third party on every launch, is not what "packaged" should mean. This was
+ * the HUD's last external runtime dependency.
+ *
+ * Both families are OFL — Orbitron by Matt McInerney, Poppins by Indian Type
+ * Foundry and Jonny Pinhorn — so redistributing them inside the app is exactly
+ * what the licence is for. 77 KB for all of it, fetched once at build time.
+ *
+ * Orbitron ships as ONE file: Google serves it as a variable font and the 400
+ * and 700 downloads were byte-identical (md5 5d281085…), so a single face
+ * covering `font-weight: 400 700` is both correct and one fewer request.
+ *
+ * `font-display: swap` is kept from the original stylesheet: text paints
+ * immediately in the fallback and re-renders when the face is ready. With the
+ * files local that window is a frame or two, but on a cold Electron start it is
+ * still the difference between text and no text.
+ */
+
+/* ── Orbitron — display face, variable 400–700 ─────────────────────────────── */
+@font-face {
+  font-family: "Orbitron";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/orbitron-variable-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* ── Poppins — body face, four static weights ──────────────────────────────── */
+/* latin-ext first, latin second: the browser picks by unicode-range, not order,
+   but keeping the pairs adjacent makes a missing weight obvious to read. */
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/poppins-300-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+    U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/poppins-300-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/poppins-400-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+    U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/poppins-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/poppins-500-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+    U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/poppins-500-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/poppins-600-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+    U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/poppins-600-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}

@@ -2502,6 +2502,139 @@ def _claims_a_completion(sentence: str, allowed: frozenset = _ALLOWED_REPORTING)
     return False
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# F-09 REOPENED — a briefing of confident, unsourced assertion
+# ─────────────────────────────────────────────────────────────────────────────
+# The row asked whether the briefing claims an ACTION it did not perform. The
+# live answer was worse: it narrated four data sources it had not read. Checked
+# at the desk, against the real world:
+#
+#   "you've marked today's date in your calendar"     he had not — nothing marked
+#   "your inbox contains 201 unread messages"         "totally wrong"
+#   "vitals stable, with a heart rate of zero"        0 is a no-data sentinel
+#   "the room's reduced volume and the TV's muted     the TV was not powered on,
+#    status", and the lights dimmed                   and no such state was set
+#
+# The existing guard was kept deliberately narrow to protect the persona, and it
+# only catches claims about actions it did not RUN. It says nothing about claims
+# about state it never READ. So the whole class was open.
+#
+# The candidate cause is in the same log: `[GMAIL AGENT]` printed a fresh OAuth
+# authorization URL at boot, the Google token being invalid that session, and
+# Calendar and Fitness initialised after it. An auth failure degrades to
+# empty-or-zero data, and the model narrates that as fact. Which means the fix
+# has to be in two places at once — absence must reach the model AS absence, and
+# a claim about a source that did not answer must not survive whatever the model
+# does with it.
+
+# What the model is handed when a source did not answer. The guard reads these
+# back, so the exact strings are load-bearing in both directions.
+_NO_DATA = {
+    "email": "Email integration offline — NO DATA. Do not describe the inbox.",
+    "calendar": "Calendar integration offline — NO DATA. Do not describe the schedule.",
+    "vitals": "Health integration offline — NO DATA. Do not describe his body.",
+}
+
+# Words that make a sentence a claim ABOUT a topic. Matched on the sentence, so
+# they have to be things that do not appear in ordinary persona prose.
+_TOPIC_WORDS = {
+    "email": ("email", "inbox", "unread", "e-mail", "mailbox"),
+    "calendar": ("calendar", "schedule", "meeting", "appointment", "diary",
+                 "your first meeting", "marked today"),
+    "vitals": ("heart rate", "heartrate", "bpm", "vital", "pulse", "steps today",
+               "your body", "resting rate"),
+}
+
+# Topics with NO source at all. Not "offline today" — there is no sensor, no
+# integration and no cache that could ever fill them, so a briefing sentence
+# about them is fabricated by construction. The TV and the lights are here
+# because the briefing invented both, in detail, on 2026-08-08.
+_UNSOURCED_TOPICS = {
+    "the television": ("tv is", "tv's", "television", "muted status"),
+    "the lighting": ("lights are", "lights have", "lighting is", "dimmed the",
+                     "lights dimmed", "ambient lighting"),
+    "the room": ("the room's", "room is quiet", "reduced volume of the room"),
+}
+
+# A sentence that ITSELF reports the absence is the sentence we want, not the one
+# we are removing. "I could not reach your calendar" mentions the calendar and is
+# true; dropping it would replace an honest admission with silence.
+_ADMITS_ABSENCE = (
+    "could not", "couldn't", "cannot", "can't", "unable", "no access",
+    "not available", "offline", "no data", "haven't been able", "have not been able",
+    "i don't have", "i do not have", "nothing from", "did not respond",
+    # Found by the harness: "I have no heart rate reading for you today" is an
+    # honest admission that mentions a topic, and the first draft of this list
+    # silenced it. Erring toward silence is still erring — the whole finding is
+    # about the difference between not knowing and pretending to.
+    "i have no", "no reading", "there is no", "there's no", "not reachable",
+    "no figures", "nothing to report from", "yet to answer",
+)
+
+
+def _sourced_topics(email_context: str, calendar_context: str,
+                    health_context: str) -> set:
+    """Which topics actually produced data this briefing.
+
+    Read back off the same strings the prompt was given, rather than tracked
+    separately, so the two can never disagree — a second variable saying "we
+    have email" while the prompt says NO DATA is precisely how this class of bug
+    survives a fix.
+    """
+    got = set()
+    for topic, ctx in (("email", email_context),
+                       ("calendar", calendar_context),
+                       ("vitals", health_context)):
+        if ctx and "NO DATA" not in ctx:
+            got.add(topic)
+    return got
+
+
+def _strip_unsourced_state_claims(text: str, sourced: set) -> str:
+    """Remove sentences describing state the briefing never read.
+
+    Distinct from `_strip_unfounded_action_claims`, which removes claims about
+    things JARVIS says it DID. This removes claims about how the world IS. Both
+    are false by construction — one because the briefing never acts, the other
+    because a source that returned NO DATA cannot have been the basis of a
+    description of it.
+
+    Sentences that admit the absence are kept. The failure being fixed is
+    confident assertion, and "I could not reach your calendar this morning" is
+    the opposite of that.
+    """
+    if not text:
+        return text
+    kept, dropped = [], []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        low = sentence.lower()
+        if any(a in low for a in _ADMITS_ABSENCE):
+            kept.append(sentence)
+            continue
+        why = None
+        for topic, words in _TOPIC_WORDS.items():
+            if topic not in sourced and any(w in low for w in words):
+                why = f"{topic} returned NO DATA"
+                break
+        if why is None:
+            for label, words in _UNSOURCED_TOPICS.items():
+                if any(w in low for w in words):
+                    why = f"there is no source for {label}"
+                    break
+        if why:
+            dropped.append((sentence, why))
+        else:
+            kept.append(sentence)
+    if dropped:
+        print(f"[BRAIN] briefing: dropped {len(dropped)} unsourced state "
+              f"claim(s) — it reports what it read, not what it assumes.",
+              flush=True)
+        for d, why in dropped:
+            print(f"[BRAIN]   dropped ({why}): {d[:100]}", flush=True)
+    cleaned = " ".join(kept).strip()
+    return cleaned or "All primary systems are online, Sir."
+
+
 def _strip_unfounded_action_claims(text: str) -> str:
     """Remove sentences in which JARVIS claims to have ACTED on the user's data.
 
@@ -2806,9 +2939,13 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
     recent_context = memory.recall_semantic_context(active_user, "recent events today schedule status", n_results=3)
 
     # --- Phase 6: Gather digital life context for briefing ---
-    email_context = "Email integration offline."
-    calendar_context = "Calendar integration offline."
-    health_context = "Health integration offline."  # init BEFORE the try — used
+    # F-09: the wording is the guard's contract. Each of these strings is what
+    # the model is handed when a source did not answer, and `_sourced_topics`
+    # reads them back to decide which topics the briefing is allowed to describe.
+    # They must stay identical to `_NO_DATA`, which is why they come from it.
+    email_context = _NO_DATA["email"]
+    calendar_context = _NO_DATA["calendar"]
+    health_context = _NO_DATA["vitals"]  # init BEFORE the try — used
     # outside it at the f-string below; a Gmail/Calendar/Health fault must not
     # leave it unbound (was a NameError that killed the whole wake briefing).
     try:
@@ -2826,7 +2963,20 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
             _health = HealthAgent()
             health_data = _health.get_today_health_data()
             if health_data.get("configured"):
-                health_context = f"Heart Rate: {health_data['heart_rate']} BPM. Steps today: {health_data['steps']}."
+                # F-09. `0` is a NO-DATA SENTINEL from this agent, and it was
+                # passed through as a number. The model read "Heart Rate: 0 BPM"
+                # and said "your vital signs appear to be stable, with a heart
+                # rate of zero" — reassurance about his body, built on the
+                # absence of a reading. A zero heart rate is not a measurement.
+                _hr = health_data.get("heart_rate") or 0
+                _steps = health_data.get("steps") or 0
+                _bits = []
+                if _hr:
+                    _bits.append(f"Heart Rate: {_hr} BPM")
+                if _steps:
+                    _bits.append(f"Steps today: {_steps}")
+                health_context = (". ".join(_bits) + "."
+                                  if _bits else _NO_DATA["vitals"])
     except Exception as e:
         print(f"[BRAIN] Digital life context fetch failed: {e}")
 
@@ -2904,17 +3054,31 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
     actions this turn and you have no ability to perform any here. The recalled
     facts above are things the user SAID, not things you DID. Never state or
     imply that you have deleted, sent, cleared, scheduled, cancelled or
-    otherwise changed anything, and never claim the user asked you to."""
+    otherwise changed anything, and never claim the user asked you to.
 
+    SOURCES (absolute): describe ONLY what the context above actually contains.
+    Any line marked NO DATA means that source did not answer — say nothing about
+    it, or say plainly that you could not reach it. Never invent a figure. You
+    have NO reading of the television, the lights, the room's volume or anything
+    else physical in the room: do not mention them at all. A zero is the absence
+    of a measurement, never a measurement of zero."""
+
+    _sourced = _sourced_topics(email_context, calendar_context, health_context)
     try:
         # Higher temperature ensures he phrases it differently every time
-        return _strip_unfounded_action_claims(universal_llm_call(
-            messages=[{"role": "system", "content": prompt}],
-            temperature=_temperature,
-            max_tokens=_max_tokens,
-            stream=False,
-            json_mode=False,
-            timeout=30.0,
-        ))
+        #
+        # F-09: both guards, in this order. The prompt above says all of it too,
+        # and F-13 is the standing lesson that a rule a model can ignore is not a
+        # guarantee — the briefing had these instructions and narrated four
+        # sources it never read anyway.
+        return _strip_unsourced_state_claims(_strip_unfounded_action_claims(
+            universal_llm_call(
+                messages=[{"role": "system", "content": prompt}],
+                temperature=_temperature,
+                max_tokens=_max_tokens,
+                stream=False,
+                json_mode=False,
+                timeout=30.0,
+            )), _sourced)
     except Exception as e:
         return f"Systems online, sir. The time is {current_time}. I am experiencing a slight network anomaly, but I am standing by for your commands."

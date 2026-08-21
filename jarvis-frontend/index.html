@@ -5,9 +5,10 @@
   <meta charset="UTF-8" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <!-- F-26: the typefaces are served from this build, not from a CDN. The
+       preconnects and the Google Fonts stylesheet that used to live here were
+       the HUD's last external runtime dependency, and one of the assets they
+       pointed at had already been retired — see src/fonts.css. -->
   <title>J.A.R.V.I.S</title>
 </head>
 
