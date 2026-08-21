@@ -242,9 +242,16 @@ def main() -> int:
         passed, failed = parse_counts((proc.stdout or "") + (proc.stderr or ""))
         total_passed += passed
         total_failed += failed
-        ok = proc.returncode == 0 and failed == 0
+        # A harness that proved NOTHING is not green. Two arrived on 2026-08-20
+        # written in pytest style with no `__main__` block at all: exec'd, they
+        # defined 23 test functions, ran none, printed nothing and exited 0. The
+        # suite counted both as green at "0 checks" for two days. Exit status
+        # cannot see this — only the absence of a summary line can.
+        ok = proc.returncode == 0 and failed == 0 and passed > 0
         if not ok:
-            broken.append(f"{name} (exit={proc.returncode}, failed={failed})")
+            why = (f"exit={proc.returncode}, failed={failed}" if passed or failed
+                   else "no checks ran — is there a __main__ block?")
+            broken.append(f"{name} ({why})")
             tail = "\n".join((proc.stdout or "").splitlines()[-15:])
             print(f"\n----- {name} FAILED -----\n{tail}\n{(proc.stderr or '')[-1500:]}\n")
         mark = "OK  " if ok else "FAIL"

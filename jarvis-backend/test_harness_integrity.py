@@ -87,6 +87,47 @@ def test_no_harness_defines_a_test_it_never_runs():
           + (f" — ORPHANS: {orphans}" if orphans else ""))
 
 
+def _has_main_guard(tree: ast.Module) -> bool:
+    """Does the module have a top-level `if __name__ == "__main__":`?"""
+    for node in tree.body:
+        if not isinstance(node, ast.If):
+            continue
+        for sub in ast.walk(node.test):
+            if isinstance(sub, ast.Name) and sub.id == "__name__":
+                return True
+    return False
+
+
+def test_every_harness_can_actually_be_run():
+    """A harness with test functions must have some way of running them.
+
+    The check above skips a module with no `TESTS` list, on the assumption that
+    it discovers its tests in a `__main__` loop. Two harnesses arrived on
+    2026-08-20 with NEITHER — written in pytest style, and this suite retired
+    pytest deliberately. `run_harnesses.py` exec'd them, they defined 23 test
+    functions between them, ran none of them, printed nothing and exited 0. Both
+    were reported green at "0 checks" for two days.
+
+    That assumption is what this closes. `run_harnesses.py` now also refuses a
+    harness that reports zero checks, which catches the same thing from outside;
+    this catches it by shape, and names the file.
+    """
+    unrunnable = []
+    for path in sorted(HERE.glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        defined = [n.name for n in tree.body
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and n.name.startswith("test_")]
+        if not defined:
+            continue
+        if _listed_tests(tree) is None and not _has_main_guard(tree):
+            unrunnable.append(f"{path.name} ({len(defined)} tests)")
+
+    check(not unrunnable,
+          "every harness holding tests can run them"
+          + (f" — UNRUNNABLE: {unrunnable}" if unrunnable else ""))
+
+
 def test_every_harness_file_is_discovered_rather_than_listed():
     """`run_harnesses.py` must not go back to a hand-kept list of files.
 

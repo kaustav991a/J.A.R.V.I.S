@@ -252,3 +252,27 @@ def test_the_window_names_both_ends_with_their_meridiem():
     _, body = cg._briefing_text(data, late, "2026-08-19")
     # 10 PM through 1 AM — the wrap has to survive, and both ends say which half
     assert "(10 PM–1 AM)" in body
+
+
+# `setup_function` is a pytest hook and this suite has no pytest -- it was
+# retired deliberately. It is called explicitly per test here, because the
+# once-a-day `_briefed` marks are module state and a test inheriting another's
+# would pass or fail on the order it happened to run in.
+if __name__ == "__main__":
+    import traceback
+
+    tests = sorted(((n, f) for n, f in globals().items()
+                    if n.startswith("test_") and callable(f)),
+                   key=lambda nf: nf[1].__code__.co_firstlineno)
+    failed = 0
+    for name, fn in tests:
+        setup_function(None)
+        try:
+            fn()
+            print(f"PASS  {name}")
+        except Exception:
+            failed += 1
+            print(f"FAIL  {name}")
+            traceback.print_exc()
+    print(f"\n{len(tests) - failed}/{len(tests)} passed.")
+    sys.exit(1 if failed else 0)

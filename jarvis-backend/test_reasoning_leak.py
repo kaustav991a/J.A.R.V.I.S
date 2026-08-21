@@ -127,3 +127,24 @@ def test_the_answer_budget_is_not_back_at_the_size_that_lost_one():
     """
     src = (HERE / "cloud_gateway.py").read_text(encoding="utf-8")
     assert "max_tokens=700," not in src, "the budget that lost an answer is back"
+
+
+# Discovery, not a hand-kept list: `test_harness_integrity.py` exists because a
+# listed harness silently stopped running three of its own tests.
+if __name__ == "__main__":
+    import traceback
+
+    tests = sorted(((n, f) for n, f in globals().items()
+                    if n.startswith("test_") and callable(f)),
+                   key=lambda nf: nf[1].__code__.co_firstlineno)
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"PASS  {name}")
+        except Exception:
+            failed += 1
+            print(f"FAIL  {name}")
+            traceback.print_exc()
+    print(f"\n{len(tests) - failed}/{len(tests)} passed.")
+    sys.exit(1 if failed else 0)
