@@ -2471,6 +2471,40 @@ def _save_nudge() -> None:
     _persist("nudge", _nudge)
 
 
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday",
+            "saturday", "sunday")
+
+
+def _asserts_today(low: str, weekday: str) -> bool:
+    """Whether a fact claims something about TODAY, rather than merely mentioning it.
+
+    This replaces `weekday in low`, a bare substring test, and the replacement exists
+    because that test was wrong in the most expensive way available: on Friday
+    2026-08-21 it matched a Monday-to-Friday work pattern, the prompt below then
+    asserted the fact as true today, and the model — obeying — invented a Saturday
+    shift the operator did not have. Reported from the phone within the hour.
+
+    Two rules, and the second is the one that mattered:
+
+    1. The day has to be named as something RECURRING or as today's own business:
+       "every friday", "fridays", "on friday". A weekday appearing anywhere in a
+       sentence is not a claim about this Friday.
+    2. **A fact naming any OTHER weekday is refused outright.** "Mon-Fri" mentions
+       Friday and is not about Friday; it is about a week. Anything listing more than
+       one day is describing a pattern whose interesting part is usually the day that
+       is NOT today, which is exactly the trap that was fallen into.
+    """
+    named = [d for d in WEEKDAYS if d in low]
+    # more than one day named means a range or a list: a pattern, not today
+    if len(named) != 1 or named[0] != weekday:
+        return False
+    # and it has to read as recurring or as today's business, not incidental
+    return any(
+        p in low
+        for p in (f"every {weekday}", f"{weekday}s", f"on {weekday}", f"this {weekday}")
+    )
+
+
 def _nudge_subject(facts: list, now) -> Optional[tuple]:
     """What is worth remarking on today, as (subject, prompt), or None.
 
@@ -2483,6 +2517,12 @@ def _nudge_subject(facts: list, now) -> Optional[tuple]:
     and ask "anything interesting?", which produces a remark every single day
     because a model asked for something will always find something. The judgement
     of WHETHER to speak is made here, in code, and only the WORDING is the model's.
+
+    **That last sentence was not true until 2026-08-21.** The judgement was a
+    substring match, and it announced a Saturday shift that did not exist. See
+    `_asserts_today`, and note that the prompt below is now told to refuse rather
+    than to invent when the fact does not actually say what it was matched for —
+    the second guard, because the first one being wrong once cost a day's trust.
     """
     today = now.strftime("%Y-%m-%d")
     weekday = now.strftime("%A").lower()
@@ -2494,18 +2534,18 @@ def _nudge_subject(facts: list, now) -> Optional[tuple]:
         # a fact naming today's date, in either order people write it
         dated = (f"{day_num} {month}" in low or f"{month} {day_num}" in low
                  or today in low)
-        # or naming today's weekday as something recurring
-        named_day = weekday in low
-        if not (dated or named_day):
+        if not (dated or _asserts_today(low, weekday)):
             continue
         return (
             str(fact)[:120],
-            "Something you were told about him is true TODAY: "
-            f"\"{fact}\". Remark on it in ONE short sentence, as though you had "
-            "just remembered it — the way someone who knows him would mention it "
-            "in passing. Do not greet him, do not list anything, do not offer "
-            "help, and do not explain that you remembered. If it does not "
-            "actually warrant saying out loud, reply with exactly: SKIP",
+            f"Today is {now.strftime('%A %d %B')}. You were once told: "
+            f"\"{fact}\". If — and ONLY if — that fact is about today, remark on it "
+            "in ONE short sentence, as though you had just remembered it, the way "
+            "someone who knows him would mention it in passing. Do not greet him, "
+            "do not list anything, do not offer help, and do not explain that you "
+            "remembered. **Never state anything the fact does not say**, and never "
+            "infer another day from it. If it is not about today, or does not "
+            "warrant saying out loud, reply with exactly: SKIP",
         )
     return None
 
