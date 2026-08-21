@@ -17,8 +17,13 @@
 (`jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python
 fakes failures). HUD builds. The mobile app's own suite is **883/883**.
 
-**Branch `feat/cloud-gateway`: merged with origin, then eight commits on top.
-Unpushed.**
+**Branch `feat/cloud-gateway` — PUSHED 2026-08-22, `97841a0..d8dabe3`, working tree
+clean.** 22 commits: the merge with origin, three harness repairs, seven finding fixes,
+one docs commit. Nothing is waiting to be committed or pushed.
+
+> GitHub reports 62 dependabot alerts, all on the **default branch**. `main` is far
+> behind — the 13 bumps were applied here on 2026-08-15. Not a new problem; it goes
+> away when this branch merges.
 
 ### The eleven findings closed today
 
@@ -73,6 +78,27 @@ the first one with nothing known standing in its way.
 `FEATURE_CENSUS.md` lists six blind spots the gate does not cover — the
 cloud-gateway commute/nudge/shared-memory arc has no rows at all, and
 `calendar_agent` has no harness of its own.
+
+### First three commands of the next session
+
+```powershell
+cd F:\work\JARVIS-Project
+git log --oneline -3                 # expect d8dabe3 at the top, tree clean
+cd jarvis-backend
+venv\Scripts\python.exe run_harnesses.py    # expect 94/94, 2987 checks, 0 failed
+```
+
+If that number is lower, **stop and read the BROKEN line** before anything else —
+a harness reporting `0 checks` is now counted broken rather than green, which is
+the specific failure that hid 23 never-run tests for two days.
+
+Then, if the gate is the plan: set the two secrets above, launch with
+`JARVIS_AUTO_LOCK=0`, and **capture stdout to a file**. That single change closed
+four findings and opened six in session 3 without a line of code being touched.
+
+```powershell
+venv\Scripts\python.exe watchdog.py *> gate-session-4.log
+```
 
 ---
 
