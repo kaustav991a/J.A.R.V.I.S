@@ -1966,3 +1966,228 @@ by then), so the instruction needs to survive a weaker model, not just the stron
 `4.1` cannot pass until **F-40** and **F-42** are fixed: every attempt that reaches the
 authorisation prompt now dies at the answer, and rows `1`, `2`, `4`, `7` and `10` all end in a
 CONFIRM. Fix those two first, then re-run the row from the top.
+
+---
+
+# CLOSED IN CODE — 2026-08-22. Eleven findings, none of them by hardware.
+
+> A code session, not a gate session. Nothing was run on a camera, a microphone
+> or a phone; everything below is fixed and harnessed, and every one of them still
+> needs its row. **A green suite proves only what its harnesses drive** — that is
+> the third of the seven things that keep being true, and it applies to this
+> section more than to anything else in this file.
+
+**Suite 81 → 94 harnesses, 2575 → 2987 checks, 0 failed.** HUD builds. The mobile
+app's own suite is 883/883.
+
+## The confirm path — F-40, F-42, F-43
+
+Session 3 ended with "`4.1` cannot pass until F-40 and F-42 are fixed". All three
+are one helper now, `_read_confirmation_answer`, read by all three governance
+doors — Telegram at `main.py:1678`, `/api/backdoor` at `:2088`, the voice loop at
+`:3334`. Root cause #4 said a class fixed one site at a time stays open, so the
+word lists are now read in exactly one place and the harness enforces that.
+
+- **F-42** — matching is on tokens. `"no"` no longer matches "now", "know",
+  "nothing" or "nobody"; `"stop"` no longer matches "stopwatch". A multi-word
+  entry needs all of its words in any order, so "go ahead" survives "go right
+  ahead". Apostrophes are dropped on both sides, so a transcribed "dont" answers
+  a list that spells it "don't".
+- **F-40** — denial is tested first. "no, go ahead" holds one entry of each kind
+  and approval was tested first, so it **executed**. There is no symmetric
+  argument for a gate whose whole purpose is to not act by accident: a misread
+  denial costs a repeated sentence, a misread approval costs whatever the action
+  was.
+- **F-43** — the missing `else` exists. A non-answer to a live prompt used to
+  fall through and run as a command **with the prompt still armed**, so he was
+  never told his answer had not landed and the pinned id sat there for a stray
+  "yes" minutes later to resolve out of context. It re-asks twice, then cancels,
+  says so aloud, and acts on what he actually said.
+
+Two things worth naming because they are one edit from breaking it. The re-ask
+budget is keyed to the pending id, not reset per turn — F-35's unconditional reset
+was correct while only failed transcriptions re-asked, because those `continue`
+before reaching it, but a non-answer is itself a landed turn and an unconditional
+reset would re-ask forever. And the non-answer branches deliberately do **not**
+call `_partner_note_denial`: its docstring restricts it to explicit refusals
+because a noted denial is terminal, and recording a non-answer as a refusal would
+permanently block a message he never declined.
+
+`test_confirm_path.py`, 81 checks, the matching tested by calling it.
+
+## The unlocked door and the locked one with no retry — F-27, F-23
+
+**F-27.** Three doors reach "boot me as the owner" and two were already closed
+deliberately — `/api/backdoor` refuses behind its flag and points you at the face
+scan, and click-to-talk refuses with a comment saying why and a harness that fails
+if the phrase ever appears there. The third assigned `active_user = "KAUSTAV"`
+from an unconditional substring, and `wakeword.py` printed the phrase on the idle
+screen every cycle for anyone in the room to read. The ordering was exactly
+inverted: the hardened door sent you to a broken one while the unhardened one let
+anyone in.
+
+Not removed — it is the recovery path for exactly the state F-23 and F-25
+describe. Authenticated: a code in `JARVIS_ADMIN_OVERRIDE_CODE` spoken with the
+phrase, token-matched so "tiberiusx" is not "tiberius", **refused when unset**
+because an escape hatch whose default is open is not an escape hatch. The idle
+line names only "wake up". Both outcomes are logged and a refusal is spoken.
+
+**F-23.** He was refused by the camera against the same 12-sample set that had
+matched him twice that session, fell through to the voice challenge, and was
+locked out because the transcriber ended the turn inside "my name is" — the one
+utterance in the system where a mid-sentence pause is guaranteed. One attempt,
+then `Interaction terminated`. So the single most likely thing a real owner says
+to that prompt was the single thing that could not work.
+
+Three attempts now, and the three failures are told apart: a lead-in with no name,
+a name nobody holds, and silence. One is a stranger and one is the owner being cut
+off. Silence ends at standby rather than at a refusal, because telling an empty
+room it has been denied access is theatre. The refusal names the way back. Root
+cause #4 applied to the relation and passkey challenges on the same path — both
+had one attempt too, and every alias in both lists exists because the transcriber
+already produced it.
+
+`test_admin_override.py` 34 checks, `test_identity_challenge.py` 61 checks, both
+calling the real functions lifted out of `main.py` by AST rather than a copy typed
+beside them.
+
+## The barrier theme — F-25, F-20, F-19, F-21
+
+**F-25.** The trap was an asymmetry: arming needed a camera that was *reachable*,
+clearing needed a *recognised face*. A camera that is reachable but blind
+satisfies the first and can never satisfy the second, and that is most of the ways
+a camera fails.
+
+The root was in `face_gate`: `check()` returns the previous result on any fault,
+so `.last` cannot tell "a fresh pass saw no face" from "you are reading a verdict
+from a minute ago". There is a completed-pass counter now that a fault does not
+advance — a counter and not a timestamp, because the daemon runs on
+`perf_counter` and mixing clocks across a module boundary is its own bug. Arming
+and clearing read the same evidence. A gate that has stopped answering
+**releases** the lock: the cost of releasing is a machine left unlocked while
+nobody can see the room, the cost of holding is the owner shut out of his own desk
+with the monitor dark, and those are not close.
+
+The overlay prints its exits, spoken one first because voice is never blocked, and
+says plainly when no code is set. A code always exists now — it defaulted to
+disabled on a barrier whose only other exit was biometric, so the hatch the
+docstring advertised did not exist on a default install. It reaches the overlay
+through the environment, not argv.
+
+**F-20.** `security_override` set the lockdown and, because its status starts with
+`security_`, put the UI back to sleep in the same breath. Every message that would
+clear it is `is_proactive`, so it hit an early return and never reached
+`setIsLockdown(false)`. The barrier disabled the only channel that could lift it.
+The proactive gate no longer applies while the overlay is up.
+
+**F-19.** Two guards, and the pattern was already in the codebase —
+`face_gate.StrangerConfirmer` is described as a debounce for exactly this. An
+unknown reading must survive consecutive cycles, and it is ignored outright while
+a known person was identified inside a grace window, because a recognised owner 60
+seconds ago is much stronger evidence than one failed resolve now. Both paths are
+guarded, not only the greeting. Held readings are logged, since a suppressed alarm
+that leaves no trace is indistinguishable from a resolver that never fired.
+
+**F-21.** Both doors say what they do and disclaim the same two things, the
+machine and the network, because those are what "lockdown" is heard to mean.
+
+`test_lockdown_exits.py`, 53 checks.
+
+## The classifier — F-24, F-44
+
+F-44 offered a choice: pin `GEMINI_MODEL` off the evergreen alias, or raise the
+140-token budget. Measured against the live API instead of guessed, one
+classify-shaped call per model:
+
+```
+gemini-3.5-flash       140 -> finish_reason 2,  4 chars, unparseable
+gemini-3.6-flash       140 -> finish_reason 2,  2 chars, unparseable
+gemini-3.7-flash       140 -> finish_reason 2, 21 chars, unparseable
+all three at 700       -> finish_reason 1, valid JSON
+gemini-3.1-flash-lite  140 -> valid JSON (it does not think)
+```
+
+So it was never the alias moving to one bad model. **Every** live flash model now
+spends output budget thinking and 140 survives none of them, which means pinning
+would not have fixed it — and pinning has its own rot, proved in the same session:
+`gemini-2.5-flash` is still **listed** in the catalogue and 404s on use, "no
+longer available", which is the exact failure the alias exists to avoid. The
+budget is the fix, and the measurement is written beside the number.
+
+**F-24** is the half that had the harm. The classifier failed, returned an
+ordinary GENERAL/CASUAL dict, and printed `MODULE: GENERAL` in the identical
+format a real reading prints. `classified: False` on the fallback and `True` on
+the success path — absence cannot be the signal — the persona line marks an
+unclassified turn, and both prompt builders carry the action catalogue when the
+intent is unknown. Paying 5.4k tokens on a turn that turns out to be chitchat
+costs a slower reply; getting it wrong the other way costs the instruction.
+
+`test_intent_fallback.py`, 22 checks.
+
+## The briefing, the typeface, the path — F-09, F-26, F-18
+
+**F-09** was reopened as "far wider than the row implies", and it was: four data
+sources narrated without being read. Absence now reaches the model **as** absence
+— the three offline strings come from one map and are marked `NO DATA`, and a zero
+heart rate is omitted rather than formatted in, because `0` is that agent's
+sentinel and the model read "Heart Rate: 0 BPM" and reassured him about his body.
+A state-claim guard drops sentences describing a source that returned `NO DATA`,
+and anything about the television, the lights or the room, which have no sensor
+behind them at all.
+
+Run against the briefing as actually spoken, all four fabrications go and the
+greeting and the clock survive. Sentences that **admit** the absence are kept —
+and the harness caught that the first draft of that exemption list silenced "I have
+no heart rate reading for you today", which is an honest sentence. Erring toward
+silence is still erring.
+
+**F-26.** Self-hosted, 77 KB, both families OFL, declared once. Orbitron ships as
+one file because Google serves it as a variable font and the 400 and 700 downloads
+were byte-identical. Verified in the build: 9 woff2 files in `dist/`, zero CDN
+references in the output. This was the HUD's last external runtime dependency.
+
+**F-18.** Row `0.3` names `/hud/` now. And the setup path was not stale wording —
+it was **damage**: the bytes were `.` + 0x0B + `env\Scripts`, so someone wrote
+`.venv\Scripts` and a tool read the `\v` as a vertical tab. It renders as
+`.env\Scripts` in most viewers, which is why it read as a wrong name rather than
+as corruption. Both occurrences repaired.
+
+`test_briefing_sources.py` 44 checks, `test_hud_assets.py` 22 checks.
+
+## Three with no finding number
+
+1. **Desk-answered turns were never filed in the shared memory.**
+   `_forward_to_desk` and `_ask_desk` hand the question to the desk and return
+   before anything writes, so with the desk *linked* — the normal state at home —
+   the shared history filled only from the cloud fallback. The one case shared
+   memory exists for was the one case that skipped it.
+2. **The unprompted voice wrote to the raw `APP_CHAT_ID`.** Proved against the
+   live config: the nudge wrote `-90001` while `think` read `6292286568`. The
+   line's own docstring names the cost it caused — "a message the model cannot
+   remember saying makes the next turn incoherent". The commute briefing was the
+   same class and wrote nothing at all.
+3. **48 files printed Unicode with no stdout guard.** `sys.stdout.encoding` is
+   `cp1252` here and such a print raises **inside the operation that was
+   logging**. `main.py` has hardened its stdout since the Electron work and its
+   comment says exactly why; what it does not do is cover the other entry points.
+   `brain.py` had an em dash on the `close_app guard` path and an arrow on
+   `Code-file guard -> workspace_write`, so under `run_evals.py`, the worker or a
+   harness a log glyph sat between an instruction and a file write. Found by
+   writing a new log line with a warning sign in it.
+
+## Owed by hand, and it is not code
+
+- **`JARVIS_ADMIN_OVERRIDE_CODE` is unset,** which is the correct default after
+  F-27 and also means the spoken recovery path F-23 and F-25 need does not exist
+  until he sets it.
+- **`GEMINI_API_KEY` is invalid** — the live API answers `API_KEY_INVALID`. All
+  four `GEMINI_API_KEYS` work. F-36 recorded "one of them is not a key"; the odd
+  one out is the primary, and it is dead.
+
+## What this section does NOT claim
+
+Every fix above is offline evidence. Row `4.1` has failed four times on four
+distinct causes and all four are now closed — which makes the fifth attempt the
+first with nothing known standing in its way, and says nothing at all about
+whether it passes. `FEATURE_CENSUS.md` lists six blind spots the 192 rows do not
+cover.

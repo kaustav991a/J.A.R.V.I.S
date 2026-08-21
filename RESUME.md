@@ -7,10 +7,76 @@
 > every fix in this project carries its reasoning in the commit message,
 > deliberately.
 >
-> Read this, then `LIVE_GATE_FINDINGS.md` (most recent section first), then
+> Read this, then `FEATURE_CENSUS.md` (what exists, and what proves it), then
+> `LIVE_GATE_FINDINGS.md` (most recent section first), then
 > `JARVIS_MASTER_ROADMAP.md`.
 
-## 🏠 START HERE — 2026-08-20, 5:30 PM. The photo answered with a search request.
+## 🟢 START HERE — 2026-08-22. Every code finding is closed. What is left is hardware.
+
+**Suite 94/94 harnesses, 2987 checks, 0 failed**
+(`jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python
+fakes failures). HUD builds. The mobile app's own suite is **883/883**.
+
+**Branch `feat/cloud-gateway`: merged with origin, then eight commits on top.
+Unpushed.**
+
+### The eleven findings closed today
+
+| ID | What it was |
+|---|---|
+| **F-40** 🔴 | "no, go ahead" EXECUTED — approval was tested before denial. Denial breaks the tie now |
+| **F-42** 🟠 | `"no"` matched "now"/"know"/"nothing", `"stop"` matched "stopwatch". Token matching, one helper, all three doors |
+| **F-43** 🟠 | a non-answer to a live prompt ran as a command **with the prompt still armed**. Re-asks twice, then cancels aloud and acts on what he said |
+| **F-27** 🔴 | `initiate admin override` granted admin from a substring — and the idle screen printed the phrase every cycle. Authenticated now; **unset REFUSES** |
+| **F-23** 🔴 | the owner was locked out of his own desk because the transcriber cut "my name is" in half, on his one attempt. Three attempts, three distinct reasons; the relation and passkey challenges retry too |
+| **F-25** 🔴 | the soft-lock armed on a *reachable* camera and cleared only on a *recognised face*, so a blind camera trapped him. Both read a fresh verdict; a blind gate RELEASES; the overlay prints its exits; an unlock code always exists |
+| **F-20** 🔴 | the lockdown overlay dropped every message that could lift it |
+| **F-19** 🔴 | the seated owner was declared an intruder, it reached his phone, and the next cycle greeted him by name. Streak + known-person grace, on both paths |
+| **F-21** 🟠 | "Initiating lockdown protocols" locked nothing. Both doors say what they do |
+| **F-24/F-44** 🔴 | 140 tokens died on **every** live flash model (measured); the fallback was indistinguishable from a real reading. 1024, `classified: False`, and the catalogue is carried when the intent is unknown |
+| **F-09** 🟠 | the briefing narrated four sources it never read. Absence reaches the model as absence; a state-claim guard drops the rest |
+| **F-26** 🔵 | the typeface came from a CDN three times per load, and 404'd. Self-hosted, 77 KB, zero CDN calls in `dist/` |
+| **F-18** 🔵 | `0.3` sent you to a JSON endpoint. And the setup path was **corrupted**, not misworded: a literal backslash-v had been read as a vertical tab |
+
+### Three things fixed that had no finding number
+
+1. **Desk-answered turns were never filed in the shared memory.** With the desk
+   *linked* — the normal state at home — the one case shared memory exists for
+   was the one case that skipped it.
+2. **The unprompted voice wrote to the raw `APP_CHAT_ID`**, a different key from
+   the one `think()` reads. Proved live: nudge wrote `-90001`, think read
+   `6292286568`. "He speaks first" landed where nothing reads it.
+3. **48 files printed Unicode with no stdout guard.** `sys.stdout.encoding` is
+   `cp1252` here and such a print **raises inside the operation that was
+   logging**. `brain.py` had one on the `close_app guard` path and one on
+   `Code-file guard -> workspace_write`.
+
+### ⚠️ OWED BY HAND before the gate — two lines, both secrets
+
+```
+# .env — the spoken admin override is CLOSED until this exists (F-27).
+#        It is the recovery path F-23 and F-25 need.
+JARVIS_ADMIN_OVERRIDE_CODE=<a phrase only you know>
+```
+
+And **rotate `GEMINI_API_KEY`** — the live API answers `API_KEY_INVALID` for it.
+All four `GEMINI_API_KEYS` work. F-36 said "one of them is not a key"; the odd
+one out is the primary, and it is dead.
+
+### ▶ NEXT: the §7 gate. It is the only thing left that can find anything.
+
+192 rows owed — 159 solo, 7 second-device, 15 second-person, 11 phone. Read
+`LIVE_GATE_CHECKLIST.md` for the order. Row `4.1` has failed four times on four
+distinct causes; all four are now fixed and harnessed, so the fifth attempt is
+the first one with nothing known standing in its way.
+
+`FEATURE_CENSUS.md` lists six blind spots the gate does not cover — the
+cloud-gateway commute/nudge/shared-memory arc has no rows at all, and
+`calendar_agent` has no harness of its own.
+
+---
+
+## 🏠 EARLIER — 2026-08-20, 5:30 PM. The photo answered with a search request.
 
 **First job on the desk, before anything else:**
 
