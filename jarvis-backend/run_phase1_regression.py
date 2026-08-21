@@ -1,3 +1,7 @@
+
+# A log character must not be able to abort an operation:
+# a regression runner writes its report to a redirected stdout. See modules/utf8_stdout.py.
+import modules.utf8_stdout  # noqa: F401,E402
 import argparse
 import json
 import os

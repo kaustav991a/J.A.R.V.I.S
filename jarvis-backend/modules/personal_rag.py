@@ -18,6 +18,13 @@ text/markdown files are indexed (no extra parser dependencies).
 
 from __future__ import annotations
 
+# A log character must not be able to abort an operation:
+# personal_rag has its own __main__ for reindexing. See modules/utf8_stdout.py.
+try:                            # imported as part of the package
+    from . import utf8_stdout   # noqa: F401
+except ImportError:             # run as a bare script path
+    import utf8_stdout          # noqa: F401,E402
+
 import os
 import re
 import asyncio

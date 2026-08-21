@@ -1,4 +1,11 @@
-from modules.groq_key_manager import run_with_key_rotation
+# A log character must not be able to abort a file write. brain.py is
+# imported directly by run_evals.py, by the worker and by the harnesses, so
+# main.py's own copy of this does not cover it -- and this file prints an em
+# dash on the `close_app guard` path and an arrow on `Code-file guard ->
+# workspace_write`. Importing the module IS the call; it must precede any print.
+import modules.utf8_stdout  # noqa: F401
+
+from modules.groq_key_manager import run_with_key_rotation  # noqa: E402
 import os
 import re
 import html
@@ -790,6 +797,33 @@ def _should_force_action_json(user_text: str) -> bool:
         return True
     return False
 
+def _unclassified(why: str) -> dict:
+    """The fallback classification, and the fact that it IS one.
+
+    F-24, filed 🔵 as "recovered, no harm on this turn" and upgraded to 🔴 by
+    F-44 when it had harm: the classifier failed, returned a perfectly ordinary
+    GENERAL/CASUAL dict, and the log printed `MODULE: GENERAL` in exactly the
+    format a real classification prints. An instruction became conversation and
+    nothing anywhere said the classification had not happened.
+
+    The values are unchanged — they are still the safest neutral defaults. What
+    is new is `classified: False`, so a caller can tell "he was chatting" from
+    "we do not know what he was doing", and the two must not be treated alike.
+    """
+    global _last_sass_index
+    print(f"[BRAIN] !! INTENT NOT CLASSIFIED ({why}) -- falling back to GENERAL. "
+          f"This is a fallback, not a reading: the action catalogue is carried "
+          f"anyway so an instruction cannot be silently answered as chat.",
+          flush=True)
+    _last_sass_index = 50
+    return {
+        "intent": "GENERAL", "emotion": "CASUAL",
+        "sarcasm_allowed": True, "brevity_mode": False,
+        "response_mode": "CINEMATIC", "sass_index": 50,
+        "classified": False,
+    }
+
+
 def classify_intent(user_text: str) -> dict:
     global _last_sass_index
     prompt = """Analyze the user's text and output ONLY a valid JSON object with exactly six keys.
@@ -895,7 +929,29 @@ Output ONLY raw JSON. No markdown, no explanation."""
                 {"role": "user", "content": user_text},
             ],
             temperature=0.0,
-            max_tokens=140,
+            # F-44. 140 was right when the cloud leg was a non-thinking flash.
+            # Every live Gemini flash model now spends output budget on thinking
+            # before it writes anything, and 140 does not survive it — measured
+            # against the live API on 2026-08-22, one classify-shaped call each:
+            #
+            #   gemini-3.5-flash        140 -> finish_reason 2, 4 chars, unparseable
+            #   gemini-3.6-flash        140 -> finish_reason 2, 2 chars, unparseable
+            #   gemini-3.7-flash        140 -> finish_reason 2, 21 chars, unparseable
+            #   all three at 700        -> finish_reason 1, valid JSON, ~140 chars
+            #   gemini-3.1-flash-lite   140 -> valid JSON (it does not think)
+            #
+            # So this was NOT the evergreen alias moving to one bad model: 3.5
+            # and 3.6 fail at 140 too. Pinning would not have fixed it, and
+            # pinning has its own rot — `gemini-2.5-flash` is still LISTED in the
+            # catalogue and 404s on use ("no longer available"), which is the
+            # exact failure the alias exists to avoid. The budget is the fix.
+            #
+            # 1024, not 700: the answer is ~40 tokens and the rest is thinking,
+            # whose length varies with the input. 700 passed on every model
+            # tested; this leaves headroom rather than sitting on the measurement.
+            # (Unrelated to the 700 in cloud_gateway's vision path, which
+            # test_reasoning_leak.py forbids — different call, different reason.)
+            max_tokens=1024,
             stream=False,
             json_mode=True,
             timeout=15.0,  # Refinement: tiny call; tighter ceiling = faster Ollama fallback on a hang
@@ -936,23 +992,16 @@ Output ONLY raw JSON. No markdown, no explanation."""
             "brevity_mode":    parsed.get("brevity_mode", False),
             "response_mode":   parsed.get("response_mode", "CINEMATIC"),
             "sass_index":      sass_index,
+            # F-24: a classification that HAPPENED says so, so that one which
+            # did not can be told apart from a genuine GENERAL.
+            "classified":      True,
         }
     except json.JSONDecodeError as e:
         print(f"[BRAIN] Intent classification JSON decode error: {e}")
-        _last_sass_index = 50
-        return {
-            "intent": "GENERAL", "emotion": "CASUAL",
-            "sarcasm_allowed": True, "brevity_mode": False,
-            "response_mode": "CINEMATIC", "sass_index": 50,
-        }
+        return _unclassified("the model's reply was not JSON")
     except Exception as e:
         print(f"[BRAIN] Intent classification failed: {e}")
-        _last_sass_index = 50
-        return {
-            "intent": "GENERAL", "emotion": "CASUAL",
-            "sarcasm_allowed": True, "brevity_mode": False,
-            "response_mode": "CINEMATIC", "sass_index": 50,
-        }
+        return _unclassified(f"{type(e).__name__}: {e}")
 
 # Broad set of tokens that signal the turn may need a MODE 2 action. When ANY appears
 # (or the intent is CODER/PC_OP, or a deterministic action is forced), the heavy
@@ -1012,9 +1061,13 @@ def build_dynamic_prompt(
     brevity_mode  = classification.get("brevity_mode", False)
     response_mode = classification.get("response_mode", "CINEMATIC")
 
+    # F-24: this line printed `MODULE: GENERAL` in the identical format whether
+    # the classifier had answered or died, which is how a silent fallback read as
+    # a reading for a whole session.
+    _read = "" if classification.get("classified", True) else "  ⚠ NOT CLASSIFIED"
     print(
         f"[BRAIN] Persona Matrix -> MODULE: {intent} | EMOTION: {emotion} | "
-        f"BREVITY: {brevity_mode} | RESPONSE_MODE: {response_mode}"
+        f"BREVITY: {brevity_mode} | RESPONSE_MODE: {response_mode}{_read}"
     )
 
     # --- Layer 1: Immutable base (persona) ---
@@ -1364,11 +1417,20 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
 
     # Only carry the ~5.4k-token ACTION_CATALOGUE when the turn plausibly needs an
     # action; pure chitchat uses the slim persona prompt so it fits Groq's 6k TPM.
+    #
+    # F-24/F-44: a classification that did not happen must not be spent as one.
+    # The fallback returns GENERAL, which is indistinguishable from a real
+    # reading of "he is chatting" — and on that basis an instruction was dropped
+    # in full and answered with an unrelated nudge. When the intent is unknown
+    # the catalogue is carried regardless: paying 5.4k tokens on a turn that
+    # turns out to be chitchat costs a slower reply, and getting it wrong the
+    # other way costs the instruction.
     _intent = classification.get("intent")
     include_actions = (
         deterministic_action
         or _intent in ("CODER", "PC_OP")
         or _action_likely(user_text)
+        or not classification.get("classified", True)
     )
 
     dynamic_system_prompt = build_dynamic_prompt(
@@ -1718,11 +1780,20 @@ def process_stream(user_text: str, active_user: str = "KAUSTAV"):
 
     # Only carry the ~5.4k-token ACTION_CATALOGUE when the turn plausibly needs an
     # action; pure chitchat uses the slim persona prompt so it fits Groq's 6k TPM.
+    #
+    # F-24/F-44: a classification that did not happen must not be spent as one.
+    # The fallback returns GENERAL, which is indistinguishable from a real
+    # reading of "he is chatting" — and on that basis an instruction was dropped
+    # in full and answered with an unrelated nudge. When the intent is unknown
+    # the catalogue is carried regardless: paying 5.4k tokens on a turn that
+    # turns out to be chitchat costs a slower reply, and getting it wrong the
+    # other way costs the instruction.
     _intent = classification.get("intent")
     include_actions = (
         deterministic_action
         or _intent in ("CODER", "PC_OP")
         or _action_likely(user_text)
+        or not classification.get("classified", True)
     )
 
     dynamic_system_prompt = build_dynamic_prompt(

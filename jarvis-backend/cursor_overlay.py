@@ -47,6 +47,10 @@ Windows-only (ctypes layered-window styles). No-op elsewhere.
 
 from __future__ import annotations
 
+# A log character must not be able to abort an operation:
+# the overlay is a separate Windows process. See modules/utf8_stdout.py.
+import modules.utf8_stdout  # noqa: F401,E402
+
 import json
 import os
 import sys

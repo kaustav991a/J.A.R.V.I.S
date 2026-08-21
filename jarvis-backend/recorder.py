@@ -1,3 +1,7 @@
+
+# A log character must not be able to abort an operation:
+# the recorder runs standalone and prints its transcription failures. See modules/utf8_stdout.py.
+import modules.utf8_stdout  # noqa: F401,E402
 import os
 import speech_recognition as sr
 import speaker

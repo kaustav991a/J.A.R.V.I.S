@@ -15,6 +15,13 @@ All blocking work is exposed through async wrappers (`aingest_standards`, `aquer
 that offload to a worker thread, keeping the J.A.R.V.I.S. event loop non-blocking.
 """
 
+# A log character must not be able to abort an operation:
+# rag_cortex has its own __main__. See modules/utf8_stdout.py.
+try:                            # imported as part of the package
+    from . import utf8_stdout   # noqa: F401
+except ImportError:             # run as a bare script path
+    import utf8_stdout          # noqa: F401,E402
+
 import os
 import asyncio
 

@@ -62,6 +62,19 @@ OPTIONAL ENV
 
 from __future__ import annotations
 
+# A log character must not be able to abort an operation. This file prints 19
+# non-ASCII lines and is its own process, so it cannot inherit main.py's
+# hardening. See modules/utf8_stdout.py.
+#
+# Guarded, following this file's own rule for reaching into modules/ (see the
+# fact_outbox import below): a gateway that will not BOOT is a far worse failure
+# than a log line that will not encode. On Render the streams are UTF-8 already,
+# so this is for a local Windows run — which is exactly where it matters.
+try:
+    import modules.utf8_stdout  # noqa: F401
+except Exception:  # noqa: BLE001
+    pass
+
 import os
 import asyncio
 import hashlib

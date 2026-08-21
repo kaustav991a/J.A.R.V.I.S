@@ -1,3 +1,10 @@
+
+# A log character must not be able to abort an operation:
+# the web agent has its own __main__. See modules/utf8_stdout.py.
+try:                            # imported as `modules.web_agent`
+    from . import utf8_stdout   # noqa: F401
+except ImportError:             # run as `python modules/web_agent.py`
+    import utf8_stdout          # noqa: F401,E402
 import re
 import asyncio
 from bs4 import BeautifulSoup

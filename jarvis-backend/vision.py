@@ -1,3 +1,7 @@
+
+# A log character must not be able to abort an operation:
+# vision has its own __main__ for camera checks. See modules/utf8_stdout.py.
+import modules.utf8_stdout  # noqa: F401,E402
 import cv2
 # DeepFace (TensorFlow, ~295 MB measured) is EAGER here on purpose: making it lazy
 # was measured 2026-07-26 and reverted — every wake scans, so the RAM is not kept
