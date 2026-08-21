@@ -584,7 +584,7 @@ def test_a_phone_holding_a_socket_is_never_also_pushed():
     pushes: list = []
     original = cg._push_all
 
-    async def _spy(title, body, data=None):
+    async def _spy(title, body, data=None, kind="general", force=False):
         pushes.append(title)
 
     cg._push_all = _spy
@@ -625,9 +625,9 @@ def test_a_desk_watch_alert_reaches_a_phone_that_is_asleep():
     pushes: list = []
     original = cg._push_all
 
-    async def _spy(title, body, data=None, channel="general", force=False):
+    async def _spy(title, body, data=None, kind="general", force=False):
         pushes.append({"title": title, "body": body, "data": data,
-                       "channel": channel, "force": force})
+                       "kind": kind, "force": force})
 
     cg._push_all = _spy
     try:
@@ -638,9 +638,10 @@ def test_a_desk_watch_alert_reaches_a_phone_that_is_asleep():
         # nobody attached — it goes out as a push
         asyncio.run(cg._relay_watch(alert))
         assert len(pushes) == 1
-        # the interrupting channel, and not rate-limited: refusing a lock warning
-        # because a status notification fired four minutes ago is the wrong trade
-        assert pushes[0]["channel"] == "desk-watch"
+        # the interrupting kind, and not rate-limited: refusing a lock warning
+        # because a status notification fired four minutes ago is the wrong trade.
+        # `watch` is the logical name; `_channel_for` maps it to desk-watch-v2
+        assert pushes[0]["kind"] == "watch"
         assert pushes[0]["force"] is True
         assert pushes[0]["data"]["id"] == "a1"
 
@@ -783,7 +784,7 @@ def test_an_unusable_departure_is_dropped_without_failing_the_schedule():
 
 def _push_replying(tickets):
     """Stub Expo, returning the given per-token tickets."""
-    def _fake(tokens, title, body, data, channel="general"):
+    def _fake(tokens, title, body, data, kind="general"):
         return {"data": tickets}
     return _fake
 
