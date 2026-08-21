@@ -320,6 +320,123 @@ def _confirm_tokens(text: str) -> set[str]:
     return set(folded.split())
 
 
+# ── F-23: a failed face scan must leave a way back in ────────────────────────
+#
+# The owner was refused by the camera against the same 12-sample set that had
+# matched him twice earlier the same session, fell through to the voice
+# challenge, and was locked out by this:
+#
+#     [JARVIS] Optical scan inconclusive. Please state your name.
+#     You said: 'my name is'            <- capture ended before the name
+#     [JARVIS] I'm afraid I cannot grant you access. Interaction terminated.
+#
+# Two things, and the second is the one that made it a lockout. "My name is …"
+# is the one utterance in the whole system where a mid-sentence pause is
+# GUARANTEED, and the VAD ends the turn inside it. The consequence was not a
+# retry — it was `Interaction terminated`, on one attempt, so a false reject had
+# no way back at all.
+#
+# The aliases live here rather than inline in the wake branch because they are
+# now read by both the challenge and its retry, and a second copy of a list like
+# this drifts.
+_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "KAUSTAV": ("kaustav", "koustav", "cost of", "costav", "costab", "kosto",
+                "costo", "cow stuff", "cowstuff", "custard", "kaustubh"),
+    "KINSHUK": ("kinshuk", "kingshook", "kinshook", "king shook", "shook",
+                "kings hook", "kin shook", "kingshuk"),
+    "MOUSUMI": ("mousumi", "mausam", "mosumi", "mousami", "mausami", "moshumi",
+                "moosumi", "moosmi", "mo shumi", "my sumi", "mouse me", "mousemi"),
+}
+
+# What a transcriber returns when it cut the answer off at the pause. Each is a
+# complete utterance that names nobody — and "my name is" is not a wrong answer,
+# it is half of a right one, which is a different thing and gets a different
+# response.
+_IDENTITY_LEADINS: tuple[str, ...] = (
+    "my name is", "my name's", "name is", "the name is", "i am", "i'm", "im",
+    "it is", "it's", "its", "this is", "you know who i am", "call me",
+)
+
+# How many times he is asked. Three, because the failure this exists for is a
+# transcriber cutting him off, and a person who has just been refused by a camera
+# should not also be given one chance at speaking.
+_IDENTITY_ATTEMPTS = 3
+
+
+def _identify_from_speech(said: str) -> str | None:
+    """Which registered person an utterance claims to be, or None.
+
+    One place, so the challenge and its retries cannot disagree about who
+    "costav" is.
+    """
+    low = (said or "").lower()
+    if not low.strip():
+        return None
+    for who, aliases in _NAME_ALIASES.items():
+        if any(a in low for a in aliases):
+            return who
+    return None
+
+
+def _is_only_a_leadin(said: str) -> bool:
+    """Did the capture end before the name?
+
+    Distinguishing this from "said a name I do not know" is the whole point. One
+    is a stranger and the other is the owner being cut off, and answering both
+    with "Interaction terminated" is what locked him out of his own desk.
+    """
+    low = re.sub(r"[^a-z\s']", " ", (said or "").lower()).strip()
+    low = re.sub(r"\s+", " ", low)
+    return bool(low) and low in _IDENTITY_LEADINS
+
+
+# ── F-27: the spoken admin override is authenticated, or it is not an override ─
+#
+# Three doors reach "boot me as the owner", and two of them were closed. The HTTP
+# command line refuses behind `JARVIS_ALLOW_BACKDOOR` and tells you to go and do
+# the face scan. Click-to-talk refuses deliberately — `wakeword.py` says "a click
+# must not hand out admin" and `test_listen_request.py` fails if the phrase ever
+# appears there. The spoken door assigned `active_user = "KAUSTAV"` from an
+# unconditional substring match, and `wakeword.py` printed the phrase on the idle
+# screen on every cycle, for anyone in the room to read.
+#
+# So the security ordering was exactly inverted: the hardened door sent you to a
+# door that was broken (camera off, and F-23's name mis-transcription terminating
+# the real owner), while the unhardened door let anyone in.
+#
+# The override is NOT removed. It is the recovery path for exactly the state
+# F-23 and F-25 describe, and that state is real and frequent. It is
+# authenticated instead: a shared secret spoken with the phrase, off unless it is
+# set, never printed, and loud in the log whichever way it goes.
+_ADMIN_OVERRIDE_ENV = "JARVIS_ADMIN_OVERRIDE_CODE"
+
+
+def _admin_override_granted(spoken: str) -> tuple[bool, str]:
+    """Whether an utterance authorises an unauthenticated admin boot.
+
+    Returns `(granted, reason)`; the reason is for the log and for what he is
+    told, and is deliberately vague to him and specific in the log.
+
+    Matching is on TOKENS, not a substring, and every word of the code must be
+    present — the same rule `_read_confirmation_answer` uses, and for the same
+    reason: this arrives through a transcriber, so punctuation and case are not
+    signal, and a code that happens to sit inside a longer word is not a match.
+
+    Unset is REFUSED, not allowed. An escape hatch whose default is "open" is
+    not an escape hatch.
+    """
+    code = (os.getenv(_ADMIN_OVERRIDE_ENV) or "").strip()
+    if not code:
+        return False, (f"{_ADMIN_OVERRIDE_ENV} is not set, so the spoken override "
+                       f"is closed on this machine")
+    want = _confirm_tokens(code)
+    if not want:
+        return False, f"{_ADMIN_OVERRIDE_ENV} is set to punctuation only"
+    if want <= _confirm_tokens(spoken):
+        return True, "the spoken code matched"
+    return False, "the phrase was spoken without the code"
+
+
 def _read_confirmation_answer(text: str) -> str | None:
     """Read an answer to a CONFIRM-tier prompt: "approve", "deny", or None.
 
@@ -3051,7 +3168,27 @@ async def websocket_endpoint(websocket: WebSocket):
             # ==========================================
             # STAGE 1A: ADMIN OVERRIDE
             # ==========================================
-            if "admin override" in wake_phrase.lower():
+            # F-27. The attempt and the authorisation are separate questions, and
+            # conflating them is what made a substring into an identity.
+            _override_attempt = "admin override" in wake_phrase.lower()
+            _override_ok, _override_why = (
+                _admin_override_granted(wake_phrase) if _override_attempt
+                else (False, "")
+            )
+            if _override_attempt:
+                print(f"[SECURITY] F-27: spoken admin override "
+                      f"{'GRANTED' if _override_ok else 'REFUSED'} — {_override_why}",
+                      flush=True)
+            if _override_attempt and not _override_ok:
+                # Refused, and then sent to the only other door. That door may
+                # itself be broken (F-23, F-25) — which is an argument for fixing
+                # it, never for leaving this one open.
+                _refusal = ("That phrase alone does not authorise anything, Sir. "
+                            "Complete the face scan, or say it with the code.")
+                await safe_send({"status": "security_locked", "message": _refusal})
+                await speaker.speak_text(_refusal)
+
+            if _override_ok:
                 active_user = "KAUSTAV"
                 await safe_send({"status": "booting", "message": "[SYSTEM] ADMIN OVERRIDE ACCEPTED. INITIATING BOOT...", "user": active_user})
                 await asyncio.sleep(1.0)
@@ -3172,24 +3309,66 @@ async def websocket_endpoint(websocket: WebSocket):
                     await speaker.speak_text(challenge_msg)
                     
                     await asyncio.sleep(0.8) # Hardware Breath
-                    
-                    await safe_send({"status": "security_listening", "message": "AWAITING IDENTIFICATION..."})
-                    name_input = await asyncio.to_thread(listen_to_mic, None) 
-                    
-                    if not name_input or name_input in ["TIMEOUT", "UNKNOWN"]:
+
+                    # F-23. Asked up to `_IDENTITY_ATTEMPTS` times, because the
+                    # failure this path exists to recover from is a transcriber
+                    # ending the turn inside "my name is …". One attempt made a
+                    # false camera reject into a lockout.
+                    #
+                    # `_claimed` is what the loop resolves to: a registered name,
+                    # or None meaning nobody was named in the attempts he had.
+                    _claimed = None
+                    _heard_nothing = False
+                    for _try in range(1, _IDENTITY_ATTEMPTS + 1):
+                        await safe_send({"status": "security_listening",
+                                         "message": "AWAITING IDENTIFICATION..."})
+                        name_input = await asyncio.to_thread(listen_to_mic, None)
+
+                        _silent = (not name_input) or name_input in ["TIMEOUT", "UNKNOWN"]
+                        _claimed = None if _silent else _identify_from_speech(name_input)
+                        if _claimed:
+                            break
+
+                        if _try >= _IDENTITY_ATTEMPTS:
+                            # Budget spent. `_heard_nothing` decides whether he
+                            # gets "I could not hear you" or the denial — telling
+                            # a silent room it has been refused access is theatre,
+                            # and telling a person who spoke that nothing was
+                            # heard is a lie.
+                            _heard_nothing = _silent
+                            break
+
+                        # Three different reasons, three different sentences. The
+                        # old code had one, and used it on all of them.
+                        if _silent:
+                            _again = ("I did not catch that, Sir. Your name, "
+                                      "please.")
+                            _why = "nothing transcribed"
+                        elif _is_only_a_leadin(name_input):
+                            # The exact failure of 2026-08-08: the words arrived,
+                            # the name did not.
+                            _again = ("I caught only the beginning of that. "
+                                      "Just the name, please.")
+                            _why = f"lead-in only ({name_input!r})"
+                        else:
+                            _again = ("That name is not one I hold, Sir. Once "
+                                      "more, please.")
+                            _why = f"unrecognised ({name_input!r})"
+                        print(f"[SECURITY] F-23: identification attempt "
+                              f"{_try}/{_IDENTITY_ATTEMPTS} — {_why}; re-asking.",
+                              flush=True)
+                        await safe_send({"status": "security_locked", "message": _again})
+                        await speaker.speak_text(_again)
+                        await asyncio.sleep(0.6)
+
+                    if not _claimed and _heard_nothing:
                         cancel_msg = "I did not hear a response. Returning to standby."
                         await safe_send({"status": "offline", "message": cancel_msg})
                         await speaker.speak_text(cancel_msg)
                         continue
 
-                    name_lower = name_input.lower()
-
-                    kaustav_aliases = ["kaustav", "koustav", "cost of", "costav", "costab", "kosto", "costo", "cow stuff", "cowstuff", "custard", "kaustubh"]
-                    kinshuk_aliases = ["kinshuk", "kingshook", "kinshook", "king shook", "shook", "kings hook", "kin shook", "kingshuk"]
-                    mousumi_aliases = ["mousumi", "mausam", "mosumi", "mousami", "mausami", "moshumi", "moosumi", "moosmi", "mo shumi", "my sumi", "mouse me", "mousemi"]
-
                     # --- BRANCH A: KAUSTAV ---
-                    if any(alias in name_lower for alias in kaustav_aliases):
+                    if _claimed == "KAUSTAV":
                         active_user = "KAUSTAV"
                         welcome_msg = "Voice print recognized. Welcome back, Sir. All primary systems online."
                         await safe_send({"status": "security_locked", "message": welcome_msg})
@@ -3202,27 +3381,60 @@ async def websocket_endpoint(websocket: WebSocket):
                         await speaker.speak_text(briefing_text)
 
                     # --- BRANCH B: KINSHUK PROTOCOL ---
-                    elif any(alias in name_lower for alias in kinshuk_aliases):
+                    elif _claimed == "KINSHUK":
                         
                         msg_rel = "Acknowledged. State your relation to the Administrator."
                         await safe_send({"status": "security_locked", "message": msg_rel})
                         await speaker.speak_text(msg_rel)
                         await asyncio.sleep(0.8)
                         
-                        await safe_send({"status": "security_listening", "message": "AWAITING RELATION..."})
-                        rel_input = await asyncio.to_thread(listen_to_mic, None) 
-                        
+                        # F-23, same class, second site: this challenge also had
+                        # exactly one attempt and terminated on a miss. The word
+                        # it wants is one the transcriber already renders as
+                        # "bother" and "rather" often enough to be in the alias
+                        # list, which is the argument for a retry rather than
+                        # against one.
                         brother_aliases = ["brother", "bother", "rather", "bro"]
+                        rel_input = None
+                        for _rtry in range(1, 3):
+                            await safe_send({"status": "security_listening",
+                                             "message": "AWAITING RELATION..."})
+                            rel_input = await asyncio.to_thread(listen_to_mic, None)
+                            if rel_input and any(b in rel_input.lower() for b in brother_aliases):
+                                break
+                            if _rtry < 2:
+                                print(f"[SECURITY] F-23: relation attempt {_rtry}/2 "
+                                      f"unmatched ({rel_input!r}); re-asking.", flush=True)
+                                _r_again = "I did not catch that. Your relation to the Administrator?"
+                                await safe_send({"status": "security_locked", "message": _r_again})
+                                await speaker.speak_text(_r_again)
+                                await asyncio.sleep(0.6)
+
                         if rel_input and any(b in rel_input.lower() for b in brother_aliases):
                             msg_pass = "Relation verified. System challenge: Provide the authentication passkey."
                             await safe_send({"status": "security_locked", "message": msg_pass})
                             await speaker.speak_text(msg_pass)
                             await asyncio.sleep(0.8)
                             
-                            await safe_send({"status": "security_listening", "message": "AWAITING PASSKEY..."})
-                            pass_input = await asyncio.to_thread(listen_to_mic, None) 
-                            
+                            # F-23, third site. A passkey is a thing you can
+                            # mis-say, and every alias in this list exists
+                            # because the transcriber already did.
                             passkey_aliases = ["brotherhood", "brother hood", "rather hood", "bother hood", "brother would", "brother good"]
+                            pass_input = None
+                            for _ptry in range(1, 3):
+                                await safe_send({"status": "security_listening",
+                                                 "message": "AWAITING PASSKEY..."})
+                                pass_input = await asyncio.to_thread(listen_to_mic, None)
+                                if pass_input and any(p in pass_input.lower() for p in passkey_aliases):
+                                    break
+                                if _ptry < 2:
+                                    print(f"[SECURITY] F-23: passkey attempt {_ptry}/2 "
+                                          f"unmatched; re-asking.", flush=True)
+                                    _p_again = "That is not the passkey I hold. Once more."
+                                    await safe_send({"status": "security_locked", "message": _p_again})
+                                    await speaker.speak_text(_p_again)
+                                    await asyncio.sleep(0.6)
+
                             if pass_input and any(p in pass_input.lower() for p in passkey_aliases):
                                 active_user = "KINSHUK" 
                                 
@@ -3243,7 +3455,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             continue
 
                     # --- BRANCH C: MOUSUMI (CINEMATIC CEREMONY) ---
-                    elif any(alias in name_lower for alias in mousumi_aliases):
+                    elif _claimed == "MOUSUMI":
                         active_user = "MOUSUMI"
                         await safe_send({"status": "security_locked", "message": "Voice print accepted. Initiating V.I.P. Protocol..."})
                         await speaker.speak_text("Voice print accepted.")
@@ -3284,11 +3496,20 @@ async def websocket_endpoint(websocket: WebSocket):
                         await safe_send({"status": "waking", "message": "SYSTEMS ONLINE. WELCOME, MISS MOUSUMI.", "user": active_user})
 
                     # --- BRANCH D: UNKNOWN ---
+                    # Reached only after `_IDENTITY_ATTEMPTS` tries, each of which
+                    # said what was wrong with the last one. It is a refusal now
+                    # rather than a coin toss on one cut-off sentence — and it
+                    # names the way back, because the owner has stood here.
                     else:
-                        final_denial = "I'm afraid I cannot grant you access. Security protocols have been engaged. Interaction terminated."
+                        print(f"[SECURITY] F-23: identification refused after "
+                              f"{_IDENTITY_ATTEMPTS} attempts.", flush=True)
+                        final_denial = ("I'm afraid I cannot grant you access. "
+                                        "Security protocols have been engaged. "
+                                        "If you are Sir, face the camera and say "
+                                        "the wake word again.")
                         await safe_send({"status": "security_locked", "message": final_denial})
                         await speaker.speak_text(final_denial)
-                        continue 
+                        continue
 
             # ==========================================
             # STAGE 2: THE CONTINUOUS J.A.R.V.I.S. LOOP

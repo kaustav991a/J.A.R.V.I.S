@@ -108,7 +108,13 @@ def wait_for_wake_word(should_abort=None):
             # Calibrate only on initial boot
             recognizer.adjust_for_ambient_noise(source, duration=1)
             
-            print("[SYSTEM] Offline. Waiting for 'wake up' or 'initiate admin override'...", flush=True)
+            # F-27: names only 'wake up'. This line was printed on every idle
+            # cycle, on a screen anyone in the room can read, and the phrase it
+            # advertised granted admin from a substring with no authentication.
+            # The override still exists as a recovery path — it is authenticated
+            # in main.py now — but it is a secret, and a secret that is printed
+            # is not one.
+            print("[SYSTEM] Offline. Waiting for 'wake up'...", flush=True)
             
             while not is_shutting_down.is_set():
                 # R5: stand down for the connection that now owns the loop.
@@ -145,7 +151,10 @@ def wait_for_wake_word(should_abort=None):
                     text = _transcribe(recognizer, audio)
                     print(f"[STT] Heard: '{text}'", flush=True)
                     
-                    # Check for either the guest trigger or the admin bypass (Added 'wakeup' as one word just in case)
+                    # The override phrase is still RETURNED — main.py is where it
+                    # is judged, and an authenticated override that never reached
+                    # the judge could not boot at all. What changed is that
+                    # reaching the judge is no longer the same as passing it.
                     if "wake up" in text or "admin override" in text or "wakeup" in text:
                         print(f"\n[BOOT SEQUENCE INITIATED VIA: {text}]", flush=True)
                         return text  # CRITICAL: We return the string, not a boolean
