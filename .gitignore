@@ -100,7 +100,15 @@ jarvis-frontend/dist/
 .env
 KEys.txt
 
-# Push addresses registered by the phone app. Runtime state, per install, and
-# the .test.json one is written by test_app_link.py.
+# Runtime state the gateway persists, per install: push addresses registered by
+# the phone app, the commute schedule it uploads, which briefings already went
+# out, and the last unprompted nudge. The .test.json ones are written by
+# test_app_link.py, which points every one of these at its own copy.
 jarvis-backend/app_push_tokens.json
 jarvis-backend/app_push_tokens.test.json
+jarvis-backend/app_commute.json
+jarvis-backend/app_commute.test.json
+jarvis-backend/app_briefed.json
+jarvis-backend/app_briefed.test.json
+jarvis-backend/app_nudge.json
+jarvis-backend/app_nudge.test.json

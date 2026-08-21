@@ -63,10 +63,16 @@ def _neuter() -> None:
     cg._app_clients.clear()
     cg._IDENTITIES.clear()
     cg._IDENTITIES[1] = {"who": "Kaustav", "honorific": "Sir", "tier": cg._ADMIN_TIER}
-    # Push addresses are persisted, so point the harness at its own file: a test
-    # run must never write a phone into the set the live gateway would push to.
-    cg._PUSH_FILE = os.path.join(os.path.dirname(os.path.abspath(cg.__file__)),
-                                 "app_push_tokens.test.json")
+    # Four things here are persisted to disk, so point the harness at its own
+    # copies of all four: a test run must never write a phone into the set the
+    # live gateway would push to, nor a commute schedule, nor mark a briefing as
+    # already sent. `app_commute.json` was landing in the repo untracked before
+    # this, which is the same leak the push file was already redirected for.
+    _here = os.path.dirname(os.path.abspath(cg.__file__))
+    cg._PUSH_FILE = os.path.join(_here, "app_push_tokens.test.json")
+    cg._COMMUTE_FILE = os.path.join(_here, "app_commute.test.json")
+    cg._BRIEFED_FILE = os.path.join(_here, "app_briefed.test.json")
+    cg._NUDGE_FILE = os.path.join(_here, "app_nudge.test.json")
     cg._push_targets.clear()
     cg._last_push_at = 0.0
 
