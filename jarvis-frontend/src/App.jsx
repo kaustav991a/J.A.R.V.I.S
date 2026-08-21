@@ -212,6 +212,7 @@ function App() {
   const [identityPrompt, setIdentityPrompt] = useState(null);
   const [isScreenScanning, setIsScreenScanning] = useState(false);
   const [isLockdown, setIsLockdown] = useState(false);
+  const isLockdownRef = useRef(false); // F-20: read inside the WS handler
 
   const [logSpeaker, setLogSpeaker] = useState("SYSTEM");
   const [logTextRaw, setLogTextRaw] = useState(
@@ -248,6 +249,12 @@ function App() {
   useEffect(() => {
     hasWokenUpRef.current = hasWokenUp;
   }, [hasWokenUp]);
+
+  // F-20: the socket handler needs to read the lockdown state without a stale
+  // closure, for the same reason hasWokenUp does. See the gate below.
+  useEffect(() => {
+    isLockdownRef.current = isLockdown;
+  }, [isLockdown]);
 
   // --- THE BOOT TRACKER ---
   useEffect(() => {
@@ -447,7 +454,20 @@ function App() {
       }
 
       // --- Phase 4: Ignore proactive messages if the UI is asleep ---
-      if (data.is_proactive && !hasWokenUpRef.current) {
+      //
+      // F-20: ...but NOT while the lockdown overlay is up. `security_override`
+      // arrives, sets isLockdown AND — because its status starts with
+      // "security_" — sets hasWokenUp back to false. From that moment every
+      // message that would clear the overlay ("Welcome back", and
+      // _trigger_event's online / SYSTEM ONLINE revert) is is_proactive, hits
+      // this return, and never reaches setIsLockdown(false). The barrier
+      // disabled the only channel that could lift it: observed live, JARVIS said
+      // "Welcome back" while the HUD stayed on the intruder screen, and with
+      // F-19's phantom intruder that bricked the HUD permanently.
+      //
+      // Only the owner speaking the wake word could clear it, which is not an
+      // exit for a screen that says an intruder is in the room.
+      if (data.is_proactive && !hasWokenUpRef.current && !isLockdownRef.current) {
         // Do nothing. Allow JARVIS to speak in the background without unlocking the UI.
         return;
       }

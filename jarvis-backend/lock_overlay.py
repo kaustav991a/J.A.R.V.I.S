@@ -56,11 +56,35 @@ def main() -> int:
     pulse = tk.Label(box, text="● DESK SECURED — SOFT LOCK", fg=CYAN, bg=BG,
                      font=("Consolas", 13))
     pulse.pack(pady=(14, 4))
-    tk.Label(box, text="biometric watch active — face the camera to unlock",
-             fg="#3a7f74", bg=BG, font=("Consolas", 10)).pack()
+
+    # F-25. This used to be one line naming ONLY the camera — which is the exit
+    # that cannot work, because a camera that has stopped recognising anyone is
+    # usually why the lock armed. The owner stood in front of this, faced the
+    # camera, got nothing, found keys and clicks swallowed, and got out by
+    # closing VS Code.
+    #
+    # The module docstring already knew better ("escape hatch if the camera dies
+    # while locked"). That knowledge never reached the person standing here. It
+    # does now: every exit that exists is on the screen, and the spoken one is
+    # named FIRST because voice is never blocked — only keys and clicks are.
+    code = os.getenv("JARVIS_UNLOCK_CODE", "")
+    exits = [
+        'say  "auto lock off"           — voice is never blocked',
+        "face the camera                — if it can still see",
+    ]
+    if code:
+        exits.append("type the unlock code + Enter   — blind, nothing is shown")
+    else:
+        # Said plainly rather than omitted. An exit the owner believes he has and
+        # does not is worse than a missing line.
+        exits.append("unlock code: NOT SET (JARVIS_UNLOCK_CODE)")
+    tk.Label(box, text="biometric watch active — ways out:",
+             fg="#3a7f74", bg=BG, font=("Consolas", 10)).pack(pady=(8, 2))
+    for line in exits:
+        tk.Label(box, text=line, fg="#3a7f74", bg=BG,
+                 font=("Consolas", 10), justify="left").pack(anchor="w")
 
     # blind-typed escape hatch (camera died while locked)
-    code = os.getenv("JARVIS_UNLOCK_CODE", "")
     typed = []
 
     def on_key(ev):

@@ -130,6 +130,11 @@ class GestureDaemon:
     """Thread daemon (ambient_vision Pattern B) — start() in lifespan, stop() on shutdown."""
 
     OWNER_GRACE_S = 3.5      # gestures allowed this long after the last owner sighting
+    # F-25. How long a face verdict stays usable. The gate is checked every
+    # 0.5s while locked and every 1.0-1.5s otherwise, so this is more than an
+    # order of magnitude of slack: if nothing real has come back in this long,
+    # the camera is not answering, whatever `available` says.
+    GATE_STALE_S = float(os.getenv("JARVIS_GATE_STALE_S", "8"))
     ALERT_COOLDOWN_S = 60.0  # min gap between stranger Telegram alerts
     DENY_TOAST_S = 8.0       # min gap between UNAUTHORIZED HUD toasts
     HUD_HEARTBEAT_S = 2.0    # re-send gesture_state even if unchanged, so the HUD can
@@ -146,6 +151,24 @@ class GestureDaemon:
         # setup gets this default the moment face enrollment makes the gate
         # available. Kaustav's .env runs 120.
         self.absent_after = float(os.getenv("JARVIS_LOCK_AFTER", "60"))
+        # F-25. The typed escape hatch defaulted to DISABLED on a barrier whose
+        # only other exit was biometric — `lock_overlay.py` returns "break" for
+        # every key when no code is set, so the hatch the docstring advertised
+        # did not exist on a default install. One is generated when none is
+        # configured, and printed here rather than only at lock time, because by
+        # then the monitor is off.
+        _cfg_code = (os.getenv("JARVIS_UNLOCK_CODE") or "").strip()
+        if _cfg_code:
+            self._unlock_code = _cfg_code
+            print("[GESTURE] soft-lock unlock code: taken from "
+                  "JARVIS_UNLOCK_CODE (not printed).", flush=True)
+        else:
+            import secrets
+            self._unlock_code = f"{secrets.randbelow(10**6):06d}"
+            print(f"[GESTURE] soft-lock unlock code for this session: "
+                  f"{self._unlock_code}  — type it blind at the lock screen and "
+                  f"press Enter. Set JARVIS_UNLOCK_CODE to choose your own.",
+                  flush=True)
         self._overlay: subprocess.Popen | None = None
         # G5.3 cursor-halo + edge-toast overlay (separate click-through process)
         self._cursor_overlay: subprocess.Popen | None = None
@@ -154,6 +177,12 @@ class GestureDaemon:
         self._cursor_overlay_next_try = 0.0
         self._locked = False
         self._last_owner_t = -1e9
+        # F-25: when the gate last produced a verdict about the PRESENT, and the
+        # counter that proves it did. Both start "never", so the lock cannot arm
+        # until the camera has actually answered once — a barrier that arms
+        # before its own sensor works is a barrier with no exit.
+        self._last_verdict_t = -1e9
+        self._last_checks_ok = -1
         self._last_alert_t = -1e9
         self._last_toast_t = -1e9
         self._last_hud: dict | None = None
@@ -286,10 +315,16 @@ class GestureDaemon:
         except Exception:
             pass
         try:
+            # F-25: the overlay is a separate process, so the code has to travel
+            # to it. Passed in the environment rather than on argv, which is
+            # readable from any process list on the machine.
+            _env = dict(os.environ)
+            _env["JARVIS_UNLOCK_CODE"] = self._unlock_code
             self._overlay = subprocess.Popen(
                 [sys.executable, "lock_overlay.py"],
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 stdin=subprocess.PIPE,
+                env=_env,
                 creationflags=0x08000000 if sys.platform == "win32" else 0)
         except Exception as e:  # noqa: BLE001
             print(f"[GESTURE] overlay spawn failed: {e}", flush=True)
@@ -496,6 +531,12 @@ class GestureDaemon:
                 if now - self._last_face_t >= face_every and gate._ensure():
                     self._last_face_t = now
                     res = gate.check(frame)
+                    # F-25: `check()` hands back the PREVIOUS verdict on a fault,
+                    # so the only way to know this one is about now is that the
+                    # gate's completed-pass counter moved.
+                    if gate.checks_ok != self._last_checks_ok:
+                        self._last_checks_ok = gate.checks_ok
+                        self._last_verdict_t = now
                     if res.owner_present:
                         self._last_owner_t = now
                     # HUD shows the GRACE-smoothed owner, not the raw check:
@@ -522,16 +563,44 @@ class GestureDaemon:
                 if gate.available is False:
                     owner_ok = True   # gate unenrolled/broken -> don't brick control
 
-                # ---- locked: watch for the owner only ----
+                # F-25. The trap was an asymmetry: arming needed only a camera
+                # that was REACHABLE, clearing needed a RECOGNISED FACE. A camera
+                # that is reachable but blind — lens covered, pointed at a wall,
+                # stream frozen mid-decode — satisfies the first and can never
+                # satisfy the second. That is not a narrow window; it is most of
+                # the ways a camera fails. The desk locked, the monitor powered
+                # off on top of the overlay, keys and clicks were swallowed, and
+                # the owner got out by closing VS Code.
+                #
+                # So the two conditions read the same evidence now: a verdict
+                # about the present moment.
+                _gate_fresh = (now - self._last_verdict_t) <= self.GATE_STALE_S
+
+                # ---- locked: the owner, or a gate that has stopped answering --
                 if self._locked:
                     if owner_ok:
+                        self._unlock()
+                        absence.reset(now)
+                    elif not _gate_fresh:
+                        # The subsystem whose failure raised the barrier is no
+                        # longer able to make the decision that lifts it. A
+                        # barrier that cannot decide must not hold the desk: the
+                        # cost of releasing is a machine left unlocked while
+                        # nobody can see the room, and the cost of holding is the
+                        # owner physically shut out of his own desk with the
+                        # monitor dark. Those are not close.
+                        print(f"[GESTURE] F-25: no usable face verdict for "
+                              f"{now - self._last_verdict_t:.0f}s — releasing the "
+                              f"soft lock rather than holding it on a blind camera.",
+                              flush=True)
                         self._unlock()
                         absence.reset(now)
                     self._hud(engine, "locked")
                     continue
 
                 # ---- absence -> soft lock ----
-                if self.auto_lock and gate.available and absence.update(
+                # `_gate_fresh` as well as `gate.available`: see the note above.
+                if self.auto_lock and gate.available and _gate_fresh and absence.update(
                         res.owner_present, res.any_face, moving, now):
                     if engine.engaged:
                         engine.process(None, now + 10.0)  # force-release drag state

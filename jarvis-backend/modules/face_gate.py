@@ -180,6 +180,19 @@ class FaceGate:
         self._size = None
         self.available = None   # None = not initialised yet, then bool
         self.last = GateResult()
+        # F-25. `check()` returns the PREVIOUS result on any fault, which means
+        # `.last` cannot tell "a fresh pass saw no face" from "the camera is
+        # blind and you are reading a verdict from a minute ago". A caller that
+        # cannot tell those apart can arm a barrier on a stale reading and then
+        # never satisfy the fresh reading needed to lift it — which is exactly
+        # how the desk soft-lock trapped the owner at his own desk.
+        #
+        # This counter advances ONLY on a completed pass. A fault leaves it
+        # alone, so a caller can watch it instead of trusting `.last`. A counter
+        # rather than a timestamp on purpose: the daemon runs on
+        # `time.perf_counter()` and mixing clocks across a module boundary is its
+        # own bug.
+        self.checks_ok = 0
 
     # ------------------------------------------------------------------ #
 
@@ -250,7 +263,11 @@ class FaceGate:
                 # intruder — still not the owner, but weaker alert evidence.
                 res.uncertain = res.stranger_present and best_other >= self.uncertain_floor
             self.last = res
+            self.checks_ok += 1     # a real verdict — see the note in __init__
             return res
         except Exception as e:  # noqa: BLE001
             print(f"[FACE-GATE] check fault: {e}", flush=True)
+            # Deliberately does NOT advance `checks_ok`: the caller is about to
+            # be handed a verdict that is not about the present moment, and it
+            # must be able to know that.
             return self.last

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 import time
 import datetime
@@ -33,7 +34,53 @@ class ProactiveAgent:
         self.last_email_digest = 0
         self.email_digest_cooldown = 3600    # 1 hour between email digests
         self.reminded_events = set()         # Track already-reminded event names
-        
+
+        # ── F-19: identity flaps, so one reading is not a verdict ─────────────
+        #
+        # Four minutes after a successful MATCH: KAUSTAV, on this agent's
+        # 60-second poll — timestamps exactly 60s apart, so it was the poll and
+        # not an event — the owner was announced as an unrecognized presence, it
+        # escalated to a lockdown alert that reached his phone, and the NEXT
+        # cycle greeted him by name with "I've been monitoring the systems in
+        # your absence." He never left. The ambient resolver returned UNKNOWN and
+        # KAUSTAV for the same seated man on consecutive cycles.
+        #
+        # A security alarm that cries wolf at its owner is one that gets ignored
+        # on the day it is right, which is why the false-positive direction is
+        # the worse direction here.
+        #
+        # Two guards, and the pattern is already in this codebase — `face_gate`
+        # has a `StrangerConfirmer` for exactly this, described as "debounce for
+        # 'a stranger is at the desk'". This is that idea at the ambient layer.
+        #
+        #   1. a streak: an unknown face has to survive consecutive cycles;
+        #   2. a grace: an unknown reading shortly after a KNOWN person was
+        #      identified is noise, because a recognised owner 60 seconds ago is
+        #      much stronger evidence than one failed resolve now.
+        #
+        # A real intruder outlasts both — they are delays on the alarm, not an
+        # exemption from it.
+        self._unknown_streak = 0
+        self._intruder_streak = 0
+        self._last_known_person_t = 0.0
+        self.stranger_confirm_cycles = int(
+            os.getenv("JARVIS_STRANGER_CONFIRM_CYCLES", "2"))
+        self.known_person_grace_s = float(
+            os.getenv("JARVIS_KNOWN_PERSON_GRACE_S", "180"))
+
+    _KNOWN_PEOPLE = ("KAUSTAV", "MOUSUMI", "KINSHUK")
+
+    def _identity_is_trustworthy_as_unknown(self, now: float) -> bool:
+        """Is "I do not recognise this person" worth acting on yet?
+
+        False while a known person was identified inside the grace window, or
+        before the streak has been met. Both are about the same thing: this
+        resolver is not reliable enough for one reading to raise an alarm.
+        """
+        if (now - self._last_known_person_t) <= self.known_person_grace_s:
+            return False
+        return self._unknown_streak >= self.stranger_confirm_cycles
+
     async def start(self):
         self.is_running = True
         print("[PROACTIVE AGENT] Background intelligence activated. Waiting for system baseline...", flush=True)
@@ -76,10 +123,45 @@ class ProactiveAgent:
         # Moved ahead of every wellness/briefing check: each cycle returns after
         # one event, so a break nudge used to mask an intruder for a full cycle.
         # ==========================================
-        if shared_optical_cache.get("camera_active") and shared_optical_cache.get("intruder_detected"):
+        # F-19: the raw flag is one reading from a resolver that returned UNKNOWN
+        # and KAUSTAV for the same seated person on consecutive cycles. It has to
+        # survive a streak, and it is ignored outright while a KNOWN person was
+        # identified inside the grace window.
+        _raw_intruder = bool(shared_optical_cache.get("camera_active")
+                             and shared_optical_cache.get("intruder_detected"))
+        if _raw_intruder:
+            self._intruder_streak += 1
+        else:
+            self._intruder_streak = 0
+
+        _owner_seen_recently = (now - self._last_known_person_t) <= self.known_person_grace_s
+        _intruder_confirmed = (_raw_intruder
+                               and self._intruder_streak >= self.stranger_confirm_cycles
+                               and not _owner_seen_recently)
+        if _raw_intruder and not _intruder_confirmed:
+            print(f"[PROACTIVE AGENT] F-19: intruder reading held — streak "
+                  f"{self._intruder_streak}/{self.stranger_confirm_cycles}"
+                  f"{', a known person was identified ' + str(int(now - self._last_known_person_t)) + 's ago' if _owner_seen_recently else ''}.",
+                  flush=True)
+
+        if _intruder_confirmed:
             if not getattr(self, "intruder_alerted", False):
-                message = "Security alert. I am detecting an unrecognized individual in the room. Initiating lockdown protocols."
-                await self.broadcast_callback({"status": "security_override", "message": "INTRUDER DETECTED. LOCKDOWN ENGAGED.", "is_proactive": True})
+                # F-21, root cause #4: this claimed to be "initiating lockdown
+                # protocols" and then returned, having locked nothing. The exact
+                # same false claim was found and fixed at the OTHER door — the
+                # voice-command path in main.py, which now says "Lockdown display
+                # engaged" and states plainly that no firewall or network setting
+                # changed, guarded by test_review_batch1_medium.py. The harness
+                # proved the sentence at one door and said nothing about this one.
+                #
+                # It says what it does. A security system that overstates what it
+                # did is worse than one that does less, because the owner stops
+                # taking his own precautions.
+                message = ("Security alert. I am detecting an unrecognized "
+                           "individual in the room. I have put the display into "
+                           "lockdown and alerted your phone. I have not locked "
+                           "the machine or changed any network setting.")
+                await self.broadcast_callback({"status": "security_override", "message": "INTRUDER DETECTED. LOCKDOWN DISPLAY ENGAGED.", "is_proactive": True})
                 if online:
                     await self.speak_callback(message)
                 await self._alert_phone("🚨 " + message)
@@ -218,7 +300,18 @@ class ProactiveAgent:
                 self.last_greeting_time = {}
                 
             last_greeted = self.last_greeting_time.get(person, 0)
-            
+
+            # F-19. Every branch below is a claim about WHO is in the room, and
+            # the resolver behind `person` is not reliable enough for one reading
+            # to make one. A known name resets the streak and stamps the grace; an
+            # unknown one accumulates and is held until it has earned the
+            # sentence.
+            if person in self._KNOWN_PEOPLE:
+                self._unknown_streak = 0
+                self._last_known_person_t = now
+            else:
+                self._unknown_streak += 1
+
             # Only greet once every 15 minutes (900s)
             if now - last_greeted > 900:
                 if person == "KAUSTAV":
@@ -227,9 +320,17 @@ class ProactiveAgent:
                     await self._trigger_event("Good to see you, Miss Mousumi. Let me know if you need anything.")
                 elif person == "KINSHUK":
                     await self._trigger_event("Welcome back, Mr. Kinshuk.")
-                else:
+                elif self._identity_is_trustworthy_as_unknown(now):
                     await self._trigger_event("I detect an unrecognized presence in the room. Please identify yourself.")
-                
+                else:
+                    # Held, not dropped: it will be said if the reading survives.
+                    # Saying it to the owner is what made the alarm ignorable.
+                    print(f"[PROACTIVE AGENT] F-19: unrecognized-presence line "
+                          f"held — streak {self._unknown_streak}/"
+                          f"{self.stranger_confirm_cycles}, last known person "
+                          f"{int(now - self._last_known_person_t)}s ago.", flush=True)
+                    return
+
                 self.last_greeting_time[person] = now
                 return
         
