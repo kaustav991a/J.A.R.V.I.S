@@ -1548,6 +1548,52 @@ async def _history_add(chat_id: int, role: str, content: str) -> None:
             print(f"[CLOUD] memory write failed ({e}); the turn is in this process only.", flush=True)
 
 
+# ── Everything that reaches the shared history goes through one of these two ──
+#
+# `_history_add` takes a raw key, and once the memory became shared that made it
+# the wrong thing to call directly: the key a turn is REMEMBERED under is
+# `_memory_key(chat_id)`, never `chat_id`. Two writers got that wrong, in the two
+# available ways, and both are the reason these exist.
+
+async def _remember_desk_turn(chat_id: int, asked: str, answered: str) -> None:
+    """File a DESK-answered turn in the shared history.
+
+    Missed because the turn was never lost — it was in the other store. The desk
+    keeps its own memory, and `_forward_to_desk` and `_ask_desk` both hand the
+    question over and return before anything here writes. So with the desk LINKED
+    — the normal state when he is home — the shared history filled only from the
+    cloud fallback. Ask the phone something with the desk up, open Telegram an
+    hour later, and it was not there: the one case the shared memory was built
+    for was the one case that skipped it.
+
+    The desk's own copy stays. These are two stores answering two questions, and
+    the gateway's is the only one all three surfaces read.
+    """
+    mem = _memory_key(chat_id)
+    if (asked or "").strip():
+        await _history_add(mem, "user", asked.strip())
+    if (answered or "").strip():
+        await _history_add(mem, "assistant", answered.strip())
+
+
+async def _remember_said(text: str) -> None:
+    """File something JARVIS said UNPROMPTED under the shared history.
+
+    The nudge wrote to the raw `APP_CHAT_ID` while `think` read the operator's
+    own thread, so with `TELEGRAM_USER_ID` set those are two different
+    conversations and the message landed in the one nothing reads. Its own
+    docstring names the cost exactly — "a message the model cannot remember
+    saying makes the next turn incoherent" — which is what it then caused.
+
+    A helper and not a call site, so the next unprompted voice added here cannot
+    repeat it. The commute briefing was already the second one, and it wrote
+    nothing at all.
+    """
+    said = (text or "").strip()
+    if said:
+        await _history_add(_memory_key(APP_CHAT_ID), "assistant", said)
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Identity firewall (mirrors modules/telegram_bot.py)
 # ════════════════════════════════════════════════════════════════════════════
@@ -2293,6 +2339,11 @@ async def _commute_tick() -> None:
     await _push_all(title, body,
                     data={"kind": "commute", "place_id": dep.get("place_id")},
                     kind="general", force=True)
+    # He can ask about a briefing he was just sent — "was that for the office
+    # or for home", "what did you say about the rain" — and before this the
+    # brain had never said any of it. Same argument as the nudge, and this one
+    # was not writing to the wrong key, it was writing nowhere.
+    await _remember_said(f"{title} — {body}")
     _briefed[dep.get("place_id")] = today
     _save_briefed()
     print(f"[CLOUD] briefing pushed for "
@@ -3026,7 +3077,10 @@ async def _forward_to_desk(message, ident: dict, text: str) -> bool:
     # message. If NOTHING referencing this req_id comes back within the window
     # (notify heartbeats extend it), answer locally so the operator always
     # gets a reply.
-    entry = {"evt": asyncio.Event(), "last": time.monotonic()}
+    # `asked` rides along so the reader can file the pair. The reply arrives in a
+    # different coroutine minutes later and has only the answer; the question
+    # exists nowhere else by then.
+    entry = {"evt": asyncio.Event(), "last": time.monotonic(), "asked": text}
     _pending_reqs[req_id] = entry
 
     async def _watchdog():
@@ -3137,14 +3191,24 @@ async def desk_link(websocket: WebSocket):
             # relayed to a chat id that was never a Telegram chat.
             if chat_id == APP_CHAT_ID:
                 continue
+            # Read BEFORE the first await below: setting `evt` releases the
+            # watchdog, which pops this entry, and a streamed answer arrives as
+            # several `reply` frames — only the first carries the question.
+            _asked = ""
             if rid is not None and rid in _pending_reqs:
                 if ftype in ("reply", "done"):
                     _pending_reqs[rid]["evt"].set()
                 else:
                     _pending_reqs[rid]["last"] = time.monotonic()
+                if ftype == "reply" and not _pending_reqs[rid].get("filed"):
+                    _pending_reqs[rid]["filed"] = True
+                    _asked = _pending_reqs[rid].get("asked") or ""
             if ftype == "reply" and chat_id is not None:
                 text = (frame.get("text") or "").strip()
                 if text:
+                    # Filed before it is sent: a Telegram send that fails is no
+                    # reason for the conversation to forget the turn happened.
+                    await _remember_desk_turn(chat_id, _asked, text)
                     for i in range(0, len(text), 4000):
                         try:
                             await bot.send_message(chat_id, text[i:i + 4000])
@@ -3489,7 +3553,7 @@ async def _deliver_unprompted(message: str, title: str = "J.A.R.V.I.S.") -> dict
                  {"who": "KAUSTAV", "honorific": "Sir", "tier": "admin"})
     who = (ident.get("who") or "KAUSTAV").upper()
 
-    await _history_add(APP_CHAT_ID, "assistant", said)
+    await _remember_said(said)
 
     await _broadcast_app({"status": "speaking", "message": said, "user": who})
     pushed = False
@@ -3923,6 +3987,11 @@ async def app_link(websocket: WebSocket):
                     # the desk gets the question as asked: it has its own senses,
                     # and a preamble about the phone's surroundings is not its brief
                     answer = await _ask_desk(text, ident, lambda: say("thinking"))
+                    if answer is not None:
+                        # The turn is in the DESK's memory, not in the shared
+                        # one — and the shared one is what Telegram and the desk
+                        # read tomorrow. See `_remember_desk_turn`.
+                        await _remember_desk_turn(APP_CHAT_ID, text, answer)
                 if answer is None:
                     try:
                         # A located question is answered from measured figures rather
