@@ -102,6 +102,12 @@ GROQ_MODEL = (os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b").strip()
 # into a 404 with no warning. Left in place rather than replaced with a guess that
 # would age the same way: set GROQ_VISION_MODEL to something current, or point
 # LLM_PROVIDER_VISION at gemini, which is what was actually done.
+#
+# 2026-08-19: `render.yaml` now DECLARES `GROQ_VISION_MODEL=qwen/qwen3.6-27b`, so
+# a Blueprint deploy always carries a live id and this default is never reached
+# there. It stays dead on purpose — as the record of how a hardcoded model id
+# fails, and so that a deploy which somehow arrives without the variable fails
+# loudly at the call rather than quietly answering with something unintended.
 GROQ_VISION_MODEL = (os.getenv("GROQ_VISION_MODEL")
                      or "meta-llama/llama-4-scout-17b-16e-instruct").strip()
 GROQ_WHISPER_MODEL = (os.getenv("GROQ_WHISPER_MODEL") or "whisper-large-v3").strip()
@@ -175,6 +181,81 @@ APP_TOKEN = (os.getenv("APP_TOKEN") or BRIDGE_SECRET or "").strip()
 # this id outright as a second line of defence.
 APP_CHAT_ID = int(os.getenv("APP_CHAT_ID", "-90001"))
 
+# ── One assistant, not three copies of one ───────────────────────────────────
+#
+# The comment above says the phone "gets a session of its own rather than sharing
+# Telegram's", and that was deliberate. It is being overruled, deliberately.
+#
+# The cost only became obvious in use: ask something at the desk, pick up the
+# phone an hour later, and he has no idea what was just discussed. Ask on the
+# phone, open Telegram, same again. Three surfaces, three separate memories, one
+# person talking — which is not a presence, it is three copies of one wearing the
+# same name. The film's JARVIS is the same JARVIS in the car as in the workshop.
+#
+# So ROUTING and MEMORY are separated. APP_CHAT_ID stays exactly as it is for
+# routing and for the relay's refusal — that defence is load-bearing and nothing
+# here touches it. What changes is which key the rolling history is filed under.
+#
+# **Only the operator's own surfaces merge.** A VIP's conversation is theirs;
+# merging Mousumi's chat into his would be a privacy failure dressed as a
+# feature, and it is why this maps one specific pair of ids rather than
+# collapsing everything into one.
+APP_MEMORY_SHARED = (os.getenv("APP_MEMORY_SHARED", "1").strip() == "1")
+
+
+# ── Which surface he is speaking from, and what it can do ────────────────────
+#
+# Since the memory became shared, one history holds turns typed at the desk, sent
+# from the phone and sent through Telegram, and nothing in it says which. He was
+# inferring it by accident: a phone turn arrives carrying a location block and a
+# Telegram turn does not — a hint, not a statement, and one that vanishes the
+# moment location sharing is switched off.
+#
+# It matters in a specific way rather than a general one. At the desk "open that
+# file" is a thing that can be done; on the phone it is not, and offering it is
+# worse than declining, because the offer looks like the work happening. The
+# surface also decides what he HAS: the desk has hands, the cloud only talks.
+#
+# One line, stated rather than implied. Kept short on purpose — this rides on
+# every turn, and a paragraph about the transport is a paragraph not spent on the
+# question.
+SURFACE_NOTE = {
+    "app": ("He is speaking from the phone app. You can answer, look at photos and "
+            "remember things; you cannot touch his PC unless the desk is linked."),
+    "telegram": ("He is speaking through Telegram. Same reach as the phone app: "
+                 "answers and memory, no direct control of his PC unless the desk "
+                 "is linked."),
+    "desk": ("He is speaking at the desk, where you have full control of the "
+             "machine."),
+}
+
+
+def _surface_line(surface: str) -> str:
+    """The one line naming where a turn came from, or nothing.
+
+    Unknown surfaces return an empty string rather than a guess: saying the wrong
+    thing about what he can reach is worse than saying nothing, because he acts on
+    it.
+    """
+    return SURFACE_NOTE.get(surface, "")
+
+
+def _memory_key(chat_id: int) -> int:
+    """Which conversation this turn is REMEMBERED under.
+
+    Distinct from `chat_id`, which says where a reply GOES. The phone's turns are
+    filed under the operator's Telegram chat so both surfaces read one history —
+    and the desk, which speaks to the gateway as the operator, is already there.
+
+    Falls through untouched when `TELEGRAM_USER_ID` is unset (the app must work on
+    a gateway with no Telegram wiring at all) and when the flag is off, so the old
+    behaviour is one environment variable away rather than a revert.
+    """
+    if not APP_MEMORY_SHARED or chat_id != APP_CHAT_ID:
+        return chat_id
+    owner = (os.getenv("TELEGRAM_USER_ID") or "").strip()
+    return int(owner) if owner.lstrip("-").isdigit() else chat_id
+
 # The phone re-probes when no frame has arrived for 30s (LinkMachine.tick), which
 # on an idle socket would mean a teardown-and-reconnect every half minute. A
 # status frame with no message refreshes that clock without writing to the HUD's
@@ -194,6 +275,10 @@ APP_TELEMETRY_SECS = float(os.getenv("APP_TELEMETRY_SECS", "15"))
 # nothing here needs a service account or a new dependency.
 EXPO_PUSH_URL = os.getenv("EXPO_PUSH_URL", "https://exp.host/--/api/v2/push/send")
 _PUSH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_push_tokens.json")
+# The commute schedule the phone uploaded, so a redeploy does not silently stop
+# the morning briefing. Same ephemeral-disk caveat as the push tokens above: the
+# phone re-sends on every cloud connect, so a lost file costs one reconnect.
+_COMMUTE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_commute.json")
 # A desk that flaps must not become a burst of identical notifications.
 APP_PUSH_MIN_GAP_SECS = float(os.getenv("APP_PUSH_MIN_GAP_SECS", "300"))
 
@@ -408,6 +493,53 @@ def _run_rotated(call_fn):
     raise last_exc or RuntimeError("Groq key rotation exhausted.")
 
 
+# ── Reasoning models say their thinking out loud, and it must not be shipped ──
+#
+# `<think>...</think>` is what a reasoning model emits before its answer. On
+# 2026-08-19 at 19:16 a photo went to `qwen/qwen3.6-27b` — the Groq vision
+# fallback, reached because Gemini's free vision quota was exhausted — and the
+# phone displayed the ENTIRE monologue and no answer at all:
+#
+#     <think>
+#     The user has sent a photo of what appears to be a smartwatch on a wrist.
+#     ... Given the user has a dog named Kitty, it might be related ...
+#     The user's prompt is just "The operator sent this photo without a caption"
+#
+# Three separate failures in one bubble. It leaked the reasoning, it leaked the
+# facts block and the injected prompt along with it, and it ran out of
+# `max_tokens` mid-thought so the answer was never reached — the reply was cut
+# off with no closing tag. Vision itself was fine: the model read the watch face,
+# the date and the blurred stairs behind it correctly. Only the packaging was
+# wrong, which is why /health showed nothing amiss.
+_THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN = re.compile(r"<think\b[^>]*>.*\Z", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Remove a model's thinking, leaving only what it meant to say.
+
+    Applied to every completion rather than to the Groq leg alone, because which
+    provider serves which capability is a runtime switch and Gemini's thinking
+    models emit the same tag. One place, so a provider change cannot bring this
+    back.
+
+    The unterminated case is deliberate, and it is the one that actually
+    happened: a `<think>` with no `</think>` means the token budget ran out
+    mid-thought, so everything from the tag onward is monologue and there is no
+    answer behind it. Dropping it leaves an empty string, which the caller turns
+    into an admission rather than an empty bubble.
+
+    Not attempted here: Groq's `reasoning_format="hidden"`. It is the tidier fix
+    where it applies and it is model-specific — Groq answers 400 for a model that
+    does not reason — so it cannot be sent unconditionally, and nothing here can
+    verify which of the configured ids accept it. Stripping needs no such
+    knowledge and covers both providers.
+    """
+    out = _THINK_BLOCK.sub("", text or "")
+    out = _THINK_OPEN.sub("", out)
+    return out.strip()
+
+
 def _groq_complete(messages: list[dict], model: str = "") -> str:
     """Blocking Groq chat completion with key rotation. Call via asyncio.to_thread."""
     def _call(client):
@@ -415,7 +547,12 @@ def _groq_complete(messages: list[dict], model: str = "") -> str:
             model=model or GROQ_MODEL,
             messages=messages,
             temperature=0.6,
-            max_tokens=700,
+            # 700 was the budget for an ANSWER, and a reasoning model spends it on
+            # thinking first. The photo above never reached its reply because the
+            # monologue alone exceeded it. Raised so the thinking a reasoning
+            # model insists on doing cannot starve the sentence the operator
+            # actually reads.
+            max_tokens=2000,
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -683,10 +820,21 @@ def _complete(messages: list[dict], model: str = "", capability: str = "text") -
                 messages, GEMINI_VISION_MODEL if capability == "vision" else GEMINI_MODEL
             )
             _brain_stats[capability]["gemini_ok"] += 1
-            return out
+            return _answerable(_strip_reasoning(out))
         except Exception as e:  # noqa: BLE001
             _note_fallback(capability, e)
-    return _groq_complete(messages, groq_model)
+    return _answerable(_strip_reasoning(_groq_complete(messages, groq_model)))
+
+
+def _answerable(text: str) -> str:
+    """Never hand back an empty bubble.
+
+    A reply that is empty once its thinking is removed means the model spent the
+    whole budget deciding what to say. Saying so is the honest report; an empty
+    message reads as the app having broken, which is the failure shape this
+    project keeps having to unlearn.
+    """
+    return text or "I thought my way past the end of my answer, sir. Ask me again."
 
 
 def _transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
@@ -719,20 +867,84 @@ def _groq_transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
 
 _TAVILY_KEY = (os.getenv("TAVILY_API_KEY") or "").strip()
 
+# How far back a time-sensitive lookup may reach. Tavily honours `days` only on
+# the news topic, which is why `fresh` below switches both of them together.
+_TAVILY_FRESH_DAYS = int(os.getenv("TAVILY_FRESH_DAYS", "14"))
 
-def _tavily_lookup(query: str) -> str:
+
+def _date_label(raw: object) -> str:
+    """One comparable shape for a source's publication date.
+
+    Tavily returns `published_date` on news results and omits it everywhere else,
+    in a format that has been both ISO and RFC 1123 depending on the source. So
+    normalise what parses and pass the rest through truncated rather than dropping
+    it: a strange-looking date still tells the model how old a claim is, and no
+    date at all is precisely what let a 2025 monsoon article be read back as this
+    morning's forecast.
+    """
+    import datetime as _dt
+
+    s = str(raw or "").strip()
+    if not s:
+        # Stated out loud on purpose. An undated snippet sitting among dated ones
+        # reads as "recent enough not to need one", which is the original mistake.
+        return "date unknown"
+    try:
+        return _dt.date.fromisoformat(s[:10]).isoformat()
+    except ValueError:
+        pass
+    for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z"):
+        try:
+            return _dt.datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return s[:24]
+
+
+def _dated_block(body: str) -> str:
+    """Stamp a lookup with today's date, so age needs no arithmetic to see.
+
+    The phone's envelope already carries local wall time (`src/lib/ask.ts`), but
+    that only ever said what *today* is — it never said how old the *evidence*
+    was. A model asked about rain on 2026-08-17, handed undated 2025 prose, had
+    nothing to weigh it against and warned about that year's monsoon as though it
+    were the afternoon's forecast.
+    """
+    import datetime as _dt
+
+    if not body:
+        return ""
+    today = _dt.datetime.now(_OPERATOR_TZ).date().isoformat()
+    return (f"- Today is {today}. Every source below carries its publication date; "
+            f"treat an old one as history, never as current conditions.\n{body}")
+
+
+def _tavily_lookup(query: str, fresh: bool = False) -> str:
     """Grounding via Tavily (same provider the desk uses). Better than DDG for
-    current facts/scores. Uses the REST API over urllib — no extra dependency."""
+    current facts/scores. Uses the REST API over urllib — no extra dependency.
+
+    `fresh` asks for a dated window rather than a nudge. Appending "latest result
+    today" to the query — which is all recency used to mean here — is a hint to
+    the ranker, not a filter, and a well-ranked article from last year satisfies
+    it completely.
+    """
     import json as _json
     import urllib.request
 
-    payload = _json.dumps({
+    body = {
         "api_key": _TAVILY_KEY,
         "query": query,
         "search_depth": "basic",
         "max_results": 5,
         "include_answer": True,
-    }).encode()
+    }
+    if fresh:
+        # `days` is honoured on the news topic only, so the two travel together.
+        # Not applied to every query: restricting "what is a pangolin" to the news
+        # of the last fortnight is a different kind of wrong answer.
+        body["topic"] = "news"
+        body["days"] = _TAVILY_FRESH_DAYS
+    payload = _json.dumps(body).encode()
     req = urllib.request.Request(
         "https://api.tavily.com/search", data=payload,
         headers={"Content-Type": "application/json"}, method="POST",
@@ -746,7 +958,7 @@ def _tavily_lookup(query: str) -> str:
         title = r.get("title", "")
         content = r.get("content", "")
         if content:
-            bits.append(f"- {title}: {content}")
+            bits.append(f"- [{_date_label(r.get('published_date'))}] {title}: {content}")
     return "\n".join(bits)
 
 
@@ -759,11 +971,15 @@ def _ddg_lookup(query: str) -> str:
             title = r.get("title", "")
             body = r.get("body", "")
             if body:
-                bits.append(f"- {title}: {body}")
+                # DDG carries no publication date at all. Marked rather than left
+                # bare, so a Tavily block and a DDG one cannot be told apart by the
+                # model as "dated" versus "current".
+                bits.append(f"- [date unknown] {title}: {body}")
     return "\n".join(bits)
 
 
-# Time-sensitive intents benefit from an explicit recency nudge in the query.
+# Time-sensitive intents get a dated window from Tavily, and — since DuckDuckGo
+# offers no such filter — the old query nudge when DDG is the one answering.
 _RECENCY_HINTS = ("score", "match", "news", "latest", "today", "current",
                   "price", "stock", "weather", "result", "who won", "live")
 
@@ -774,22 +990,22 @@ def _web_lookup(query: str) -> str:
     if not WEB_LOOKUP:
         return ""
     q = query.strip()
-    # Nudge time-sensitive queries toward fresh results.
-    if any(h in q.lower() for h in _RECENCY_HINTS):
-        q = f"{q} latest result today"
+    fresh = any(h in q.lower() for h in _RECENCY_HINTS)
+    # DDG gets the nudge because it has nothing better; Tavily gets `days`.
+    ddg_q = f"{q} latest result today" if fresh else q
     try:
         if _TAVILY_KEY:
-            out = _tavily_lookup(q)
+            out = _tavily_lookup(q, fresh=fresh)
             if out:
-                return out
+                return _dated_block(out)
             # fall through to DDG if Tavily returned nothing
-        return _ddg_lookup(q)
+        return _dated_block(_ddg_lookup(ddg_q))
     except Exception as e:  # noqa: BLE001
         print(f"[CLOUD] web lookup skipped: {e}", flush=True)
         # Last-ditch: try DDG if Tavily was the one that failed.
         if _TAVILY_KEY:
             try:
-                return _ddg_lookup(q)
+                return _dated_block(_ddg_lookup(ddg_q))
             except Exception:
                 pass
         return ""
@@ -866,8 +1082,63 @@ _LOOKUP_FAILED_NUDGE = (
 )
 
 
+async def _resolve_markers(reply: str, transcript: list, honorific: str) -> str:
+    """Act on the machinery a reply carries, then remove every trace of it.
+
+    Shared by `think()` and `see()` because it was NOT, and that cost a visible
+    bug: a photo asking after a motorcycle's mileage was answered, in full, with
+
+        [[LOOKUP: Royal Enfield Hunter 350 mileage ARAI real world]]
+
+    `see()` was a parallel implementation that never got this block while sharing
+    the persona that teaches the marker — so the model obeyed its instructions and
+    the gateway printed them. The search never ran, the question was never
+    answered, and the raw line went into the rolling history to be read back as
+    context on every following turn. A `[[REMEMBER: …]]` stated over a photo was
+    unstorable for the same reason.
+
+    One function rather than a second copy, because a third caller is precisely how
+    this happened once already.
+
+    `transcript` is what the second pass should be asked WITH, and it is the
+    caller's job because the two paths differ: `think()` hands over its own
+    messages unchanged, while `see()` must swap the base64 image for a text
+    stand-in — the second pass runs on the text leg, which cannot read an image and
+    would pay for the tokens anyway. What the model saw survives in its own first
+    reply, which is appended here.
+    """
+    asked = _LOOKUP_MARKER.search(reply or "")
+    if asked and WEB_LOOKUP:
+        query = asked.group(1).strip()[:200]
+        print(f"[CLOUD] model asked for a lookup: {query!r}", flush=True)
+        snippets = await asyncio.to_thread(_web_lookup, query)
+        second = list(transcript)
+        # its own request belongs in the transcript, or the second pass reads as
+        # though the results arrived from nowhere
+        second.append({"role": "assistant", "content": reply})
+        second.append({
+            "role": "system",
+            "content": (_SECOND_PASS_NUDGE + "\n\n" + snippets) if snippets else
+                       _LOOKUP_FAILED_NUDGE.format(honorific=honorific),
+        })
+        # Once only. A model that can ask twice can ask forever, and a loop that
+        # bills a free tier per iteration is not a loop worth having.
+        reply = await asyncio.to_thread(_complete, second, "", "text")
+
+    # Stored before the marker is stripped, and stored even if the write fails, so a
+    # fact he stated is at least true for this process.
+    for fact in _REMEMBER_MARKER.findall(reply or ""):
+        await remember_fact(fact)
+
+    # Stripped whether or not they were acted on. A marker that reaches the operator
+    # is worse than no marker at all: it is punctuation from the machinery, in a chat
+    # that is supposed to read like someone talking.
+    reply = _REMEMBER_MARKER.sub("", reply or "")
+    return _LOOKUP_MARKER.sub("", reply or "").strip()
+
+
 async def think(chat_id: int, text: str, who: str, honorific: str,
-                context: str = "") -> str:
+                context: str = "", surface: str = "") -> str:
     """Run one turn through the cloud brain, with rolling per-chat memory.
 
     `context` is per-turn background — the phone's location and measured weather.
@@ -876,8 +1147,18 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     written to `history`: the caller used to prepend it to `text`, which meant every
     remembered turn carried a stale copy of his coordinates and the model spent the
     conversation comparing them ("still overcast", "still in Presidency Division").
+
+    The history is keyed by `_memory_key`, not by `chat_id`: where a reply GOES
+    and what the assistant REMEMBERS are different questions, and the operator's
+    surfaces answer the second one together. See the note on `APP_MEMORY_SHARED`.
+
+    `surface` names where the turn came from, which one shared history cannot say
+    on its own. Ephemeral like `context` and for the same reason: the surface is
+    true of this turn, not of the conversation, and a remembered copy would have
+    him telling you tomorrow where you stood yesterday.
     """
-    history = await _history_for(chat_id)
+    mem = _memory_key(chat_id)
+    history = await _history_for(mem)
 
     grounding = ""
     lookup_failed = False
@@ -906,6 +1187,12 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
     system = _PERSONA.format(who=who, honorific=honorific) + date_ctx + await _facts_block() + grounding
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
+    # Before the location block, because it frames it: "he is on the phone" is
+    # what makes "he is at the office" mean he is standing there rather than
+    # that a machine there reported it.
+    said_surface = _surface_line(surface)
+    if said_surface:
+        messages.append({"role": "system", "content": said_surface})
     if context:
         messages.append({"role": "system", "content": context})
     if _has_indic_script(text):
@@ -916,55 +1203,29 @@ async def think(chat_id: int, text: str, who: str, honorific: str,
 
     reply = await asyncio.to_thread(_complete, messages, "", "text")
 
-    # ── The model asked for a search: run it and let it answer properly ──────
+    # The search it asked for, the facts it was told to keep, and the markers
+    # removed — one extra round trip, and the operator sees one grounded reply.
+    # This is what replaces "I'll look up the breed standards for you", a sentence
+    # that was never followed by anything because nothing runs between turns.
     #
-    # One extra round trip, and the operator sees one grounded reply. This is what
-    # replaces "I'll look up the breed standards for you" — a sentence that was
-    # never followed by anything, because nothing runs between turns.
-    #
-    # Once only. A model that can ask twice can ask forever, and a loop that bills
-    # a free tier per iteration is not a loop worth having.
-    asked = _LOOKUP_MARKER.search(reply or "")
-    if asked and WEB_LOOKUP:
-        query = asked.group(1).strip()[:200]
-        print(f"[CLOUD] model asked for a lookup: {query!r}", flush=True)
-        snippets = await asyncio.to_thread(_web_lookup, query)
-        second = list(messages)
-        # its own request belongs in the transcript, or the second pass reads as
-        # though the results arrived from nowhere
-        second.append({"role": "assistant", "content": reply})
-        second.append({
-            "role": "system",
-            "content": (_SECOND_PASS_NUDGE + "\n\n" + snippets) if snippets else
-                       _LOOKUP_FAILED_NUDGE.format(honorific=honorific),
-        })
-        reply = await asyncio.to_thread(_complete, second, "", "text")
-
-    # ── Anything it was told to remember ────────────────────────────────────
-    #
-    # Stored before the marker is stripped, and stored even if the write fails, so a
-    # fact he stated is at least true for this process. A turn history cannot carry
-    # this: it scrolls off in twelve messages, which is how his dog fell out of the
-    # conversation while still being the subject of it.
-    for fact in _REMEMBER_MARKER.findall(reply or ""):
-        await remember_fact(fact)
-
-    # Stripped whether or not they were acted on. A marker that reaches the operator
-    # is worse than no marker at all: it is punctuation from the machinery, in a chat
-    # that is supposed to read like someone talking.
-    reply = _REMEMBER_MARKER.sub("", reply or "")
-    reply = _LOOKUP_MARKER.sub("", reply or "").strip()
+    # `messages` unchanged: a text turn's transcript is already what the second
+    # pass should read. See `see()` for the half that is not.
+    reply = await _resolve_markers(reply, messages, honorific)
 
     # what he actually said, not what he said plus a page of coordinates
-    await _history_add(chat_id, "user", text)
-    await _history_add(chat_id, "assistant", reply)
+    await _history_add(mem, "user", text)
+    await _history_add(mem, "assistant", reply)
     return reply
 
 
-async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: str) -> str:
+async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: str,
+              surface: str = "") -> str:
     """Answer a Telegram photo through the Groq vision model, in persona and
     with the same rolling per-chat memory as think()."""
-    history = await _history_for(chat_id)
+    # the same key `think` uses: one conversation across his surfaces, so a photo
+    # sent from the phone is something the desk can be asked about afterwards
+    mem = _memory_key(chat_id)
+    history = await _history_for(mem)
 
     import datetime as _dt
     now = _dt.datetime.now(_OPERATOR_TZ)
@@ -973,6 +1234,11 @@ async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: s
     question = caption.strip() or "The operator sent this photo without a caption — react to it helpfully."
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-_MAX_TURNS:])
+    # a photo comes from a surface too, and what he can do about what he sees
+    # depends on which one
+    said_surface = _surface_line(surface)
+    if said_surface:
+        messages.append({"role": "system", "content": said_surface})
     if _has_indic_script(question):
         messages.append({"role": "system", "content": _ROMANISE_NUDGE})
     messages.append({
@@ -986,10 +1252,26 @@ async def see(chat_id: int, image_b64: str, caption: str, who: str, honorific: s
 
     reply = await asyncio.to_thread(_complete, messages, "", "vision")
 
+    # ── The same machinery a text turn gets, and for the same reasons ────────
+    #
+    # This path had none of it, and a photo of a motorcycle came back as the
+    # literal string `[[LOOKUP: Royal Enfield Hunter 350 mileage ARAI real world]]`
+    # — the persona teaches the marker and this function used the persona, so the
+    # model was following instructions the gateway then failed to carry out.
+    #
+    # The transcript handed over is text-only. The second pass runs on the text
+    # leg: it cannot read the image, and sending a megabyte of base64 to a model
+    # that will ignore it is a cost with no upside. The stand-in below is the same
+    # one the history keeps, and what the model actually SAW travels in its own
+    # first reply, which `_resolve_markers` appends.
+    grounded = [m for m in messages if not isinstance(m.get("content"), list)]
+    grounded.append({"role": "user", "content": f"[sent a photo] {question}"})
+    reply = await _resolve_markers(reply, grounded, honorific)
+
     # Store a text stand-in for the image so follow-up turns keep context
     # without re-sending base64 through the chat model.
-    await _history_add(chat_id, "user", f"[sent a photo] {question}")
-    await _history_add(chat_id, "assistant", reply)
+    await _history_add(mem, "user", f"[sent a photo] {question}")
+    await _history_add(mem, "assistant", reply)
     return reply
 
 
@@ -1353,7 +1635,8 @@ def _build_dispatcher():
             return
         try:
             reply = await think(message.chat.id, text,
-                                ident["who"], ident["honorific"])
+                                ident["who"], ident["honorific"],
+                                surface="telegram")
         except Exception as e:  # noqa: BLE001
             print(f"[CLOUD] think() fault: {e}\n{traceback.format_exc()}", flush=True)
             reply = "I hit a fault reaching my reasoning core just now — try again in a moment."
@@ -1408,7 +1691,8 @@ def _build_dispatcher():
             await message.bot.download(message.photo[-1], destination=buf)  # largest size
             b64 = base64.b64encode(buf.getvalue()).decode()
             reply = await see(message.chat.id, b64, message.caption or "",
-                              ident["who"], ident["honorific"])
+                              ident["who"], ident["honorific"],
+                              surface="telegram")
         except Exception as e:  # noqa: BLE001
             print(f"[CLOUD] photo vision fault: {e}\n{traceback.format_exc()}", flush=True)
             reply = "My visual cortex faltered on that one — send it again in a moment."
@@ -1504,6 +1788,32 @@ _app_clients: set = set()
 
 # push_token -> platform, for phones that are not holding a socket right now.
 _push_targets: dict = {}
+
+# What each phone calls its notification channels, keyed by push token.
+#
+# Not persisted, and it does not need to be: the app registers on every launch,
+# and until it does the defaults below apply. Android drops a notification sent
+# to a channel that does not exist, so guessing here is not a small mistake — it
+# is a push that Expo accepts and nobody ever sees.
+_push_channels: dict = {}
+
+# Where a phone that has not registered its channels is assumed to listen.
+#
+# Kept in step with jarvis-mobile's `notify.ts` — and the whole point of the
+# registration above is that this file should never again be the thing that has
+# to be remembered. These are the floor, not the contract.
+DEFAULT_CHANNELS = {"general": "general-v8", "watch": "desk-watch-v2"}
+
+
+def _channel_for(token: str, kind: str) -> str:
+    """The channel THIS phone calls `kind`, or the current default.
+
+    Android silently discards a notification addressed to a channel that does not
+    exist, so this lookup is the difference between a push that arrives and one
+    that Expo accepts and nobody ever sees.
+    """
+    named = _push_channels.get(token) or {}
+    return named.get(kind) or DEFAULT_CHANNELS.get(kind) or kind
 _last_push_at: float = 0.0
 
 
@@ -1512,6 +1822,92 @@ def _desk_connected() -> bool:
 
 
 # ── Push, and the desk announcement that uses it ─────────────────────────────
+
+# ── The commute schedule, and why the gateway holds one ──────────────────────
+#
+# The morning briefing was a local job on the phone, and measured on the device
+# on 2026-08-20 it cannot be: `expo-background-task` requires a connected network
+# for every run (`BackgroundTaskScheduler.kt:108`), and the app's uid reads
+# `Network: 108 (blocked=REASON_APP_BACKGROUND|REASON_APP_STANDBY)` with
+# `#netAvail=0` while sitting in the RARE standby bucket. The work was not being
+# deferred, it was stopped — logcat caught the pending worker running 200ms after
+# a cold launch and then re-queueing into a window it would be blocked in again.
+# So the app was the only thing that could unblock its own briefing, which is
+# exactly how it was reported: "it arrives after I open the app".
+#
+# A high-priority push is exempt from all three restrictions, and this gateway can
+# already send one. What it could not do is know WHEN — so the phone now tells it.
+#
+# One schedule, not one per phone. This whole system has a single operator and a
+# single `APP_TOKEN`; facts are global here for the same reason.
+_commute: dict = {}
+
+
+def _load_commute() -> None:
+    global _commute
+    try:
+        with open(_COMMUTE_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        _commute = data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        _commute = {}
+
+
+def _save_commute() -> None:
+    try:
+        with open(_COMMUTE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_commute, fh)
+    except Exception:  # noqa: BLE001
+        # an unwritable file costs a re-send on the next connect, not a feature
+        pass
+
+
+def _clean_commute(body: dict) -> Optional[dict]:
+    """Read the upload, or return None if it cannot be trusted.
+
+    Rejecting outright rather than repairing. A schedule half-understood is worse
+    than none: it would fire a notification at a time nobody chose, which is the
+    one thing this feature must never do — a briefing arriving from a setting the
+    operator turned off would teach him to distrust every other one.
+    """
+    tz = str((body or {}).get("tz") or "").strip()[:64]
+    if not tz:
+        return None
+
+    days = (body or {}).get("days")
+    if not isinstance(days, list) or len(days) != 7:
+        return None
+    # indexed the way JavaScript's `Date.getDay()` counts, 0 = Sunday, because
+    # that is what the phone means by it. Python's `weekday()` starts on Monday,
+    # and the scheduler must convert rather than assume.
+    days = [bool(d) for d in days]
+
+    rows = (body or {}).get("departures")
+    if not isinstance(rows, list):
+        return None
+    out = []
+    for r in rows[:8]:
+        if not isinstance(r, dict):
+            continue
+        try:
+            hour, minute = int(r.get("hour")), int(r.get("minute"))
+            lat, lon = float(r.get("lat")), float(r.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        place_id = str(r.get("place_id") or "").strip()[:32]
+        if not place_id:
+            continue
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            continue
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            continue
+        out.append({
+            "place_id": place_id,
+            "label": str(r.get("label") or place_id).strip()[:32],
+            "hour": hour, "minute": minute, "lat": lat, "lon": lon,
+        })
+    return {"tz": tz, "days": days, "departures": out}
+
 
 def _load_push_targets() -> None:
     """Read the saved addresses, if the disk still has them.
@@ -1539,7 +1935,7 @@ def _save_push_targets() -> None:
 
 
 def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
-                        channel: str = "general") -> dict:
+                        kind: str = "general") -> dict:
     """POST one batch to Expo. Blocking on purpose — the caller threads it.
 
     Returns the DECODED reply, not a truncated string. Expo answers HTTP 200 even
@@ -1549,12 +1945,18 @@ def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
     worked, which is this project's recurring failure shape.
     """
     payload = json.dumps([
-        # The channel must be one the app created at startup (`general` or
-        # `desk-watch`); Android drops a notification addressed to a channel that
-        # does not exist. `desk-watch` is the MAX-importance one, so a lock
-        # countdown can interrupt where a status change should not.
+        # Resolved PER PHONE, from what that phone said it created. Android
+        # drops a notification addressed to a channel that does not exist, and
+        # this file used to name `general` and `desk-watch` outright — both of
+        # which the app has since renamed and deleted, `general` eight times
+        # over. Every reply push in between was accepted by Expo and discarded
+        # by Android, which is why bug C survived three separate fixes to the
+        # socket that were all, individually, correct.
+        #
+        # `watch` is the MAX-importance one, so a lock countdown can interrupt
+        # where a status change should not.
         {"to": t, "title": title, "body": body, "data": data,
-         "priority": "high", "channelId": channel}
+         "priority": "high", "channelId": _channel_for(t, kind)}
         for t in tokens
     ]).encode("utf-8")
     req = urllib.request.Request(
@@ -1571,7 +1973,7 @@ def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
 
 
 async def _push_all(title: str, body: str, data: Optional[dict] = None,
-                    channel: str = "general", force: bool = False) -> None:
+                    kind: str = "general", force: bool = False) -> None:
     """Push to every registered phone.
 
     `force` skips the quiet gap, and exactly one caller uses it: the desk watch.
@@ -1590,7 +1992,7 @@ async def _push_all(title: str, body: str, data: Optional[dict] = None,
     sent = list(_push_targets)
     try:
         out = await asyncio.to_thread(
-            _expo_push_blocking, sent, title, body, data or {}, channel)
+            _expo_push_blocking, sent, title, body, data or {}, kind)
     except Exception as e:  # noqa: BLE001
         # a push that cannot be delivered must never take the desk link down
         print(f"[CLOUD] push failed: {e}", flush=True)
@@ -1634,6 +2036,452 @@ async def _push_all(title: str, body: str, data: Optional[dict] = None,
         # way to find out.
         print(f"[CLOUD] PUSH REACHED NOBODY - {len(sent)} target(s), "
               f"{len(dead)} unregistered, errors={failed}", flush=True)
+
+
+# ── The briefing the gateway sends itself ────────────────────────────────────
+#
+# Ported from jarvis-mobile `src/lib/commute.ts`, deliberately rather than
+# shared. The phone keeps its copy as a fallback and for PREVIEW, which is the
+# button that proves the channel and the permission without waiting on anything.
+# Two copies of the thresholds is a real cost; the alternative was a phone
+# fetching a forecast it has no network to fetch.
+#
+# Why any of this is here is in `_load_commute` above: the device job cannot run.
+COMMUTE_TICK_SECS = float(os.getenv("COMMUTE_TICK_SECS", "60"))
+# How long after a departure time a briefing may still go out. Not slop for a
+# scheduler — this loop is punctual — but for a redeploy or a cold start landing
+# inside the minute that mattered. Past this it is stale: a warning about rain on
+# your way out is worth nothing once you have already left.
+COMMUTE_FIRE_WINDOW_MIN = int(os.getenv("COMMUTE_FIRE_WINDOW_MIN", "20"))
+OPEN_METEO_URL = os.getenv("OPEN_METEO_URL", "https://api.open-meteo.com/v1/forecast")
+
+# The thresholds, in one place so they can be argued with — the same values and
+# the same names the phone uses.
+RAIN_CHANCE = 50
+RAIN_MM = 0.4
+HOT_C = 35.0
+COLD_C = 12.0
+WINDY_KMH = 40.0
+_THUNDER = {95, 96, 99}
+
+# place_id -> the day it was last briefed, so the same umbrella is not announced
+# three times. Per departure, so the morning cannot silence the evening.
+_briefed: dict = {}
+_BRIEFED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_briefed.json")
+
+
+def _load_briefed() -> None:
+    global _briefed
+    try:
+        with open(_BRIEFED_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        _briefed = {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        _briefed = {}
+
+
+def _save_briefed() -> None:
+    try:
+        with open(_BRIEFED_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_briefed, fh)
+    except Exception:  # noqa: BLE001
+        # Worth naming: an unwritable file means a briefing could repeat after a
+        # restart. That is the failure to prefer — a second umbrella notice is an
+        # annoyance, a missed one is the whole feature.
+        pass
+
+
+def _commute_zone(name: str):
+    """The operator's zone, or UTC.
+
+    Falling back rather than raising: a schedule with an unreadable zone is still
+    better acted on late than not at all, and /health reports the tz it was
+    given, so a wrong one is visible rather than silent.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001
+        import datetime as _dt
+        return _dt.timezone.utc
+
+
+def _js_weekday(when) -> int:
+    """Sunday-first, the way the phone indexes its `days` array.
+
+    `Date.getDay()` counts 0 = Sunday; Python's `weekday()` counts 0 = Monday.
+    Converted here, once, because getting it wrong is a briefing that arrives on
+    the wrong days and reads as a scheduling bug rather than an off-by-one.
+    """
+    return (when.weekday() + 1) % 7
+
+
+def _hour_label(hour: int) -> str:
+    """`7 PM`. The meridiem is always printed.
+
+    A window that read `08:00-11:00` on a briefing its owner had set for the
+    evening is the reason: 24-hour digits are unambiguous only to a reader
+    already thinking in them.
+    """
+    twelve = 12 if hour % 12 == 0 else hour % 12
+    return f"{twelve} {'AM' if hour % 24 < 12 else 'PM'}"
+
+
+def _due_departure(now, sched: dict) -> Optional[dict]:
+    """Which departure wants briefing now, if any, and not already done today.
+
+    Fires at the time or shortly after, never before. The phone's window was
+    ±30 minutes because Android chose when its job ran; nothing chooses for this
+    loop, so early delivery would be a decision rather than a symptom — and a
+    warning about the walk out is worth less the earlier it arrives.
+    """
+    days = sched.get("days") or []
+    if len(days) != 7 or not days[_js_weekday(now)]:
+        return None
+    today = now.strftime("%Y-%m-%d")
+    minutes_now = now.hour * 60 + now.minute
+    for d in sched.get("departures") or []:
+        try:
+            target = int(d["hour"]) * 60 + int(d["minute"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (target <= minutes_now <= target + COMMUTE_FIRE_WINDOW_MIN):
+            continue
+        if _briefed.get(d.get("place_id")) == today:
+            continue
+        return d
+    return None
+
+
+def _forecast_blocking(lat: float, lon: float, tz: str) -> Optional[dict]:
+    """Read Open-Meteo. Blocking on purpose — the caller threads it.
+
+    None for any failure, and the caller stays SILENT on a None. Announcing "all
+    clear" when the lookup failed would be the one genuinely dishonest message
+    this feature could send, and the phone learned that expensively: a briefing
+    that could not tell "the morning is fine" from "I could not find out" marked
+    the day done and went quiet until tomorrow, where it failed identically.
+    """
+    url = (f"{OPEN_METEO_URL}?latitude={lat:.4f}&longitude={lon:.4f}"
+           "&hourly=temperature_2m,precipitation_probability,precipitation,"
+           "weather_code,wind_speed_10m"
+           f"&forecast_days=2&timezone={urllib.parse.quote(tz)}")
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
+            raw = resp.read().decode("utf-8", "replace")
+        out = json.loads(raw)
+        return out if isinstance(out, dict) else None
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] commute forecast failed: {e}", flush=True)
+        return None
+
+
+def _briefing_text(data: dict, dep: dict, today: str) -> Optional[tuple]:
+    """The briefing, or None when the forecast said nothing about these hours.
+
+    The voice is the phone's and the four rules travel with it: the figure comes
+    first and the remark second, the remark never replaces the instruction, `sir`
+    is spent once and the title spends it, and there are no exclamation marks.
+    Understatement is the whole instrument.
+    """
+    hourly = (data or {}).get("hourly") or {}
+    times = hourly.get("time") or []
+    if not times:
+        return None
+
+    # the departure hour and the two after it, matched by local hour rather than
+    # by index: the array starts at midnight, but only in the API's timezone
+    wanted = {(int(dep["hour"]) + n) % 24 for n in (0, 1, 2)}
+    rows = []
+    for i, iso in enumerate(times):
+        date, _, clock = str(iso).partition("T")
+        if date != today:
+            continue
+        try:
+            if int(clock[:2]) in wanted:
+                rows.append(i)
+        except ValueError:
+            continue
+    # answered, but not about the hours being asked about. Still an absence of
+    # knowledge rather than a quiet morning, so the day is not consumed
+    if not rows:
+        return None
+
+    def pick(key):
+        arr = hourly.get(key) or []
+        return [float(arr[i]) for i in rows
+                if i < len(arr) and isinstance(arr[i], (int, float))]
+
+    temps, chances = pick("temperature_2m"), pick("precipitation_probability")
+    mm, winds, codes = pick("precipitation"), pick("wind_speed_10m"), pick("weather_code")
+
+    max_chance = max(chances) if chances else 0.0
+    total_mm = sum(mm)
+    max_temp = max(temps) if temps else None
+    min_temp = min(temps) if temps else None
+    max_wind = max(winds) if winds else 0.0
+    storm = any(int(c) in _THUNDER for c in codes)
+
+    notes = []
+    if storm:
+        notes.append("Thunderstorms forecast. Leave early or wait it out — "
+                     "either beats the alternative.")
+    if max_chance >= RAIN_CHANCE or total_mm >= RAIN_MM:
+        near = f", around {total_mm:.1f} mm" if total_mm >= RAIN_MM else ""
+        notes.append(f"A {round(max_chance)}% chance of rain on your way out{near}. "
+                     "An umbrella, unless you've grown fond of arriving wet.")
+    if max_temp is not None and max_temp >= HOT_C:
+        notes.append(f"It reaches {round(max_temp)}°C today. Water, and something "
+                     "for your head — I would rather not arrange the hospital visit.")
+    if min_temp is not None and min_temp <= COLD_C:
+        notes.append(f"Down to {round(min_temp)}°C. The jacket you keep ignoring "
+                     "would be appropriate.")
+    if max_wind >= WINDY_KMH:
+        notes.append(f"Gusts to {round(max_wind)} km/h. Mind the hair.")
+
+    hour = int(dep["hour"])
+    window = f"{_hour_label(hour)}–{_hour_label((hour + 3) % 24)}"
+    label = dep.get("label") or dep.get("place_id") or "there"
+
+    # A quiet day is announced too, and it carries the figures. Silence was
+    # indistinguishable from the feature being broken and was read that way for
+    # four days straight — so the reassurance is not the word "fine", it is
+    # numbers that can be disagreed with if they are wrong.
+    if not notes:
+        degrees = "" if max_temp is None else f"{round(max_temp)}°C, "
+        return (f"Nothing in your way from {label}, sir",
+                f"Nothing to carry. {degrees}a {round(max_chance)}% chance of rain, "
+                f"wind {round(max_wind)} km/h ({window}). Do try to enjoy it.")
+
+    # named, because two of these arrive in a day and a shade holding both has to
+    # say which door each one is about
+    return (f"Before you leave {label}, sir", f"{' '.join(notes)} ({window})")
+
+
+async def _commute_tick() -> None:
+    """One pass. Does nothing at all outside a departure window."""
+    if not _commute or not _push_targets:
+        return
+    import datetime as _dt
+    now = _dt.datetime.now(_commute_zone(_commute.get("tz") or "UTC"))
+    dep = _due_departure(now, _commute)
+    if not dep:
+        return
+
+    today = now.strftime("%Y-%m-%d")
+    data = await asyncio.to_thread(
+        _forecast_blocking, float(dep["lat"]), float(dep["lon"]),
+        _commute.get("tz") or "UTC")
+    if data is None:
+        # NOT marked briefed: the day stays open for the next tick. A failed
+        # lookup must not consume the day, which is the mistake the phone made
+        # and then had to be talked out of.
+        return
+    said = _briefing_text(data, dep, today)
+    if said is None:
+        return
+
+    title, body = said
+    # `force`, and only the second caller ever to use it. Read the note on the
+    # quiet gap in `_push_all`: it exists so a flapping desk cannot become a
+    # burst of identical notifications. A briefing cannot burst — once per
+    # departure per day, held down by `_briefed` — and it is the only push here
+    # the operator actually asked for by name. Dropping it because a status
+    # notification went out four minutes earlier would be the gap deciding
+    # against the one thing it was never meant to police.
+    await _push_all(title, body,
+                    data={"kind": "commute", "place_id": dep.get("place_id")},
+                    kind="general", force=True)
+    _briefed[dep.get("place_id")] = today
+    _save_briefed()
+    print(f"[CLOUD] briefing pushed for "
+          f"{dep.get('label') or dep.get('place_id')} ({today})", flush=True)
+
+
+async def _commute_loop() -> None:
+    """Watch the clock the phone cannot.
+
+    A minute's granularity against a twenty-minute window: nothing here needs to
+    be exact, and a tick that costs nothing when no departure is due can afford
+    to be frequent. Every exception is caught and printed — a loop that died
+    quietly would put this feature back exactly where it started, correct in
+    theory and never arriving.
+    """
+    print("[CLOUD] commute briefing loop started.", flush=True)
+    while True:
+        try:
+            await _commute_tick()
+        except Exception as e:  # noqa: BLE001
+            print(f"[CLOUD] commute tick failed: {e}", flush=True)
+        await asyncio.sleep(COMMUTE_TICK_SECS)
+
+
+# ── Speaking first ───────────────────────────────────────────────────────────
+#
+# Everything this assistant has ever said has been an answer. Asked for directly
+# on 2026-08-20: "make the app interact with me autonomously, without sending my
+# chat." That is the difference between a very good assistant app and the thing
+# it is named after — the film's JARVIS starts sentences.
+#
+# The commute briefing was the first unprompted thing the phone ever received, and
+# it proved the delivery: a high-priority push reaches a phone that is asleep, in a
+# pocket, with the app closed. This reuses that path for something that is not on a
+# timetable.
+#
+# THE DESIGN CONSTRAINT, and it is the whole of it: **he must be worth reading.**
+# A machine that speaks unprompted is one bad week away from being muted, and a
+# muted assistant cannot say the one thing that mattered. So:
+#
+#   * at most one unprompted remark a day, and never two in a row on the same
+#     subject;
+#   * only when something is actually true today that was not true yesterday —
+#     nothing generated for the sake of speaking;
+#   * silence is the default and needs no excuse. There is no "nothing to report"
+#     message, because that is the message you learn to swipe away;
+#   * and it is a REMARK, not a briefing. One or two sentences, in his voice.
+#
+# The quiet hours are not negotiable either. Nothing goes out before NUDGE_FROM_H
+# or after NUDGE_UNTIL_H, whatever it thinks it has noticed.
+NUDGE_ENABLED = (os.getenv("NUDGE_ENABLED", "1").strip() == "1")
+NUDGE_TICK_SECS = float(os.getenv("NUDGE_TICK_SECS", "900"))
+NUDGE_FROM_H = int(os.getenv("NUDGE_FROM_H", "9"))
+NUDGE_UNTIL_H = int(os.getenv("NUDGE_UNTIL_H", "21"))
+_NUDGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_nudge.json")
+
+# what was said unprompted, and when: {"day": "YYYY-MM-DD", "about": "<subject>"}
+_nudge: dict = {}
+
+
+def _load_nudge() -> None:
+    global _nudge
+    try:
+        with open(_NUDGE_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        _nudge = data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        _nudge = {}
+
+
+def _save_nudge() -> None:
+    try:
+        with open(_NUDGE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_nudge, fh)
+    except Exception:  # noqa: BLE001
+        # An unwritable file means he could speak twice in a day. That is the
+        # failure to prefer over the alternative — a lost marker that silenced him
+        # permanently would be indistinguishable from the feature not existing.
+        pass
+
+
+def _nudge_subject(facts: list, now) -> Optional[tuple]:
+    """What is worth remarking on today, as (subject, prompt), or None.
+
+    None is the expected answer most of the time and needs no apology. This looks
+    for a fact that is ABOUT today rather than merely stored — a date that has
+    arrived, a day named. Anything else is a fact he already knows and mentioning
+    it unprompted is reciting.
+
+    Deliberately narrow. The temptation is to hand the whole fact list to a model
+    and ask "anything interesting?", which produces a remark every single day
+    because a model asked for something will always find something. The judgement
+    of WHETHER to speak is made here, in code, and only the WORDING is the model's.
+    """
+    today = now.strftime("%Y-%m-%d")
+    weekday = now.strftime("%A").lower()
+    day_num = str(now.day)
+    month = now.strftime("%B").lower()
+
+    for fact in facts:
+        low = str(fact).lower()
+        # a fact naming today's date, in either order people write it
+        dated = (f"{day_num} {month}" in low or f"{month} {day_num}" in low
+                 or today in low)
+        # or naming today's weekday as something recurring
+        named_day = weekday in low
+        if not (dated or named_day):
+            continue
+        return (
+            str(fact)[:120],
+            "Something you were told about him is true TODAY: "
+            f"\"{fact}\". Remark on it in ONE short sentence, as though you had "
+            "just remembered it — the way someone who knows him would mention it "
+            "in passing. Do not greet him, do not list anything, do not offer "
+            "help, and do not explain that you remembered. If it does not "
+            "actually warrant saying out loud, reply with exactly: SKIP",
+        )
+    return None
+
+
+async def _nudge_tick() -> None:
+    """One pass. Silent unless something is genuinely true today."""
+    if not NUDGE_ENABLED or not _push_targets:
+        return
+    import datetime as _dt
+    now = _dt.datetime.now(_OPERATOR_TZ)
+    if not (NUDGE_FROM_H <= now.hour < NUDGE_UNTIL_H):
+        return
+
+    today = now.strftime("%Y-%m-%d")
+    if _nudge.get("day") == today:
+        return
+
+    facts = await _facts()
+    if not facts:
+        return
+    found = _nudge_subject(facts, now)
+    if not found:
+        return
+    subject, instruction = found
+    # the same subject twice is how a remark becomes a nag
+    if _nudge.get("about") == subject:
+        return
+
+    ident = next((i for i in _IDENTITIES.values() if i["tier"] == _ADMIN_TIER), None)
+    if not ident:
+        return
+
+    try:
+        said = await think(APP_CHAT_ID, instruction, ident["who"],
+                           ident["honorific"], surface="app")
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] nudge could not be worded: {e}", flush=True)
+        return
+
+    said = (said or "").strip()
+    # The model's own veto, and it is honoured. Asked whether something is worth
+    # saying, a model that answers "no" is more trustworthy than one that never
+    # does — and the marker is still written, so it does not reconsider all day.
+    if not said or said.upper().startswith("SKIP"):
+        _nudge.update({"day": today, "about": subject})
+        _save_nudge()
+        print("[CLOUD] nudge declined by the brain; nothing sent.", flush=True)
+        return
+
+    await _push_all("J.A.R.V.I.S.", said,
+                    data={"kind": "reply", "unprompted": True},
+                    kind="general", force=True)
+    _nudge.update({"day": today, "about": subject})
+    _save_nudge()
+    print(f"[CLOUD] spoke first: {said[:80]}", flush=True)
+
+
+async def _nudge_loop() -> None:
+    """Watch for something worth saying, and say almost nothing.
+
+    Quarter-hourly, which for at most one remark a day is generous — but the
+    window it is looking for is "today", and a tick that costs a dictionary lookup
+    when there is nothing to say can afford to be frequent. Every exception is
+    caught and printed: a loop that died quietly would be a feature that silently
+    stopped existing, which is this project's recurring failure shape.
+    """
+    print("[CLOUD] unprompted-remark loop started.", flush=True)
+    while True:
+        try:
+            await _nudge_tick()
+        except Exception as e:  # noqa: BLE001
+            print(f"[CLOUD] nudge tick failed: {e}", flush=True)
+        await asyncio.sleep(NUDGE_TICK_SECS)
 
 
 async def _broadcast_app(payload: dict) -> None:
@@ -2017,11 +2865,15 @@ async def _relay_watch(frame: dict) -> None:
          "image": frame.get("image"),
          "user": frame.get("user"),
          "trigger": trigger},
-        channel="desk-watch",
+        kind="watch",
         force=True)
 
 
 _load_push_targets()
+
+_load_commute()
+_load_briefed()
+_load_nudge()
 
 
 def _queue_offline_fact(ident: dict, text: str, reply: str) -> None:
@@ -2107,6 +2959,14 @@ async def health():
             "apps_linked": len(_app_clients),
             # how many phones can be reached while holding no socket
             "push_targets": len(_push_targets),
+            # Named rather than counted alone: "the phone thinks it told me" and
+            # "I have a schedule" have to be distinguishable from outside, or a
+            # briefing that never fires has no diagnosis but guesswork.
+            "commute": {
+                "tz": _commute.get("tz"),
+                "departures": len(_commute.get("departures") or []),
+                "days_on": sum(1 for d in (_commute.get("days") or []) if d),
+            },
             # Counts only — how deep the sealed backlog is and whether anything
             # was lost. No fact, sealed or otherwise, is exposed here.
             "fact_outbox": fact_outbox.stats() if fact_outbox is not None else None}
@@ -2178,7 +3038,8 @@ async def _forward_to_desk(message, ident: dict, text: str) -> bool:
                           f"{_DESK_REPLY_TIMEOUT:.0f}s — answering from the cloud brain.", flush=True)
                     try:
                         reply = await think(message.chat.id, text,
-                                            ident["who"], ident["honorific"])
+                                            ident["who"], ident["honorific"],
+                                            surface="telegram")
                     except Exception:  # noqa: BLE001
                         reply = ("The desk link stalled on that one — I couldn't get "
                                  "an answer through. Try again in a moment.")
@@ -2737,6 +3598,32 @@ async def app_push_register(request: Request):
     platform = str((body or {}).get("platform") or "?").strip()[:16]
     if not token:
         return Response(status_code=400)
+
+    """The phone also says which notification channels it created.
+
+    Android DROPS a notification addressed to a channel that does not exist, and
+    the app has renamed its everyday channel eight times chasing a mute-briefing
+    bug — `general` -> `general-v2` -> ... -> `general-v8` — deleting the old ones
+    as it went. This gateway went on addressing `general`, so every reply push
+    since that first rename was accepted by Expo and silently discarded by
+    Android. Measured on the device on 2026-08-19: `push_targets: 1`, the gateway
+    correctly deciding to push, and no notification ever arriving.
+
+    So the phone is the authority on its own channel names, because it is the
+    only thing that knows them. Absent — an older build — the defaults below
+    still apply, which is why those were moved forward too.
+    """
+    channels = (body or {}).get("channels")
+    if isinstance(channels, dict):
+        named = {
+            str(k)[:32]: str(v)[:64]
+            for k, v in channels.items()
+            if isinstance(k, str) and isinstance(v, str) and v.strip()
+        }
+        if named:
+            _push_channels[token] = named
+            print(f"[CLOUD] push channels for this phone: {named}", flush=True)
+
     fresh = token not in _push_targets
     _push_targets[token] = platform
     _save_push_targets()
@@ -2746,6 +3633,57 @@ async def app_push_register(request: Request):
         print(f"[CLOUD] push target registered ({platform}) - "
               f"{len(_push_targets)} total.", flush=True)
     return {"ok": True, "targets": len(_push_targets)}
+
+
+@app.post("/app-commute")
+async def app_commute(request: Request):
+    """The phone hands over WHEN it wants to be briefed, and where about.
+
+    The briefing itself is not here yet — this stores the schedule the scheduler
+    will read. Landing the contract first because the phone half is what needed
+    proving: it is the side that holds `KnownPlace`, and until it uploads
+    coordinates the gateway has nothing to forecast against.
+
+    Gated by the same credential as the socket and the push registration. It is a
+    weaker secret than those two — a schedule is not a brain — but it decides when
+    a notification wakes him up, and that is not nothing.
+
+    Idempotent by replacement, not by merge. The phone is the authority on this
+    setting, so a departure it has switched off must travel as an absence and
+    silence the gateway; merging would leave a briefing firing on a schedule the
+    operator had already turned off, which is the worst thing this feature could
+    do to its own credibility.
+    """
+    if not APP_TOKEN:
+        return Response(status_code=503)
+    auth = request.headers.get("authorization", "")
+    presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    if not hmac.compare_digest(presented, APP_TOKEN):
+        peer = request.client.host if request.client else "?"
+        print(f"[CLOUD] REFUSED commute sync from {peer}", flush=True)
+        return Response(status_code=401)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return Response(status_code=400)
+
+    global _commute
+    clean = _clean_commute(body or {})
+    if clean is None:
+        # 400 rather than a partial store: see `_clean_commute`. A schedule the
+        # gateway understood differently from the phone is the one failure mode
+        # worth refusing outright.
+        print("[CLOUD] commute sync REFUSED - unreadable schedule", flush=True)
+        return Response(status_code=400)
+
+    _commute = clean
+    _save_commute()
+    # the times, not the coordinates: these logs are readable by anyone with the
+    # Render dashboard, and where he lives is not a thing to print there
+    when = ", ".join(f"{d['label']} {d['hour']:02d}:{d['minute']:02d}"
+                     for d in clean["departures"]) or "nothing scheduled"
+    print(f"[CLOUD] commute schedule stored ({clean['tz']}): {when}", flush=True)
+    return {"ok": True, "departures": len(clean["departures"])}
 
 
 @app.websocket("/app-link")
@@ -2810,10 +3748,30 @@ async def app_link(websocket: WebSocket):
         Forced past the push quiet gap on purpose: this is an answer to something he
         asked a moment ago, not a status notification, and rate-limiting it would
         mean choosing to lose a reply because an unrelated push went out earlier.
+
+        **`_app_clients` is consulted before the write, not just after it.** A
+        successful `send_json` was the only evidence used here, and it is not
+        evidence: a peer's close arrives on the ASGI *receive* channel, and during a
+        turn this handler is blocked in `think()`, so the disconnect has not been
+        consumed yet. The write therefore succeeds into a connection nobody is
+        holding, `emit()` reports it delivered, and the push never fires. Proved on
+        the phone on 2026-08-18 — backgrounding the app mid-answer produced no
+        notification at all, three attempts running.
+
+        The list is only trustworthy because the app was fixed the same day to close
+        its socket on the way out (`LinkMachine.suspend`, jarvis-mobile). Measured
+        after that change: `apps_linked` goes 1 -> 0 when the phone leaves. Before
+        it, this guard would have made things worse — the list was full of phantoms,
+        so it would have suppressed the very push it is here to trigger.
         """
-        if await say("speaking", answer):
+        # `alive`, not `_app_clients`. That set is global: with a second phone
+        # attached — a release build installed beside the debug one is enough —
+        # it stays non-empty after THIS phone leaves, and this answer belongs to
+        # this connection. `alive` is now set the moment `reader()` sees the
+        # disconnect, and `emit()` checks it again before writing.
+        if alive and await say("speaking", answer):
             return
-        print("[CLOUD] reply outlived the socket; pushing instead", flush=True)
+        print("[CLOUD] no phone holding the socket; pushing the reply instead", flush=True)
         await _push_all("J.A.R.V.I.S.", answer, {"kind": "reply"}, force=True)
 
     async def keepalive() -> None:
@@ -2839,7 +3797,52 @@ async def app_link(websocket: WebSocket):
                     await emit({"status": "sync", "type": "telemetry", "data": data})
             await asyncio.sleep(APP_TELEMETRY_SECS)
 
-    helpers = [asyncio.create_task(keepalive()), asyncio.create_task(vitals())]
+    inbox: asyncio.Queue = asyncio.Queue()
+
+    async def reader() -> None:
+        """Always be awaiting `receive`, so a disconnect is noticed when it happens.
+
+        This is what makes `deliver()`'s `_app_clients` check mean anything, and
+        without it that check was asking a question nothing had answered.
+
+        The loop below used to call `websocket.receive()` itself, which meant
+        nothing was awaiting the receive channel for the whole length of a turn.
+        A peer's close arrives on that channel — so when the phone was pocketed
+        mid-answer the disconnect simply sat there unread: `alive` stayed true,
+        `_app_clients` still held this socket, `send_json` wrote into a dead
+        connection without raising, `emit()` reported success, and the push that
+        should have carried the answer never fired.
+
+        Measured on the phone on 2026-08-19: a question sent one second before
+        backgrounding produced no notification at all in fifty seconds, with
+        `push_targets: 1` — the token was there, nothing ever asked to use it.
+
+        Draining here costs one task per connection and makes the disconnect
+        prompt. `receive()` must now be called from ONE place only: two coroutines
+        awaiting the same ASGI channel is undefined.
+        """
+        nonlocal alive
+        try:
+            while True:
+                msg = await websocket.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                await inbox.put(msg)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            # Before the queue sentinel, not after: the turn in flight may reach
+            # `deliver()` at any moment, and the whole point is that it finds an
+            # honest answer to "is anyone still holding this socket".
+            alive = False
+            _app_clients.discard(websocket)
+            await inbox.put({"type": "websocket.disconnect"})
+
+    helpers = [
+        asyncio.create_task(keepalive()),
+        asyncio.create_task(vitals()),
+        asyncio.create_task(reader()),
+    ]
 
     await say("online",
               "Desk is online — full control through the cloud."
@@ -2847,7 +3850,9 @@ async def app_link(websocket: WebSocket):
               "Cloud brain only, so PC control is off until the desk wakes.")
     try:
         while True:
-            msg = await websocket.receive()
+            # from the reader's queue, never from the socket: `receive()` is
+            # awaited in exactly one place now, and that place is `reader()`
+            msg = await inbox.get()
             if msg.get("type") == "websocket.disconnect":
                 break
 
@@ -2899,7 +3904,8 @@ async def app_link(websocket: WebSocket):
                     await say("thinking")
                     try:
                         answer = await see(APP_CHAT_ID, photo, text,
-                                           ident["who"], ident["honorific"])
+                                           ident["who"], ident["honorific"],
+                                           surface="app")
                     except Exception as e:  # noqa: BLE001
                         await say("error", _excuse("look at that picture", e))
                         await say("online")
@@ -2927,11 +3933,15 @@ async def app_link(websocket: WebSocket):
                         # the weather, and put a copy of his coordinates in memory
                         # on every turn.
                         ctx = await _where_context(where, text) if where else ""
-                        # APP_CHAT_ID keys `think`'s rolling memory, so the phone
-                        # gets its own thread rather than replaying Telegram's.
+                        # APP_CHAT_ID is still what a reply is ROUTED by. What it
+                        # is remembered under is now `_memory_key`, which files
+                        # the phone under the operator's own thread — see the
+                        # note on APP_MEMORY_SHARED. The comment here used to say
+                        # the phone got a thread of its own, which was true and
+                        # was the problem.
                         answer = await think(APP_CHAT_ID, text,
                                              ident["who"], ident["honorific"],
-                                             context=ctx)
+                                             context=ctx, surface="app")
                     except Exception as e:  # noqa: BLE001
                         await say("error", _excuse("answer that", e))
                         await say("online")
@@ -2958,6 +3968,16 @@ async def app_link(websocket: WebSocket):
 
 @app.on_event("startup")
 async def _startup():
+    # FIRST, and above the Telegram checks on purpose. Every return below this
+    # point is about the bot — a missing BOT_TOKEN, an unset PUBLIC_URL — and the
+    # briefing has nothing to do with Telegram. Started under either of those and
+    # the loop would never run, which is the same silence this whole change
+    # exists to remove.
+    asyncio.create_task(_commute_loop())
+    # Same placement and the same reason: speaking first has nothing to do with
+    # Telegram, and every return below is about the bot.
+    asyncio.create_task(_nudge_loop())
+
     if not BOT_TOKEN:
         print("[CLOUD] ❌ TELEGRAM_BOT_TOKEN missing — gateway will not respond.", flush=True)
         return

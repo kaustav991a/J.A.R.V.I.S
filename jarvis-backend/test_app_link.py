@@ -683,6 +683,96 @@ def test_push_registration_is_gated_by_the_pairing_token():
                        headers=good).status_code == 400
 
 
+# ── The commute schedule, and why the gateway must hold it ───────────────────
+# The morning briefing was local to the phone, and measured on the device on
+# 2026-08-20 it cannot be: `expo-background-task` requires a connected network on
+# every run and the app's uid reads
+# `Network: 108 (blocked=REASON_APP_BACKGROUND|REASON_APP_STANDBY)` with
+# `#netAvail=0` in a RARE standby bucket. Logcat caught the pending worker firing
+# 200ms after a cold launch — so the app was the only thing that could unblock its
+# own briefing, exactly as reported: "it arrives after I open the app".
+#
+# These pin the contract the phone already sends against. The scheduler that reads
+# the stored schedule is not built yet; refusing a schedule it cannot act on is
+# the half that must be right first.
+GOOD_COMMUTE = {
+    "tz": "Asia/Kolkata",
+    "days": [False, True, True, True, True, True, False],
+    "departures": [
+        {"place_id": "office", "label": "Office", "hour": 19, "minute": 0,
+         "lat": 22.5726, "lon": 88.3639},
+    ],
+}
+
+
+def test_the_commute_schedule_is_gated_by_the_pairing_token():
+    """It decides when a notification wakes him up. Same credential as the rest."""
+    assert client.post("/app-commute", json=GOOD_COMMUTE).status_code == 401
+    assert client.post("/app-commute", json=GOOD_COMMUTE,
+                       headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+    good = {"Authorization": f"Bearer {TOKEN}"}
+    res = client.post("/app-commute", json=GOOD_COMMUTE, headers=good)
+    assert res.status_code == 200 and res.json()["departures"] == 1
+    said = client.get("/health").json()["commute"]
+    assert said["tz"] == "Asia/Kolkata" and said["departures"] == 1 and said["days_on"] == 5
+
+
+def test_a_schedule_replaces_the_last_one_rather_than_adding_to_it():
+    """Switching a departure off has to be able to SILENCE the gateway.
+
+    Merging would leave a briefing firing on a schedule the operator had already
+    turned off — the one failure this feature cannot afford, because it teaches
+    him to distrust every notification the app sends.
+    """
+    good = {"Authorization": f"Bearer {TOKEN}"}
+    client.post("/app-commute", json=GOOD_COMMUTE, headers=good)
+    off = dict(GOOD_COMMUTE, departures=[])
+    res = client.post("/app-commute", json=off, headers=good)
+    assert res.status_code == 200 and res.json()["departures"] == 0
+    assert client.get("/health").json()["commute"]["departures"] == 0
+
+
+def test_a_schedule_that_cannot_be_trusted_is_refused_whole():
+    """Not repaired, not partially stored.
+
+    A schedule the gateway understood differently from the phone would fire at a
+    time nobody chose. Every case below is a 400 rather than a best guess.
+    """
+    good = {"Authorization": f"Bearer {TOKEN}"}
+    for bad in (
+        {},                                                   # nothing at all
+        dict(GOOD_COMMUTE, tz=""),                             # no zone: cannot schedule
+        dict(GOOD_COMMUTE, tz="   "),
+        dict(GOOD_COMMUTE, days=[True] * 6),                   # six days is not a week
+        dict(GOOD_COMMUTE, days="weekdays"),                   # not a list at all
+        dict(GOOD_COMMUTE, departures="office at seven"),
+    ):
+        assert client.post("/app-commute", json=bad,
+                           headers=good).status_code == 400, bad
+
+
+def test_an_unusable_departure_is_dropped_without_failing_the_schedule():
+    """One bad row must not silence a good one.
+
+    The phone filters before sending, so a row like these means the two sides
+    disagree — but refusing the whole upload would take the working departure down
+    with it, and the operator would get nothing with no way to tell why.
+    """
+    good = {"Authorization": f"Bearer {TOKEN}"}
+    mixed = dict(GOOD_COMMUTE, departures=[
+        GOOD_COMMUTE["departures"][0],
+        {"place_id": "home", "label": "Home", "hour": 25, "minute": 0,     # no such hour
+         "lat": 22.5, "lon": 88.3},
+        {"place_id": "moon", "label": "Moon", "hour": 8, "minute": 0,      # no such place
+         "lat": 999.0, "lon": 0.0},
+        {"place_id": "", "label": "Nowhere", "hour": 8, "minute": 0,       # no id
+         "lat": 22.5, "lon": 88.3},
+    ])
+    res = client.post("/app-commute", json=mixed, headers=good)
+    assert res.status_code == 200 and res.json()["departures"] == 1
+
+
 # ── Expo's answer is per-token, and it used to be thrown away ────────────────
 # Pre-Electron review, 2026-08-15. `_push_all` printed 400 characters of Expo's
 # reply and moved on. Expo returns HTTP 200 even when it accepted nothing — the
