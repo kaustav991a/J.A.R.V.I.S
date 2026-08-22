@@ -68,11 +68,17 @@ _WANTED_CONSTS = {
     # Batch 3, finding A3: process_stream now shares ONE security scanner with
     # process_command, so the lifted namespace needs its vocabulary too.
     "_LOCK_MARKER", "_UNLOCK_PHRASES",
+    # F-60, session 4: the guard caught the past tense and let every
+    # forward-looking promise through. The capability rule lives in the shared
+    # predicate, so this namespace needs its vocabulary too — and this harness
+    # going to ZERO CHECKS with a NameError is exactly how it told us so.
+    "_NO_TOOL_VERBS", "_PROMISE_RE", "_PROMISE_NEGATED_RE",
 }
 _WANTED_FUNCS = (
     "_claims_a_completion", "_actions_ran_recently", "_conversational_allowed",
     "_sentence_is_unfounded", "_strip_unfounded_conversational_claims",
     "_security_locked",
+    "_promises_a_capability_it_lacks",          # F-60
 )
 
 _consts = [n for n in _TREE.body

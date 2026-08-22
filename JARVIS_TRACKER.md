@@ -18,13 +18,13 @@
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **96 harnesses, 3135 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
+| Automatic suite | **98 harnesses, 3246 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
 | Rows with evidence, wrong door | ~40 (21%) | `PASS-SUB` — real code evidence, row still owed |
 | **Rows never run by anyone** | **~137 (71%)** | |
-| Open findings | **4** — F-52-open, F-56, F-57, F-59 | all four are decisions, not defects |
+| Open findings | **4** — F-52-open, F-56, F-57, F-59 | all four are decisions, not defects. F-60, F-61, F-62, F-63, F-66, F-67 closed |
 | Branch | `feat/cloud-gateway`, pushed | `main` is far behind; merge is **not** a fast-forward |
 
 **The honest summary:** the harnessed parts are solid, the parts nothing drives are
@@ -46,7 +46,7 @@ Tier 1 work would have caught before a row was ever attempted.
 | 0.1 | Set `JARVIS_ADMIN_OVERRIDE_CODE` in `.env` — the spoken recovery path F-23 and F-25 need does not exist without it | ☐ **his, 2 minutes** |
 | 0.2 | Rotate `GEMINI_API_KEY` — measured invalid twice (`400 API key not valid`) | ☐ **his** |
 | 0.3 | Boot preflight that asks providers whether the configured models still exist | ✅ **done** — 11 ids checked, catalogues only, zero tokens, `JARVIS_MODEL_PREFLIGHT=0` to disable |
-| 0.4 | ollama auto-starting as a service — it was down all of session 4, so every vision feature was dead and nothing said so | ☐ |
+| 0.4 | ollama auto-starting as a service — it was down all of session 4, so every vision feature was dead and nothing said so. Running now, but started by hand | ☐ |
 | 0.5 | Re-enroll the face on the **phone-camera angles actually used** — until then every camera feature mistrusts him and F-62 recurs | ☐ **needs him + the phone** |
 
 ### Tier 1 · Make the two habits fail the suite
@@ -56,7 +56,7 @@ losing; the habits have to become suite failures.
 
 | | Item | Status |
 |---|---|---|
-| 1.1 | **One claims-guard layer.** Four scattered instances exist — `_strip_unfounded_action_claims`, `_strip_unsourced_state_claims`, `reasoning_guard`, F-61's `UNVERIFIED` note. Consolidate, then a harness that enumerates *every* user-visible output site and asserts each passes through it | ☐ **next** |
+| 1.1 | **The claims layer.** Audited first: the taxonomy was NOT scattered — `brain.py` already owned four strippers coherently, so consolidation would have been churn. The real gap was **coverage**, and one uncovered class. Closed: the F-60 capability rule (both the promise form and the request form), a coverage **inventory** of every LLM-text function with the guard it carries *or a written decision that it carries none*, and a scan for invisible control bytes | ✅ **done** — `test_claims_guard.py`, 91 checks |
 | 1.2 | **`test_single_source.py`** — root cause #4 asked mechanically, 7 pins | ✅ **done** — found F-66 and F-67 on its first run |
 
 ### Tier 2 · Competence — the 56%
@@ -142,12 +142,12 @@ window when the call was 39 lines lower. The lesson is in the ledger.
 Kept here because they are cited constantly and they earn their place: **15 of
 session 4's 16 findings were the first two.**
 
-**Habit 1 — a claim with nothing behind it** (7 of 16). A three-word prefix spoken
+**Habit 1 — a claim with nothing behind it** (7 of 16). **Now a suite failure** — `test_claims_guard.py` pins the taxonomy, the coverage inventory and the capability rule. A three-word prefix spoken
 as an answer; the model's own reasoning read aloud; an invented Google Sheets
 window; an intruder accusation from a failed match; an intruder flag over an empty
 room; an offer to order a pizza it cannot order.
 
-**Habit 2 — root cause #4: fixed at one door, open at its siblings** (8 of 16). A
+**Habit 2 — root cause #4: fixed at one door, open at its siblings** (8 of 16). **Now a suite failure** — `test_single_source.py`, 7 pins, which found F-66 and F-67 on its first run. A
 model id in five files; a guard the cloud had and the desk did not; a path form
 fixed in the relative case only; a schema parameter the layer beneath ignored; two
 debounces disagreeing; a flag set in one branch only; and twice inside a single
@@ -213,10 +213,10 @@ venv\Scripts\python.exe run_harnesses.py    # expect 96/96, 3135 checks, 0 faile
 Then, in order:
 1. **Tier 0.1 + 0.2** — the two secrets. His, two minutes, and they unblock a
    recovery path that currently does not exist.
-2. **Tier 1.1** — the claims-guard consolidation. Highest leverage left: it turns
-   the habit behind 7 of 16 findings into a suite failure.
-3. **Tier 2.1** — tool descriptions and ranking, then re-measure `--live`. This is
-   the 56%, and it is what decides whether JARVIS can be relied on at all.
+2. **Tier 2.1** — tool descriptions, aliases and ranking, then re-measure
+   `run_evals.py --live`. This is the 56%, and it is what decides whether JARVIS
+   can be relied on at all. `AGENT-TOOLING-REFERENCE.md` is the doc to work from.
+3. **Tier 0.4** — ollama as a service, so vision is never silently dead again.
 
 For a hardware session: set the two secrets, launch with `JARVIS_AUTO_LOCK=0`, and
 **capture stdout to a file** — that one habit has opened findings in two
@@ -225,6 +225,24 @@ consecutive sessions without a line of code being touched.
 ```powershell
 venv\Scripts\python.exe watchdog.py *> gate-session-5.log
 ```
+
+---
+
+## 8 · The dashboard
+
+`tracker.html` — open it in a browser for the same state as a page: the ladder with
+a completion bar, the gate batches, open findings and the ship gates.
+
+It is **generated from this file**, not maintained beside it:
+
+```powershell
+jarvis-backend\venv\Scripts\python.exe tools\build_tracker_html.py
+```
+
+Self-contained — no script, no external asset, no network — so it opens straight
+from disk. `test_tracker_html.py` asserts that regenerating it changes nothing, so
+a stale page fails the suite rather than quietly misinforming you. If a number
+there looks wrong, fix it *here*; the page has no figures of its own.
 
 ---
 

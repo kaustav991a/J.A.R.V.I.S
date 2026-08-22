@@ -1719,6 +1719,23 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
                 actions_ran=_actions_ran_recently(memory.get_working_memory()),
                 title=_title,
             )
+            # F-60, the half the reply-side rule cannot see. If he asked for a
+            # capability the catalogue does not have, the ONLY honest reply is to
+            # say so — whatever shape the model chose. Live, after the promise
+            # form was closed, it simply started gathering arguments instead:
+            # "order me a pizza" -> "What size and toppings would you like, Sir —
+            # and where should it be delivered?". No promise, no claim, and the
+            # most misleading answer of the three, because he answers it.
+            _absent = requested_capability_absent(user_text)
+            if _absent and not reply_admits_it_cannot(response):
+                print(f"[BRAIN] refused an implied capability: no tool for "
+                      f"'{_absent}' — the reply neither refused nor could.",
+                      flush=True)
+                response = (
+                    f"I have no way to {_absent} anything, {_title} — there is no "
+                    f"tool for it, so I would only be taking notes towards "
+                    f"something that never happens. Is there something I can "
+                    f"actually do for you?")
             memory.add_to_working_memory("assistant", response)
 
         return response
@@ -2883,13 +2900,156 @@ def _conversational_allowed(actions_ran: bool = False, fenced: bool = False) -> 
     return allowed
 
 
+# ── F-60: a promise is a claim about the future, and it must be true too ─────
+# The guard below caught the PAST tense and let every forward-looking promise
+# through. Measured on the live desk, row 23b.3 — "order me a pizza from
+# Dominos" — which asks for a capability JARVIS has none of:
+#
+#   "I have placed the order, Sir."                              -> dropped ✓
+#   "I'll need the pizza type, size and any toppings you prefer,
+#    Sir, before I can place the order."                         -> UNTOUCHED
+#   "I can order that for you, Sir."                             -> UNTOUCHED
+#   "Shall I book the table, Sir?"                               -> UNTOUCHED
+#
+# The forward-looking form is arguably the worse of the two. A false completion
+# is a lie about the past that he can check; a false promise is one he ACTS on —
+# he answers "large pepperoni" and waits for a pizza that was never coming.
+#
+# The verb list is DERIVED, not guessed: every one of these was checked against
+# the live 42-entry action catalogue and has no action at all. `test_claims_guard`
+# re-derives it, so the day a `place_order` tool is added, the pin fails and this
+# list has to be revisited rather than quietly becoming wrong. `call` is
+# deliberately absent — "call up your calendar" is ordinary phrasing, and
+# `memory_recall` matches it as a substring.
+_NO_TOOL_VERBS = (
+    "order", "buy", "purchase", "book", "reserve", "pay", "transfer",
+    "phone", "dial", "ship", "deliver", "subscribe", "refund", "withdraw",
+    "rent", "hail",
+)
+
+# Split by how ambiguous each verb is, because the first draft of the request-side
+# rule produced two measured false positives and both were the same mistake:
+#
+#   "deliver the briefing"    -> `morning_briefing` is a real action
+#   "order the files by size" -> a sort, not a purchase
+#
+# and two more were waiting: "transfer the file" is a copy, "check my phone
+# battery" is telemetry. A verb is only evidence when the word has no innocent
+# reading in this assistant's domain.
+_NO_TOOL_VERBS_STRICT = (
+    "buy", "purchase", "pay", "refund", "withdraw", "subscribe", "rent", "hail",
+    "dial",
+)
+#: These need the transaction SHAPE as well as the word — see the note in
+#: `requested_capability_absent`.
+_NO_TOOL_VERBS_OBJECT = (
+    "order", "book", "reserve", "deliver", "ship", "transfer", "phone",
+)
+
+#: Forward-looking, first-person, and about to promise something. Kept narrow on
+#: purpose: a QUESTION about a capability ("can you order pizza?") is his to ask,
+#: and a refusal ("I cannot order anything") must survive — so the negative forms
+#: are excluded by `_PROMISE_NEGATED_RE` below.
+_PROMISE_RE = re.compile(
+    r"\b(?:i(?:'| a)?m able to|i can|i could|i'?ll|i will|let me|"
+    r"shall i|would you like me to|i'?d be happy to|i would be happy to|"
+    r"i'?d like to|before i can|"
+    r"once you confirm|i can go ahead and)\b", re.IGNORECASE)
+
+#: If the sentence is DENYING the capability, it is the honest answer we want.
+_PROMISE_NEGATED_RE = re.compile(
+    r"\b(?:cannot|can'?t|could not|couldn'?t|will not|won'?t|unable|"
+    r"no way to|not able to|do not have|don'?t have|have no)\b", re.IGNORECASE)
+
+
+def _promises_a_capability_it_lacks(sentence: str) -> bool:
+    """True when a sentence OFFERS to do something JARVIS has no tool for."""
+    low = sentence.lower()
+    if not _PROMISE_RE.search(low):
+        return False
+    if _PROMISE_NEGATED_RE.search(low):
+        return False          # an honest refusal is the outcome, not the fault
+    return any(re.search(rf"\b{v}(?:s|ed|ing)?\b", low) for v in _NO_TOOL_VERBS)
+
+
+#: Collocations where a no-tool verb is innocent. "In order to", "the order of
+#: the results", "my book", "I booked a note" — the verb is not a transaction.
+_NO_TOOL_INNOCENT = (
+    "in order to", "in order for", "order of", "ordered by", "order by",
+    "sort order", "the book", "my book", "a book", "books", "reserved word",
+    "phone number", "phone book", "my phone", "the phone", "on the phone",
+    "delivered a", "delivery of the", "pay attention", "paying attention",
+    "shipping address",
+)
+
+#: The user ASKING for something. A request plus a no-tool verb is the shape that
+#: matters, and it is the request side that the reply-side rule could not see.
+_REQUEST_RE = re.compile(
+    r"^\s*(?:please\s+|could you\s+|can you\s+|would you\s+|will you\s+|"
+    r"i want you to\s+|i need you to\s+|jarvis[,\s]+)?"
+    r"(?:go (?:ahead )?and\s+)?", re.IGNORECASE)
+
+
+def requested_capability_absent(user_text: str) -> str | None:
+    """The no-tool verb the OPERATOR asked for, if he asked for one.
+
+    F-60, second half, and the half the reply-side rule could never catch. The
+    live retest after fixing the promise form:
+
+        "order me a pizza from Dominos"
+          -> "What size and toppings would you like, Sir — and where should it
+              be delivered?"
+        "book me a table at a restaurant tonight"
+          -> "Which restaurant and how many guests, Sir — and what time?"
+
+    Not one first-person promise between them. The model implies the capability by
+    ASKING FOR THE ARGUMENTS, which is the most misleading form of all: he answers
+    "large pepperoni, my address" and waits for a pizza nobody ordered.
+
+    So the signal is taken from the REQUEST instead. JARVIS knows it has no
+    commerce or telephony tool — that is a fact about the catalogue, not a
+    judgement — so a request for one has exactly one honest answer, whatever shape
+    the model chose. Innocent collocations are excluded rather than guessed at.
+    """
+    low = f" {(user_text or '').lower().strip()} "
+    if not low.strip():
+        return None
+    for phrase in _NO_TOOL_INNOCENT:
+        low = low.replace(phrase, " ")
+
+    # Unambiguous: no innocent reading of "buy", "refund" or "withdraw" exists
+    # when it is addressed to a desk assistant.
+    for verb in _NO_TOOL_VERBS_STRICT:
+        if re.search(r"\b" + verb + r"(?:s|ed|ing)?\b", low):
+            return verb
+
+    # Ambiguous: the word alone is not evidence, so require the transaction
+    # SHAPE — the indirect object. "order ME A pizza" and "book ME A table" are
+    # requests to transact; "order the files by size" and "deliver the briefing"
+    # are not, and both were measured false positives of the first draft.
+    for verb in _NO_TOOL_VERBS_OBJECT:
+        pattern = (r"\b" + verb
+                   + r"(?:s|ed|ing)?\s+(?:me|us)\s+(?:a|an|the|some|two|\d+)\b")
+        if re.search(pattern, low):
+            return verb
+    return None
+
+
+def reply_admits_it_cannot(text: str) -> bool:
+    """True when the reply already says it cannot do the thing."""
+    return bool(_PROMISE_NEGATED_RE.search(text or ""))
+
+
 def _sentence_is_unfounded(sentence: str, allowed: frozenset) -> bool:
-    """True if this one sentence claims work that did not happen."""
+    """True if this one sentence claims work that did not happen — or promises
+    work that cannot happen (F-60)."""
     if not sentence.strip():
         return False
     low = sentence.lower()
     if any(p in low for p in _BARE_CONVERSATIONAL):
         return True           # unconditional — see _BARE_CONVERSATIONAL
+    if _promises_a_capability_it_lacks(sentence):
+        return True           # unconditional: no evidence can make it true
     return _claims_a_completion(sentence, allowed)
 
 
