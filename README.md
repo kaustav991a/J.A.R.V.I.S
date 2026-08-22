@@ -252,6 +252,9 @@ The **cloud gateway** has its own env + deploy guide in [`jarvis-backend/CLOUD_G
 
 * [`CHANGELOG.md`](CHANGELOG.md) — release history
 * [`JARVIS_MASTER_ROADMAP.md`](JARVIS_MASTER_ROADMAP.md) — **single source of truth**: what's done, what's left, decisions & constraints (merges the old roadmap / reliability / gesture / upgrades / mobile / login plans)
-* [`TEST_PLAN.md`](TEST_PLAN.md) — automatic + manual test plan (pre-Electron)
+* [`JARVIS_TRACKER.md`](JARVIS_TRACKER.md) — **start here.** State, the reliability
+  ladder, the gate, open findings and the ship gates, in one place
+* [`LIVE_GATE_CHECKLIST.md`](LIVE_GATE_CHECKLIST.md) — the 192 hardware rows, in
+  running order
 * [`JARVIS_MANUAL.md`](JARVIS_MANUAL.md) — operation manual
 * [`jarvis-backend/CLOUD_GATEWAY.md`](jarvis-backend/CLOUD_GATEWAY.md) — always-on Telegram deploy

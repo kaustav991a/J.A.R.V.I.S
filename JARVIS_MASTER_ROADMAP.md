@@ -5,7 +5,9 @@
 > `HAND_GESTURE_CONTROL_PLAN.md`, `UPGRADES_AND_FLUIDITY.md`, `MOBILE_PRESENCE_PLAN.md`,
 > and `LOGIN_REVAMP_PLAN.md` (all deleted 2026-07-19), plus `REVIEW_PLAN.md` and
 > `PHASE_TRACKER.md` (deleted 2026-08-16 — see below). The **test plan lives
-> separately** in `TEST_PLAN.md`. Last updated **2026-08-16**.
+> separately** in `LIVE_GATE_CHECKLIST.md` (the 192 hardware rows) and
+> `JARVIS_TRACKER.md` (state, priorities, ship gates). Last updated
+> **2026-08-22** — `TEST_PLAN.md` and `RESUME.md` were retired that day.
 >
 > **Working branch:** `feat/cloud-gateway`, pushed and in sync. Not merged to
 > `main` — and `main` carries one commit this branch does not (`8d0ea4f`, the
@@ -22,7 +24,7 @@ harnesses, 2407 checks, 0 failed**.
 
 - **What it found and the five root causes:** `REVIEW.md`
 - **The 46 findings, each with its reasoning:** `review-findings.json`
-- **What to do next, and what is owed by hand:** `RESUME.md`
+- **What to do next, and what is owed by hand:** `JARVIS_TRACKER.md`
 
 **The next milestone is the §7 live gate** (`LIVE_GATE_CHECKLIST.md`), and it is
 now the only thing that can find what a review cannot: timing, integration, and
@@ -49,7 +51,7 @@ the laptop**, so `run_harnesses.py` on the desk is owed before any deploy.
   the job only ever ran when the app was opened. `POST /app-commute` plus
   `_commute_loop` now schedule it here and deliver it by high-priority push.
 
-Both are written up with their measurements in `RESUME.md`.
+Both are written up with their measurements in `JARVIS_TRACKER.md`.
 
 ---
 
@@ -65,7 +67,7 @@ Concrete end-state: JARVIS does **anything on the PC on command, flawlessly**, r
 is **controllable by voice and by hand in the air**, and finally ships as a single
 **Electron .exe** (notch idle-chat → fullscreen takeover overlay), then a **mobile app**.
 
-**Order of the big milestones (agreed):** finish ALL desktop work → full `TEST_PLAN.md`
+**Order of the big milestones (agreed):** finish ALL desktop work → the full `LIVE_GATE_CHECKLIST.md`
 pass → **Electron packaging** → **mobile app**. Nothing jumps that queue.
 
 ---
@@ -617,7 +619,8 @@ Config resolution everywhere: **defaults < `models/gesture_calibration.json` < `
       it incrementally. Governance-gated from day one — NEVER an ungoverned tool loop.
 
 ### TIER D — packaging & mobile (LAST, in this order)
-13. **Full `TEST_PLAN.md` pass** — automatic (Claude) + manual (Kaustav). Gate to Electron.
+13. **Full `LIVE_GATE_CHECKLIST.md` pass** — the automatic tier is `run_harnesses.py`;
+    the 192 hardware rows are Kaustav's. Gate to Electron. Tracked in `JARVIS_TRACKER.md`.
     ✅ **Doc refreshed 2026-07-26** (the 2026-07-25 staleness finding is closed): PART A now
     lists all **22 self-running harnesses / 522 checks** measured, and is driven by ONE real
     command — NEW `jarvis-backend/run_harnesses.py` (subprocess per harness, per-harness
@@ -1626,7 +1629,7 @@ script, not a counted harness.
   range and wait out `JARVIS_PRESENCE_AWAY_GRACE` → `"away"`, and proactive alerts must stop
   talking to the empty room. Lock the phone screen and idle 5 min WITHOUT leaving — it must
   stay `home` (that is the failure the asymmetric debounce exists to prevent).
-- **Phase-4 phone smoke-tests + Phase-5 failover** — see `TEST_PLAN.md` §B5/B6.
+- **Phase-4 phone smoke-tests + Phase-5 failover** — see `LIVE_GATE_CHECKLIST.md` Group D.
 - Then **Electron launch scripts** (at the desk), then **merge** `feat/cloud-gateway`.
 
 ---
@@ -1669,7 +1672,8 @@ script, not a counted harness.
 ---
 
 ## 9. Pointers
-- **Tests:** `TEST_PLAN.md` (automatic + manual; kept separate on purpose).
+- **Tests:** `run_harnesses.py` for the automatic tier; `LIVE_GATE_CHECKLIST.md`
+  for the 192 hardware rows; `JARVIS_TRACKER.md` for what is owed.
 - **Deep code:** query `codebase-memory-mcp` (search_graph / trace_path / get_code_snippet)
   before reading whole files.
 - **Cloud gateway ops:** `jarvis-backend/CLOUD_GATEWAY.md`.

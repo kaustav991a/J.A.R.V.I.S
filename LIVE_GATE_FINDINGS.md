@@ -1,5 +1,12 @@
 # LIVE-GATE FINDINGS — session 1
 
+> **Note, 2026-08-22.** This is an append-only ledger and is deliberately NOT
+> rewritten. Sections below cite `RESUME.md`, `TEST_PLAN.md`, `FEATURE_CENSUS.md`
+> and `GATE_SESSION_4.md`, all retired into `JARVIS_TRACKER.md` that day; the
+> citations stand as written, because editing a record to match today is how a
+> record stops being one. You do not need to read past the last section —
+> `JARVIS_TRACKER.md` carries what is still true.
+
 > Desk session **2026-08-08, 21:58 → 23:00**. Worked from `LIVE_GATE_CHECKLIST.md`.
 > **Session ended deliberately to fix findings before continuing** — the remaining rows resume
 > in session 2 against a repaired tree.

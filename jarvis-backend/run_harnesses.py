@@ -1,7 +1,8 @@
 """Run every self-running test harness and report one total.
 
 The repo convention is self-running harnesses (no pytest in the venv), so this is
-the single command PART A of TEST_PLAN.md refers to:
+the single command the automatic tier is (TEST_PLAN.md was retired into
+JARVIS_TRACKER.md on 2026-08-22; this is its PART A):
 
     .\\venv\\Scripts\\python.exe run_harnesses.py
 
@@ -91,8 +92,8 @@ HERE = Path(__file__).resolve().parent
 # not deterministic harnesses. It is checked for staleness on every run, so a
 # rename cannot leave a silent hole here either.
 EXCLUDED = {
-    "test_ping.py": "needs the backend running (TEST_PLAN part A2)",
-    "test_ui_bridge_e2e.py": "needs the backend running (TEST_PLAN part A2)",
+    "test_ping.py": "needs the backend running (live-gate part A2)",
+    "test_ui_bridge_e2e.py": "needs the backend running (live-gate part A2)",
     "test_screen_reader.py": "live VLM script — screenshots and a real model call",
     "test_mcp_server_fake.py": "an MCP SERVER, not a harness — test_mcp_bridge.py "
                                "spawns it as a subprocess fixture",

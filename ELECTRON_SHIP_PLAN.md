@@ -1,7 +1,8 @@
 # Ship desk JARVIS as an Electron `.exe`
 
 > Written 2026-08-15. Target: a runnable desktop build **today**.
-> Supersedes step 7 of `RESUME.md`'s road-to-exe table. Delete when the `.exe` ships.
+> Supersedes step 7 of the old `RESUME.md` road-to-exe table (retired into
+> `JARVIS_TRACKER.md`, which tracks this as ship step 4). Delete when the `.exe` ships.
 
 ## The one decision, and why it was taken this way
 
@@ -20,7 +21,7 @@ the below.
 
 ## The origin problem, solved by not having it
 
-`RESUME.md` flags this and it is the one real trap in packaging:
+The old `RESUME.md` flagged this, and it is the one real trap in packaging:
 
 > ⚠️ **The Electron step must revisit this**: the packaged app has a different
 > origin, and the tempting fix is a permissive one.

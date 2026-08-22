@@ -1,14 +1,18 @@
 # LIVE-GATE DESK-DAY CHECKLIST
 
-> **The worksheet for the §7 desk session.** Every owed live row from `TEST_PLAN.md` §0–§24 +
+> **The worksheet for the §7 desk session, and since 2026-08-22 the single source
+> of the rows themselves.** Every owed live row from the retired `TEST_PLAN.md` §0–§24 +
 > §23b, plus the C#11a rows that live only in `JARVIS_MASTER_ROADMAP.md` §7 prose — reordered
 > **by what you need in the room**, not by TEST_PLAN order, so you can batch.
 >
-> Generated 2026-08-08 from `TEST_PLAN.md` + roadmap §7. **Row IDs are TEST_PLAN IDs** — trace
+> Generated 2026-08-08 from `TEST_PLAN.md` + roadmap §7; that file was retired into
+> `JARVIS_TRACKER.md` on 2026-08-22 and this one inherited its rows. **Row IDs are
+> the original TEST_PLAN IDs** — trace
 > any row back by its ID. `K*` rows are the exception and are marked.
 >
-> **This file does not replace TEST_PLAN.md.** It is the running order. Tick here, then mark
-> TEST_PLAN when the day is done.
+> **This file IS the row list now.** Tick here and nowhere else — the old
+> "tick here, then mark TEST_PLAN" habit was two-place bookkeeping, and two places
+> drift. State and priorities live in `JARVIS_TRACKER.md`.
 
 ## The count
 
@@ -669,7 +673,8 @@ Do these first; they are the bulk. Work the blocks in order — reboots are batc
 
 In order. Do not skip 2.
 
-1. **Tick TEST_PLAN.md** from this sheet — mark `☐`/`⬜` → `✅`/`⚠️`/`❌`. Anything red gets fixed
+1. **Tick the rows above** — mark `☐`/`⬜` → `✅`/`⚠️`/`❌`, and update `JARVIS_TRACKER.md`
+   §1 and §3 in the same commit. Anything red gets fixed
    before Electron, not after.
 2. **Thorough pre-Electron code review** of the whole tree. Cheapest moment to fix anything
    found; the most expensive moment is after an `.exe` is in use.
