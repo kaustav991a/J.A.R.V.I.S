@@ -54,6 +54,17 @@ RETIRED = {
     "llama-3.1-8b-instant",
     "llama3-groq-8b-8192-tool-use-preview",
     "gemma2-9b-it",
+    # Groq VISION ids, both confirmed dead. Probed every id in the live 13-id
+    # catalogue with one small image on 2026-08-22: `qwen/qwen3.6-27b` is the
+    # ONLY one that accepts image content at all; every other id answers
+    # 400 "messages[0].content must be a string".
+    #   - llama-3.2-90b-vision-preview was hardcoded in screen_reader.py, so the
+    #     desk's Groq vision leg had been answering 404 unnoticed (it only runs
+    #     after Gemini fails). Found by test_single_source.py's first run.
+    #   - meta-llama/llama-4-scout-17b-16e-instruct is cloud_gateway's dead
+    #     default, kept deliberately as a record; render.yaml declares a live id.
+    "llama-3.2-90b-vision-preview",
+    "llama-3.2-11b-vision-preview",
     "llama3-70b-8192",
     "llama3-8b-8192",
     "mixtral-8x7b-32768",

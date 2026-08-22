@@ -16,6 +16,7 @@ can log it loudly (JARVIS still starts and degrades honestly).
 from __future__ import annotations
 
 import os
+import sys
 
 # At least ONE name in each group must be set for that capability to work.
 REQUIRED_ANY: dict[str, list[str]] = {
@@ -89,9 +90,219 @@ def format_report(rep: dict) -> str:
     return "\n".join(lines)
 
 
+def _safe_print(text: str) -> None:
+    """Print a report that may contain ✅/❌/⚠️ on a console that cannot encode them.
+
+    `sys.stdout.encoding` is cp1252 on this machine, and a print of one of those
+    glyphs raises UnicodeEncodeError *inside the thing that was reporting*. Session
+    4 found 48 files exposed to that; `main.py` hardens its own stdout, which is
+    why the existing report has been fine there — but this module is also called
+    from harnesses, `run_evals` and one-off scripts, where it is not. Reporting a
+    dead model must never be the thing that raises.
+    """
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        enc = (getattr(sys.stdout, "encoding", None) or "ascii")
+        print(text.encode(enc, errors="replace").decode(enc, errors="replace"),
+              flush=True)
+
+
 def log_preflight() -> dict:
     """Run the preflight against the live environment and print the report.
     Returns the report dict (so a caller can react to `ok`)."""
     rep = preflight()
-    print(format_report(rep), flush=True)
+    _safe_print(format_report(rep))
+    return rep
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODEL LIVENESS — the half that presence cannot cover
+# ═══════════════════════════════════════════════════════════════════════════
+# Everything above asks "is the key set?". Nothing asked "is the model id still a
+# model?", and that is where the expensive failures lived:
+#
+#   F-46, 2026-08-22  `llama-3.1-8b-instant` had been decommissioned by Groq. It
+#                     was the desk chat default AND hardcoded in five files, so
+#                     memory extraction, episodic summaries and the GUI parser
+#                     answered 404 on EVERY turn — for weeks, silently, because
+#                     all three swallow their own errors by design.
+#   F-67, same day    `llama-3.2-90b-vision-preview` was hardcoded in
+#                     screen_reader.py. Dead too, and invisible because the Groq
+#                     vision leg only runs after Gemini has already failed.
+#   2026-08-16        `llama-3.3-70b-versatile` retired; the code default moved
+#                     and `render.yaml` still declared the dead id.
+#   2026-08-15        OpenRouter withdrew 3 of the 4 `:free` ids the router walks,
+#                     leaving the tool cascade's last leg WHOLLY dead.
+#
+# Four incidents, one shape: a model id rots on someone else's schedule, and the
+# subsystem that notices first is the one nobody is watching. `test_model_ids.py`
+# pins ids already known to be dead; it cannot know what a provider retired this
+# morning. This can, by asking.
+#
+# Design constraints, because a preflight that hurts is a preflight that gets
+# switched off:
+#   * CATALOGUES, not completions — one GET per provider, zero tokens spent.
+#   * never blocks boot: the caller runs it on a thread and it logs when it lands.
+#   * never raises, and an unreachable provider is UNKNOWN, not dead — a laptop on
+#     a train must not be told its models are gone.
+#   * `JARVIS_MODEL_PREFLIGHT=0` turns it off entirely.
+#   * `fetch` is injectable, so the harness needs no network.
+
+#: Where each provider lists what it has. Ollama is local; the rest need a key.
+_CATALOGUE_URLS = {
+    "groq": "https://api.groq.com/openai/v1/models",
+    "openrouter": "https://openrouter.ai/api/v1/models",
+    "ollama": "http://localhost:11434/api/tags",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/models",
+}
+
+
+def configured_models(env=None) -> list:
+    """Every model id this process will actually try to use, with its provider.
+
+    Read the same way the runtime reads them, so a `.env` override is what gets
+    checked rather than a default nothing reaches.
+    """
+    env = os.environ if env is None else env
+
+    def _first(name: str, default: str) -> str:
+        return (env.get(name) or "").strip() or default
+
+    out = [
+        ("groq", _first("GROQ_MODEL", "openai/gpt-oss-120b"), "desk chat + memory"),
+        ("groq", _first("GROQ_TOOL_MODEL", "openai/gpt-oss-120b"), "agent tool loop"),
+        ("groq", _first("GROQ_VISION_MODEL", "qwen/qwen3.6-27b"), "Groq vision leg"),
+        ("gemini", _first("GEMINI_MODEL", "gemini-flash-latest"), "cloud reasoning"),
+        ("ollama", _first("OLLAMA_MODEL", "llama3.2:3b"), "local reasoning fallback"),
+        ("ollama", _first("OLLAMA_VISION_MODEL", "llava"), "local vision"),
+    ]
+    # The OpenRouter legs are read from the ROUTER, not from the env var, because
+    # the env var is normally unset and the router still walks its own default
+    # list. That list was WHOLLY DEAD on 2026-08-15 — three withdrawn `:free`
+    # variants — and checking only the env var would have seen nothing to check.
+    or_lists = []
+    try:
+        from modules import llm_router as _lr
+        or_lists = [(getattr(_lr, "OPENROUTER_MODELS", []), "OpenRouter chat fallback"),
+                    (getattr(_lr, "OPENROUTER_TOOL_MODELS", []), "OpenRouter tool fallback")]
+    except Exception:                                   # noqa: BLE001
+        raw = (env.get("OPENROUTER_MODELS") or "").strip()
+        if raw:
+            or_lists = [([x.strip() for x in raw.split(",") if x.strip()],
+                         "OpenRouter fallback")]
+    seen = set()
+    for models, why in or_lists:
+        for m in models:
+            if m and m not in seen:
+                seen.add(m)
+                out.append(("openrouter", m, why))
+    return out
+
+
+def _default_fetch(url: str, env=None) -> list:
+    """Return the provider list of model ids, or raise."""
+    import json
+    import urllib.request
+
+    env = os.environ if env is None else env
+    headers = {"User-Agent": "jarvis-preflight"}
+    if "groq.com" in url:
+        # The SDK, not urllib. A raw urllib request to api.groq.com gets
+        # Cloudflare error 1010 — a bot-fingerprint ban — on every key and every
+        # model, INCLUDING unauthenticated, and it looks exactly like a revoked
+        # account. That lesson is already recorded in this project; the first
+        # draft of this preflight ignored it and reported the Groq catalogue as
+        # HTTPError on one run and fine on the next. A flaky check on the provider
+        # that has rotted twice is worse than no check.
+        keys = (env.get("GROQ_API_KEYS") or env.get("GROQ_API_KEY") or "")
+        first = next((k.strip() for k in keys.split(",") if k.strip()), "")
+        from groq import Groq
+        return [str(m.id) for m in Groq(api_key=first).models.list().data]
+    if "openrouter.ai" in url:
+        headers["Authorization"] = "Bearer " + (env.get("OPENROUTER_API_KEY") or "").strip()
+    elif "generativelanguage" in url:
+        keys = (env.get("GEMINI_API_KEYS") or env.get("GEMINI_API_KEY") or "")
+        first = next((k.strip() for k in keys.split(",") if k.strip()), "")
+        url = url + "?key=" + first + "&pageSize=200"
+
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=8) as r:
+        body = json.loads(r.read().decode("utf-8", errors="replace"))
+
+    if isinstance(body.get("models"), list) and body.get("models") and \
+            isinstance(body["models"][0], dict) and "name" in body["models"][0]:
+        # gemini: "models/gemini-3.7-flash"  |  ollama: {"name": "llava:latest"}
+        return [str(m.get("name", "")).split("/")[-1] for m in body["models"]]
+    if isinstance(body.get("data"), list):
+        return [str(m.get("id", "")) for m in body["data"]]
+    return []
+
+
+def check_model_liveness(fetch=None, env=None) -> dict:
+    """Compare every configured id against its provider live catalogue.
+
+    Returns dead / alive / unknown lists. A provider that cannot be reached
+    yields UNKNOWN for its ids, never DEAD.
+    """
+    env = os.environ if env is None else env
+    if (env.get("JARVIS_MODEL_PREFLIGHT") or "1").strip() == "0":
+        return {"dead": [], "alive": [], "unknown": [], "skipped": True}
+
+    fetch = fetch or (lambda url: _default_fetch(url, env))
+    catalogues: dict = {}
+    dead, alive, unknown = [], [], []
+
+    for provider, model, why in configured_models(env):
+        if provider not in catalogues:
+            try:
+                catalogues[provider] = fetch(_CATALOGUE_URLS[provider])
+            except Exception as e:                      # noqa: BLE001
+                catalogues[provider] = e
+        cat = catalogues[provider]
+        if isinstance(cat, Exception) or not cat:
+            unknown.append((provider, model, why,
+                            type(cat).__name__ if isinstance(cat, Exception)
+                            else "empty catalogue"))
+            continue
+        names = [str(c) for c in cat]
+        # An evergreen alias resolves server-side and need not appear verbatim; a
+        # bare ollama tag matches its ":latest" form in either direction.
+        hit = any(model == c or c.startswith(model + ":") or model.startswith(c + ":")
+                  for c in names) or model.endswith("-latest")
+        (alive if hit else dead).append((provider, model, why))
+    return {"dead": dead, "alive": alive, "unknown": unknown, "skipped": False}
+
+
+def format_liveness(rep: dict) -> str:
+    if rep.get("skipped"):
+        return "[PREFLIGHT] model liveness check skipped (JARVIS_MODEL_PREFLIGHT=0)."
+    lines = ["[PREFLIGHT] Model liveness (provider catalogues, no tokens spent):"]
+    for provider, model, why in rep["dead"]:
+        lines.append("  ❌ DEAD: " + provider + " '" + model + "' is NOT in the "
+                     "live catalogue — " + why + " will fail on use. Fix the id.")
+    for provider, model, why, reason in rep["unknown"]:
+        lines.append("  ⚠️  unverified: " + provider + " '" + model +
+                     "' — catalogue unreachable (" + reason + "). Not necessarily dead.")
+    if not rep["dead"] and not rep["unknown"]:
+        lines.append("  ✅ all " + str(len(rep["alive"])) +
+                     " configured model id(s) exist.")
+    elif rep["alive"]:
+        lines.append("  ✅ " + str(len(rep["alive"])) +
+                     " other id(s) confirmed alive.")
+    return "\n".join(lines)
+
+
+def log_model_liveness() -> dict:
+    """Run the liveness check against the live environment and print it.
+
+    Safe on a background thread: it never raises and never blocks boot.
+    """
+    try:
+        rep = check_model_liveness()
+    except Exception as e:                              # noqa: BLE001
+        _safe_print("[PREFLIGHT] model liveness check itself failed (" +
+                    type(e).__name__ + ": " + str(e) + ") - continuing.")
+        return {"dead": [], "alive": [], "unknown": [], "skipped": True}
+    _safe_print(format_liveness(rep))
     return rep

@@ -105,12 +105,25 @@ def _unverified_names(description: str, titles: list) -> list:
     return [n for n in _VERIFIABLE_NAMES if n in low_desc and n not in joined]
 
 def _call_groq_vision(img_b64: str, prompt: str = _SCREEN_PROMPT) -> str:
-    """Sends the base64 image to Groq's Llama 3.2 Vision model."""
-    from modules.groq_key_manager import run_with_key_rotation
-    
+    """Sends the base64 image to Groq's vision model.
+
+    The id used to be the literal `llama-3.2-90b-vision-preview`, which Groq has
+    retired — so this leg answered 404 and nobody noticed, because it only runs
+    after Gemini has already failed. `test_single_source.py` found it by counting
+    hardcoded model ids. It resolves through `groq_vision_model()` now, one place,
+    shared with the cloud gateway's `GROQ_VISION_MODEL`.
+
+    The one live vision id on this account streams a `<think>` block inside its
+    content, so the result is stripped before it is returned as data — otherwise
+    the monologue lands in the SCREEN CONTENTS block and the answering model reads
+    it as observation.
+    """
+    from modules.groq_key_manager import groq_vision_model, run_with_key_rotation
+    from modules import reasoning_guard
+
     def _api_call(client):
         response = client.chat.completions.create(
-            model="llama-3.2-90b-vision-preview",
+            model=groq_vision_model(),
             messages=[
                 {
                     "role": "user",
@@ -133,7 +146,8 @@ def _call_groq_vision(img_b64: str, prompt: str = _SCREEN_PROMPT) -> str:
             max_tokens=1024,
             temperature=0.2
         )
-        return response.choices[0].message.content
+        return reasoning_guard.strip_reasoning(
+            response.choices[0].message.content or "")
 
     return run_with_key_rotation(_api_call)
 

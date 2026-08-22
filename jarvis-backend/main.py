@@ -967,6 +967,20 @@ async def lifespan(app: FastAPI):
     try:
         from modules import boot_preflight
         boot_preflight.log_preflight()
+        # And whether those ids are still MODELS. Presence was never the problem:
+        # F-46 and F-67 were both configured, both hardcoded, and both retired by
+        # the provider — one broke memory extraction on every turn for weeks, the
+        # other killed the Groq vision leg, and neither said a word. This asks
+        # each provider for its catalogue (one GET, no tokens) and names anything
+        # that is no longer there.
+        #
+        # On a thread, because boot must not wait on four network calls, and
+        # because an unreachable provider is reported as UNVERIFIED rather than
+        # dead — a laptop on a train must not be told its models are gone.
+        # JARVIS_MODEL_PREFLIGHT=0 switches it off.
+        import threading
+        threading.Thread(target=boot_preflight.log_model_liveness,
+                         name="model-liveness", daemon=True).start()
     except Exception as e:  # noqa: BLE001
         print(f"[PREFLIGHT] check skipped: {e}", flush=True)
 
@@ -3905,6 +3919,16 @@ async def websocket_endpoint(websocket: WebSocket):
                                 # array shapes, trailing commas, truncation).
                                 _parsed = action_parser.parse(llm_response)
                                 clean_response = _parsed.preamble or action_parser.strip_fences(llm_response).strip()
+                                # The THIRD site, and the one that matters most: this
+                                # is the voice loop — the door he actually uses. The
+                                # other two got the guard when F-49 was fixed and this
+                                # one did not, so `speak_text` stripped the monologue
+                                # from the AUDIO while the HUD frame below rendered it
+                                # raw, and `episodic_memory.log_turn` further down
+                                # STORED it. Root cause #4, found by the harness that
+                                # exists to find exactly this.
+                                clean_response = reasoning_guard.guard_spoken(
+                                    clean_response, fallback="")
                                 if not clean_response or clean_response.lstrip().startswith(("{", "[")):
                                     # Leftover raw JSON (e.g. empty actions) — never speak it.
                                     clean_response = ""

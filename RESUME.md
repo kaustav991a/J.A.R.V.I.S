@@ -126,6 +126,32 @@ the outstanding failure; `23b.16` has never run.
 **RAM on this box:** 5.3 GB free of 15.9 with the desk and ollama idle. A `llava`
 call loads 4.41 GB. Vision fits; vision plus `llama3:8b` does not.
 
+### Phase 0.3 + 1.2 DONE — two guards that make the habits fail the suite
+
+Of session 4's 16 findings, **8 were root cause #4** (fixed at one door, open at its
+siblings) and **7 were a claim with nothing behind it**. Two habits, 15 of 16. So both
+are now suite failures rather than things to remember.
+
+- **`test_single_source.py`** — 7 pins, each naming the failure that justifies it.
+  **Found two live defects on its first run.**
+- **F-66** 🟠 FIXED. `reasoning_guard` was at two of the three `clean_response` sites;
+  the third was the **voice loop**. `speak_text` stripped the monologue from the audio,
+  so the HUD rendered it and `episodic_memory.log_turn` **stored** it.
+- **F-67** 🔴 FIXED. `screen_reader.py` hardcoded `llama-3.2-90b-vision-preview` — dead,
+  absent from the live catalogue, invisible because that leg only runs after Gemini
+  fails. Measured: **`qwen/qwen3.6-27b` is the ONLY vision-capable id on this account**;
+  every other one answers `400 messages[0].content must be a string`. It resolves through
+  a new `groq_vision_model()` now, and because qwen streams `<think>` inside content, the
+  result is stripped before it becomes data.
+- **Model-liveness preflight** — `boot_preflight` asked "is the key set?", never "is the
+  id still a model?". Four incidents lived in that gap. It now asks each provider for its
+  catalogue at boot: one GET per provider, **zero tokens**, on a thread, and an
+  unreachable provider is UNVERIFIED rather than dead. The Groq leg uses the **SDK** —
+  raw urllib gets Cloudflare 1010 and looks exactly like a revoked account. Live:
+  `✅ all 11 configured model id(s) exist`. `JARVIS_MODEL_PREFLIGHT=0` disables it.
+
+**Suite 96/96, 3135 checks, 0 failed.**
+
 ### ▶ NEXT: the hardware gate. 148 rows were skipped by design.
 
 Everything needing a microphone, a camera, hands, a phone, a TV or a second person

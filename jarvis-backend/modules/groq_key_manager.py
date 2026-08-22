@@ -107,6 +107,38 @@ def groq_model() -> str:
     return (os.getenv("GROQ_MODEL") or "").strip() or DEFAULT_GROQ_MODEL
 
 
+# ── The vision id, same treatment, for the same reason ────────────────────────
+# Found by `test_single_source.py` on its first run: `screen_reader.py` hardcoded
+# `llama-3.2-90b-vision-preview`, which is absent from the live 13-id catalogue —
+# so the desk's Groq vision leg was dead exactly the way F-46's chat leg was.
+#
+# The cloud gateway had already been burned by this on 2026-08-14 ("a photo came
+# back 404 model_not_found") and reads `GROQ_VISION_MODEL` from the environment,
+# with `render.yaml` declaring a live id. The desk half was never touched. Root
+# cause #4, one more time, which is why the harness that counts implementations
+# is worth more than the individual fixes.
+#
+# Measured on this account rather than guessed — one small image, every catalogue
+# id that could plausibly take it:
+#
+#   qwen/qwen3.6-27b              OK  0.4s  (the ONLY one)
+#   openai/gpt-oss-120b / -20b    400 "messages[0].content must be a string"
+#   openai/gpt-oss-safeguard-20b  400 same
+#   groq/compound / -mini         400 same
+#   allam-2-7b                    400 same
+#
+# So there is exactly one option, and it is the one `render.yaml` already
+# declares. Note its known defect: qwen streams a `<think>` block INSIDE content,
+# which is why every consumer of a Groq vision result must put it through
+# `reasoning_guard.strip_reasoning` before treating it as data.
+DEFAULT_GROQ_VISION_MODEL = "qwen/qwen3.6-27b"
+
+
+def groq_vision_model() -> str:
+    """The Groq id to send an image to. Shared with the gateway's env var."""
+    return (os.getenv("GROQ_VISION_MODEL") or "").strip() or DEFAULT_GROQ_VISION_MODEL
+
+
 _lock = threading.Lock()
 _active_idx: int = 0
 

@@ -781,3 +781,136 @@ Verified on the live desk after the fix:
 > Chrome browser whose active tab reads 'Restore pages?', Sir — predictably busy."
 
 Both facts correct, and both taken from the real titles. No invented application.
+
+---
+
+## Phase 0.3 + 1.2 — two guards that turn vigilance into suite failures
+
+Built on his instruction after the reliability-ladder discussion, and finished
+end-to-end: both guards exist, both are harnessed, both found live defects, and
+both defects are fixed.
+
+### The reasoning
+
+Of session 4's 16 findings, **8 were one habit** — root cause #4, a class fixed at
+one door and left open at its siblings — and **7 were another** — a claim made with
+nothing behind it. Two habits, 15 of 16 findings. Attacking instances one at a time
+is losing; the only way out is to make each habit fail the suite.
+
+### `test_single_source.py` — root cause #4, asked mechanically
+
+Seven pins, each naming the specific failure that justifies it. Not a style checker
+and not a duplicate detector: a pin without an observed failure behind it is noise,
+and noise is how a harness earns the right to be ignored.
+
+| Pin | What it would have caught |
+|---|---|
+| synthesis is reachable only through the guarded `speak_text` | F-49 |
+| **every** `clean_response` site is guarded before display or storage | **F-66, found on the first run** |
+| no module hardcodes a provider model id | **F-67, found on the first run** |
+| a prompt exists in exactly one place, and every leg uses the caller's | F-61's two extra bugs |
+| one `_stranger_alert`, with the grace check inside it | F-62 |
+| one workspace containment resolver | F-22 and F-51 |
+| the `load_dotenv(override=True)` inventory is pinned | F-65, F-39 |
+| one confirmation-word reader, all three doors | F-40, F-42 |
+
+**27 checks, and two live defects on the first run.**
+
+### F-66 🟠 · The voice loop's reply was never guarded
+
+`reasoning_guard` went into two of the three `clean_response` sites when F-49 was
+fixed. The third is the **voice loop** — the microphone, the door he actually uses.
+`speak_text` still stripped the monologue from the audio, so the failure was
+invisible in what he heard and live in what he saw: the HUD frame rendered the raw
+model text, and `episodic_memory.log_turn` **stored** it, to be recalled later as
+though he had been told it.
+
+Fixed at the third site. The pin now asserts every `clean_response` computation is
+guarded within twelve lines of being computed, so a fourth dispatch path cannot
+quietly skip it.
+
+### F-67 🔴 · The desk's Groq vision model was dead, and hardcoded
+
+`screen_reader.py` held the literal `llama-3.2-90b-vision-preview`. It is absent
+from the live 13-id catalogue, so the desk's Groq vision leg answered 404 — and
+invisibly, because that leg only runs after Gemini has already failed. Exactly
+F-46's shape, in a file F-46's fix never touched.
+
+The cloud gateway had already been burned by this on 2026-08-14 ("a photo came back
+404 model_not_found") and reads `GROQ_VISION_MODEL` from the environment with
+`render.yaml` declaring a live id. The desk half was never updated. Root cause #4.
+
+Measured before replacing it — one small image to every plausible catalogue id:
+
+```
+qwen/qwen3.6-27b              OK  0.4s   <- the ONLY one
+openai/gpt-oss-120b / -20b    400 "messages[0].content must be a string"
+openai/gpt-oss-safeguard-20b  400 same
+groq/compound / -mini         400 same
+allam-2-7b                    400 same
+```
+
+So there is exactly one vision-capable id on this account, and it is the one
+`render.yaml` already declares. It resolves through a new `groq_vision_model()`
+beside `groq_model()` — one place, shared with the gateway's env var.
+
+**And its known defect is handled at the boundary:** qwen streams a `<think>` block
+inside content, so the result goes through `reasoning_guard.strip_reasoning` before
+it is returned as data. Without that, the monologue would land inside the
+`SCREEN CONTENTS` block and the answering model would read it as observation —
+which is F-49 arriving through a side door.
+
+Both dead ids are now in `test_model_ids.RETIRED`, so neither can come back.
+
+### Phase 0.3 · A boot preflight that asks whether the models still exist
+
+`boot_preflight.py` asked "is the key set?". Nothing asked "is the id still a
+model?", and that is where four incidents lived:
+
+| When | What |
+|---|---|
+| 2026-08-15 | OpenRouter withdrew 3 of the 4 `:free` ids the router walks — the tool cascade's last leg wholly dead |
+| 2026-08-16 | `llama-3.3-70b-versatile` retired; the default moved and `render.yaml` still declared the dead id |
+| 2026-08-22 | **F-46** — the chat model, dead, hardcoded in five files, breaking memory extraction on every turn for weeks |
+| 2026-08-22 | **F-67** — the vision model, dead, hardcoded, behind a leg nobody watches |
+
+One shape: *a model id rots on someone else's schedule, and the subsystem that
+notices first is the one nobody is watching.* `test_model_ids.py` pins ids already
+known dead; it cannot know what a provider retired this morning. This asks.
+
+Design, because a preflight that hurts is a preflight that gets switched off:
+
+- **Catalogues, not completions** — one GET per provider, **zero tokens spent**.
+- **Never blocks boot** — runs on a daemon thread and logs when it lands.
+- **Unreachable is UNVERIFIED, never DEAD** — a laptop on a train must not be told
+  its models are gone. Proved with an injected failure: 11 unknown, 0 dead.
+- **The Groq leg uses the SDK, not `urllib`** — raw urllib gets Cloudflare error
+  1010, a bot-fingerprint ban, on every key including unauthenticated, and it looks
+  exactly like a revoked account. That lesson was already recorded in this project;
+  the first draft of this preflight ignored it and reported Groq as `HTTPError` on
+  one run and fine on the next. A flaky check on the provider that has rotted twice
+  is worse than no check. Measured after the switch: 5/5 catalogue reads, ~0.6 s.
+- **The router's own OpenRouter defaults are covered**, not just the env var —
+  which is normally unset, so checking the variable alone would have found nothing
+  to check on the exact leg that was wholly dead.
+- **`JARVIS_MODEL_PREFLIGHT=0`** switches it off.
+- **Reporting cannot raise.** `sys.stdout.encoding` is cp1252 here and printing a
+  tick raises *inside the thing that was reporting* — session 4 found 48 files
+  exposed to that. `_safe_print` degrades the glyphs instead.
+
+Live, on a real boot:
+
+```
+[PREFLIGHT] Model liveness (provider catalogues, no tokens spent):
+  ✅ all 11 configured model id(s) exist.
+```
+
+And fed the two ids that were actually dead, with a fake catalogue, it names them:
+
+```
+❌ DEAD: groq 'llama-3.1-8b-instant' is NOT in the live catalogue — desk chat + memory will fail on use.
+❌ DEAD: groq 'llama-3.2-90b-vision-preview' is NOT in the live catalogue — Groq vision leg will fail on use.
+```
+
+**Suite 95/95 → 96/96, 3105 → 3135 checks.** Eight new liveness tests, all with an
+injected fetch, so the suite still makes no network call.
