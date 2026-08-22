@@ -33,7 +33,7 @@ import datetime
 from typing import Literal, Optional
 
 from dotenv import load_dotenv
-from modules.groq_key_manager import has_groq_keys, run_with_key_rotation
+from modules.groq_key_manager import groq_model, has_groq_keys, run_with_key_rotation
 from modules import memory_crypto as _crypto
 from modules.memory_crypto import MemoryLockedError
 
@@ -47,7 +47,10 @@ def _mem_err(reason: str, detail: object | None = None) -> None:
 
 
 # Fast, cheap model for background extraction (does not compete with main LLM latency).
-_EXTRACTION_MODEL: str = "llama-3.1-8b-instant"   # Fast 8B — swap if needed.
+# Session 4: was a hardcoded `llama-3.1-8b-instant`, which Groq had
+# decommissioned — so EVERY extraction 404'd, silently, because this pipeline
+# swallows its own errors by design. One id, one place: groq_key_manager.
+_EXTRACTION_MODEL: str = groq_model()
 
 # ── Database path ─────────────────────────────────────────────────────────────
 # Stored next to the existing jarvis_memory.db so both live in the same dir.
@@ -787,7 +790,7 @@ def extract_memories_from_input(
         A (possibly empty) list of dicts: [{"category": ..., "content": ...}, ...]
 
     LLM call spec:
-        Model         : llama-3.1-8b-instant  (fast, low-cost, ~100ms on Groq)
+        Model         : _EXTRACTION_MODEL — groq_model(), one id for the desk
         Temperature   : 0.0  (deterministic extraction)
         Max tokens    : 256  (JSON array never needs more)
         Response fmt  : json_object  (Groq JSON mode — structurally enforced)

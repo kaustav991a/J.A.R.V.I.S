@@ -44,6 +44,16 @@ REPO = HERE.parent
 RETIRED = {
     # Groq, 2026-08-16
     "llama-3.3-70b-versatile",
+    # Groq — measured dead 2026-08-22, live-gate session 4. It answered
+    #   404 "The model `llama-3.1-8b-instant` does not exist or you do not have
+    #        access to it."
+    # on this account, and it is absent from a live models.list() of 13 ids. It
+    # was the desk's GROQ_MODEL default AND hardcoded in five files, so memory
+    # extraction, episodic summaries and the GUI agent's parser 404'd on every
+    # single turn while the suite stayed green.
+    "llama-3.1-8b-instant",
+    "llama3-groq-8b-8192-tool-use-preview",
+    "gemma2-9b-it",
     "llama3-70b-8192",
     "llama3-8b-8192",
     "mixtral-8x7b-32768",
@@ -75,6 +85,72 @@ def test_groq_model_defaults_are_not_retired():
     # The tool leg is the one that matters most: TOOL_PROVIDERS puts groq first,
     # so every tool turn in the agent layer goes through this single id.
     assert lr.GROQ_TOOL_MODEL, "GROQ_TOOL_MODEL must not be empty"
+
+
+def test_the_desk_resolves_one_groq_id_from_one_place():
+    """Session 4 (F-46). The id lives beside the key pool, and `.env` overrides it.
+
+    It is read through a FUNCTION rather than bound at import time so a corrected
+    `.env` takes effect on the next call, not on the next reboot — which is what
+    makes a dead id fixable without a restart.
+    """
+    from modules import groq_key_manager as gkm
+
+    assert not _retired(gkm.DEFAULT_GROQ_MODEL),         f"the one default is retired: {gkm.DEFAULT_GROQ_MODEL}"
+    assert not _retired(gkm.groq_model()),         f"the resolved desk model is retired: {gkm.groq_model()}"
+
+    saved = os.environ.get("GROQ_MODEL")
+    try:
+        os.environ["GROQ_MODEL"] = "some/override-id"
+        assert gkm.groq_model() == "some/override-id", "the env value wins"
+        os.environ["GROQ_MODEL"] = "   "
+        assert gkm.groq_model() == gkm.DEFAULT_GROQ_MODEL,             "a blank env value falls back to the default rather than sending an empty id"
+    finally:
+        if saved is None:
+            os.environ.pop("GROQ_MODEL", None)
+        else:
+            os.environ["GROQ_MODEL"] = saved
+
+
+def test_the_background_extraction_model_is_alive():
+    """The pipeline that 404'd on every turn, checked on its resolved value.
+
+    `extract_memories_from_input` catches and logs its own failures by design, so
+    a dead id here is invisible in behaviour and total in effect.
+    """
+    import memory_manager
+
+    assert memory_manager._EXTRACTION_MODEL, "there is no extraction model at all"
+    assert not _retired(memory_manager._EXTRACTION_MODEL),         f"the extraction model is retired: {memory_manager._EXTRACTION_MODEL}"
+
+
+def test_no_python_source_hardcodes_a_model_id():
+    """The gap that let F-46 live: nothing scanned the SOURCE.
+
+    Every check above reads a resolved value or a config file. `llama-3.1-8b-instant`
+    was hardcoded as a `model=` argument in four modules and as a module constant in
+    a fifth, where no env var and no yaml could reach it, and where fixing the
+    default fixed nothing. Root cause #4, in harness form.
+    """
+    import ast
+
+    bad = []
+    skip_dirs = {"venv", "__pycache__", "node_modules", ".git"}
+    for path in sorted(HERE.rglob("*.py")):
+        if any(part in skip_dirs for part in path.parts):
+            continue
+        if path.name.startswith("test_"):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            if _retired(node.value):
+                bad.append(f"{path.relative_to(HERE)}:{node.lineno} -> {node.value}")
+    assert not bad, "retired model ids are hardcoded in source: " + "; ".join(bad)
 
 
 def test_openrouter_lists_are_populated_and_alive():

@@ -35,7 +35,7 @@ cleverness automates a microphone.
 | Cloud gateway routes + sockets | **7** routes + `/desk-link` + `/app-link`, plus 2 background ticks |
 | HUD components | **31** |
 | Mobile app screens | **20**, over **14** API methods |
-| Harnesses | **98 files, 94 run in the suite, 2987 checks, 0 failed** |
+| Harnesses | **99 files, 95 run in the suite, 3042 checks, 0 failed** *(session 4)* |
 | Owed hardware rows | **192** — 159 solo, 7 second-device, 15 second-person, 11 phone |
 | **Machine-gateable families** | **9 of 15** |
 | **Hardware-gateable families** | **6 of 15** |
@@ -219,9 +219,18 @@ Plus two memory holes and one new class, none of which had a finding number:
 
 ## 8 · What is left, and it is all hardware
 
+> **Updated after live-gate session 4 (2026-08-22 evening).** "No code findings
+> open" was true of the eleven that had been *written down*, not of the code. One
+> unattended session driving the text command door found **nine more** — a
+> decommissioned model id hardcoded in five files, every answer truncated
+> mid-sentence, and the desk speaking a model's private monologue out loud. Seven
+> are fixed; the numbers below are the hardware rows, which are unchanged. The
+> lesson for this file: a census of what EXISTS still cannot tell you what WORKS.
+> Only running it does that. See `GATE_SESSION_4.md`.
+
 | | |
 |---|---|
-| **Code findings open** | **none** |
+| **Code findings open** | **3, and all three are decisions** — the planner's CONFIRM dead end (F-52), row `5.7` vs the ruleset (F-56), and A23's untouched allowlist path (F-57) |
 | **Owed hardware rows** | **192** (A: 159 · B: 7 · C: 15 · D: 11) + K1–K5 |
 | **Owed by hand, not code** | rotate `GEMINI_API_KEY`; set `JARVIS_ADMIN_OVERRIDE_CODE` |
 | **Owed after the gate** | Electron packaging, the six blind spots above |

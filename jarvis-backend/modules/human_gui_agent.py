@@ -19,6 +19,7 @@ import win32clipboard
 
 from modules.groq_key_manager import (
     get_initial_client,
+    groq_model,
     has_groq_keys,
     run_with_key_rotation,
 )
@@ -928,7 +929,7 @@ class HumanGUIAgent:
         try:
             completion = run_with_key_rotation(
                 lambda c: c.chat.completions.create(
-                    model="llama-3.1-8b-instant",
+                    model=groq_model(),
                     messages=[{"role": "user", "content": extraction_prompt}],
                     temperature=0.4,
                     max_tokens=512,

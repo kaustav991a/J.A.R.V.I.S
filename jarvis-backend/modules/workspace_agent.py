@@ -479,6 +479,42 @@ class WorkspaceAgent:
                     return p
                 except ValueError:
                     continue
+            # Live-gate session 4, and the FIFTH distinct cause of row 4.1.
+            #
+            # "save it to my desktop" produced `~/Desktop/add.py`, which expands
+            # to C:\Users\<me>\Desktop — and that folder DOES NOT EXIST on this
+            # machine. The Desktop is OneDrive-redirected, so the configured root
+            # is C:\Users\<me>\OneDrive\Desktop, read from the registry by
+            # `_known_folder`. The home-relative path is therefore outside every
+            # root, and the answer was "Access denied", for the one location the
+            # row is actually about.
+            #
+            # F-22 taught the same lesson from the other direction: a leading
+            # segment that NAMES a root means that root. It fixed the relative
+            # form ("Desktop/add.py"), which is why step 2 of that plan resolved
+            # correctly while step 1 was refused. This is the absolute form of the
+            # identical mistake — under the home directory, naming a known folder
+            # by its name, on a machine where that name is redirected elsewhere.
+            #
+            # Deliberately narrow: ONLY a path directly under the user's home
+            # whose first segment matches a root's own name, and the result is
+            # still containment-checked against that root. It grants no new
+            # territory — it maps a name onto the root that already owns it.
+            try:
+                rel = p.relative_to(Path.home())
+            except ValueError:
+                return None
+            parts = rel.parts
+            if len(parts) > 1:
+                head = parts[0].strip().lower()
+                for root in WORKSPACE_ROOTS:
+                    if root.name.lower() == head:
+                        candidate = (root / Path(*parts[1:])).resolve()
+                        try:
+                            candidate.relative_to(root)
+                            return candidate
+                        except ValueError:
+                            return None
             return None
         except Exception:
             return None

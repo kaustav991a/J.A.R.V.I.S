@@ -102,7 +102,7 @@ def save_session(groq_client=None):
     # --- 2. GENERATE SUMMARY & EMBED INTO CHROMADB ---
     if episodes_collection:
         try:
-            from modules.groq_key_manager import run_with_key_rotation
+            from modules.groq_key_manager import groq_model, run_with_key_rotation
             # Build a condensed transcript for the LLM
             transcript_lines = []
             for turn in _current_session[-20:]:  # Last 20 turns max
@@ -119,7 +119,7 @@ Transcript:
             
             completion = run_with_key_rotation(
                 lambda c: c.chat.completions.create(
-                    model="llama-3.1-8b-instant",
+                    model=groq_model(),
                     messages=[{"role": "system", "content": summary_prompt}],
                     temperature=0.3,
                     max_tokens=100,

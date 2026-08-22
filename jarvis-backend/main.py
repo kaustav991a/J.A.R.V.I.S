@@ -66,6 +66,7 @@ from modules import agent_core  # --- Agentic core: stop_reason constants ---
 from modules import fast_path  # --- Deterministic low-latency lane (Roadmap §3.4) ---
 from modules import action_parser  # --- Unified LLM-reply → action(s) parse spine ---
 from modules import backdoor_gate  # --- /api/backdoor is a biometric bypass: gated, default OFF ---
+from modules import reasoning_guard  # --- a model's thinking is never spoken aloud ---
 from modules import partner_messaging  # --- propose-and-approve partner sends ---
 from modules import partner_registry   # --- name → registered partner id, allowlist only ---
 from modules import partner_log        # --- opt-in partner-chat store (flag default OFF) ---
@@ -2019,6 +2020,10 @@ async def run_remote_command(command_text: str, channel) -> None:
     # shapes, trailing commas and truncation (see modules/action_parser.py).
     _parsed = action_parser.parse(llm_response)
     clean_response = _parsed.preamble or action_parser.strip_fences(llm_response).strip()
+    # Session 4: guarded HERE and not only in the speaker, so the HUD frame and
+    # the spoken line say the same thing. A monologue that reached one and not
+    # the other would be a worse bug than the leak.
+    clean_response = reasoning_guard.guard_spoken(clean_response, fallback="")
 
     # Pure conversational reply (no actions).
     if not _parsed.is_action:
@@ -2687,6 +2692,8 @@ async def backdoor_command(req: BackdoorRequest):
         # (fences, prose, bare/singular/array shapes, trailing commas, truncation).
         _parsed = action_parser.parse(llm_response)
         clean_response = _parsed.preamble or action_parser.strip_fences(llm_response).strip()
+        # Same guard as the remote path — see the note there.
+        clean_response = reasoning_guard.guard_spoken(clean_response, fallback="")
         if not clean_response or clean_response.lstrip().startswith(("{", "[")):
             # Leftover raw JSON (e.g. empty actions) — never speak it.
             clean_response = ""

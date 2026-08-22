@@ -2191,3 +2191,83 @@ distinct causes and all four are now closed — which makes the fifth attempt th
 first with nothing known standing in its way, and says nothing at all about
 whether it passes. `FEATURE_CENSUS.md` lists six blind spots the 192 rows do not
 cover.
+
+---
+
+# SESSION 4 — 2026-08-22, unattended. The text door, and nine findings.
+
+> He was away and asked for whatever could be gated without him, with a log, and
+> the rest skipped. So this session drove the **text command door** (`/api/backdoor`
+> with the flag on), the HTTP routes and the websocket, across seven boots, with
+> stdout captured every time. No microphone, no camera, no hands, no phone, no TV,
+> no second person, and **no message to any real human being.**
+>
+> **44 rows reached. Suite 94/94 → 95/95, 2987 → 3042 checks.** The full verdict
+> table, row by row, is in `GATE_SESSION_4.md`; this section is the findings.
+
+**Row `4.1` passed for the first time** — after failing on a fifth and a sixth
+distinct cause, both found and fixed here. That row has now failed on six
+different things across five attempts, which is worth stating plainly: it is not a
+flaky row, it is the shortest path through the most of the system.
+
+## The theme: every model in the cascade thinks now, and nothing was sized for it
+
+Four of the nine findings are one sentence — **output budget is shared with
+reasoning tokens, and the answer is the smaller half.** F-44 established that for
+the classifier on 2026-08-16 and nobody asked the same question of the other
+budgets. What the desk actually said, out loud, in full:
+
+```
+"What's the weather?"   ->  [JARVIS] It is
+"System status"         ->  [JARVIS] System load is
+"read my unread mail"   ->  [JARVIS] You have 201
+```
+
+Measured rather than guessed: openrouter nemotron spent **657 of 785** completion
+tokens on reasoning for one desk-shaped turn; gpt-oss-120b spent 1,020 on another.
+The budgets those calls ran under were 150, 220, 300 and 600.
+
+| ID | Sev | What it was |
+|---|---|---|
+| **F-45** | 🔵 | `JARVIS_AUTO_LOCK=0` was honoured internally and published as `"auto_lock": true` — the mirror only ever tracked the voice toggles, never the environment. The HUD and the phone read that endpoint. FIXED, verified live |
+| **F-46** | 🔴 | `llama-3.1-8b-instant` — decommissioned by Groq, 404 on every call — was hardcoded in **five files** and the default in two more. Memory extraction, episodic summaries and the GUI parser failed on **every turn**, silently, because all three swallow their errors. Same decommissioning as 2026-08-16, fixed then at the two doors someone was watching. Root cause #4. FIXED: one id in `groq_key_manager`, plus a harness that **scans Python source** — the gap that let five copies live |
+| **F-47** | 🟠 | The Gemini leg: primary key `400 API key not valid`, one key returned `finish=MAX_TOKENS` with **empty text** (60 thinking tokens of a 64 budget), one `503`, then every key `429 … limit: 20, model: gemini-3.7-flash`. **Twenty requests per day, shared across all four keys** — F-36's shared-bucket finding confirmed against the quota metric itself. HIS: rotate the primary, and treat Gemini as a burst resource, not a first leg |
+| **F-48** | 🔴 | Every substantive answer truncated mid-value; the desk spoke the prefix, and `[ACTION PARSER] refusing truncated 'workspace_write'` fired. FIXED: a declared `_THINKING_HEADROOM = 1024` on every budget in `brain.py`, streamed answer 1024 → 3072. Prose length is governed by each prompt's own instruction, so he does not ramble — proved by the retest |
+| **F-49** | 🔴 | The desk spoke a model's private monologue aloud: `[JARVIS] Here's a thinking process: 1. **Analyze User Input** …`. The cloud gateway has stripped `<think>` since 2026-08-19; **the desk had no guard at all**, and this leak carried no tags anyway. FIXED in three layers: provider-side suppression (measured — also 45s → 15s on nemotron), tag stripping (`qwen3.6-27b` streams 3,271 chars of `<think>`), and a refusal to speak an untagged monologue. The guard sits in `speak_text`, where no caller can bypass it |
+| **F-50** | 🟠 | `openai/gpt-oss-20b` answers the desk's real payload by **calling a tool nobody offered**: `400 tool_use_failed`, with `failed_generation` holding the action it wanted. The whole Groq leg failed and every turn escalated. Measured across five live ids: only `gpt-oss-120b` survives all three desk-shaped turns. FIXED by moving the chat leg to 120b — at a real, recorded cost: it is already the tool model, so both legs now share one daily bucket. `test_tool_call.py` asserted they stay distinct *for that reason*; the assertion is now liveness, with the trade written into it |
+| **F-51** | 🔴 | "save it to my desktop" → `Access denied: '~/Desktop/add.py' is outside the permitted workspace roots`. His Desktop is **OneDrive-redirected**, so `C:\Users\KINGSHUK\Desktop` does not exist and the home-relative form of a redirected known folder was outside every root. F-22's absolute twin — F-22 fixed the relative form only. **The fifth cause of row 4.1.** FIXED, narrowly |
+| **F-52** | 🟠 | Row 4.1's own sentence — "write … **and save** it" — trips `should_plan`, so the ReAct planner took a one-action request. And a CONFIRM step inside a plan is a **dead end**: the planner cancels the pending confirmation and asks for an authorisation that can no longer be given. **The sixth cause of row 4.1.** FIXED: synonyms for producing one artefact are one act. `should_plan` had no harness at all before this. The planner's dead end for *genuinely* multi-step goals is left open on purpose — `agent_yield` already solves the shape, but wiring it changes what happens to a plan mid-flight, and that is his design call |
+| **F-53** | 🔵 | Three harnesses asserted the real fact ledger **does not exist**, which is only true on a machine where JARVIS has never run. The desk ran, stored a fact, created the ledger, and three harnesses went red for the one reason that is not a defect. FIXED: they compare a fingerprint taken at import, so an untouched file passes whether or not it exists |
+| **F-56** | 🔵 | Row `5.7` expects `run_terminal_command` to work sandboxed; the ruleset makes it `tier=BLOCK` and refuses it outright. Both defensible, both cannot be true. HIS call |
+| **F-57** | 🟠 | "text Priya" and "message 111222333" both refused with **nothing sent** — but via `send_whatsapp_message` being BLOCK-tier, not via the partner allowlist. A23's actual subject was never exercised, and it is the thing that must hold before Group C's real sends |
+
+## A correction, recorded because the method matters
+
+Mid-session I wrote up a 🔴 for the desk's event loop stalling 20–100s per turn, on
+the evidence of UI frames arriving in bursts and the websocket dying with
+`1011 keepalive ping timeout`. **It was my driver, not the desk** — a synchronous
+`requests.post` on the driver's own event loop, so it read no frames and sent no
+pong while the desk worked. `/health` answered in **0.00s** throughout a 19.8s
+turn. Withdrawn before it reached this file's finding list, and recorded here
+because the same shape will look like a server stall to the next person.
+
+## What this section does NOT claim
+
+Every PASS here is **PASS-SUB** unless the row's own door was the one used. The
+text command line reaches the same brain as the microphone and proves nothing
+about the transcriber, the camera, the hands or the phone. 148 of the 192 rows were
+skipped by design and are owed unchanged. `4.1` has passed once, through the typed
+door, with six known causes closed behind it — the voice door is still owed.
+
+## Two messages from his phone, mid-session
+
+```
+[REMOTE:bridge] Command from KAUSTAV (tier=admin): hi jarvis .. can you check the desk?
+[REMOTE:bridge] Command from KAUSTAV (tier=admin): do you tell me .. what's on screen right now
+```
+
+Both reached the desk. Neither produced a reply he could receive: they landed in
+the window where Gemini was quota-dead and Groq was 400ing, so both turns escalated
+and died. That silence **is** F-48 and F-50 seen from the phone, and both are now
+fixed — the same questions answer in full sentences as of boot 7. The second also
+needs `ollama` for local vision, and ollama is down on this box.

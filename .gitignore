@@ -87,6 +87,11 @@ jarvis-backend/.pytest_cache/
 
 # --- Runtime artifacts ---
 jarvis-backend/watchdog.log
+# Live-gate console captures. Kept on disk as the session's raw record and NOT
+# committed: they carry real inbox previews (senders and subject lines) and the
+# watchdog's session shutdown token.
+jarvis-backend/gate-s4-*.log
+jarvis-backend/gate-session-*.log
 jarvis-backend/error.log
 jarvis-backend/last_boot_date.txt
 jarvis-backend/test_grid_output.jpg

@@ -65,6 +65,30 @@ _MULTISTEP_CONNECTORS = (
     " and summarise", " and summarize", " and tell me", " and report", " and draft ",
     " and then email", " and put ", " and compile", " step 1", " first,", " firstly",
 )
+# Verbs that all name the SAME act — producing one artefact. Two of these is one
+# step, not two, however the sentence connects them.
+#
+# Live-gate session 4, and the sixth distinct cause of row 4.1. The row's own
+# sentence is
+#
+#   "Write a python script for a simple add function and save it to my desktop
+#    as add.py"
+#
+# which carries the connector " and save " and the verbs {write, save} — so
+# `should_plan` said multi-step and the ReAct loop took a request that is exactly
+# ONE `workspace_write`. That mattered because a CONFIRM-tier step inside a plan
+# is a dead end: the planner cancels the pending confirmation and says "I need
+# your authorisation… I won't run it unattended", and there is nothing left to
+# authorise. The single-action path, by contrast, stages a confirmation the desk
+# can answer with "confirm".
+#
+# So the misroute was not a latency cost as the docstring assumed — it was the
+# difference between an answerable question and a dead end. "write X and save it"
+# is one act described twice, and the same is true of create/draft/generate. A
+# sentence that pairs one of these with a DIFFERENT kind of verb ("write a report
+# and email it") still plans, which is the whole point of the check.
+_ONE_ARTEFACT_VERBS = frozenset({"write", "create", "save", "draft", "generate"})
+
 # Action-ish verbs; ≥2 distinct ones alongside a connector = compound work.
 _ACTION_VERBS = (
     "search", "find", "research", "look up", "browse", "open", "read", "write",
@@ -95,6 +119,12 @@ def should_plan(user_text: str) -> bool:
 
     if enumerated:
         return True
+
+    # Synonyms for one act are not two acts. Checked after `enumerated`, so an
+    # explicitly numbered plan is still a plan even if every verb in it writes.
+    if verbs_present and verbs_present <= _ONE_ARTEFACT_VERBS:
+        return False
+
     return has_connector and len(verbs_present) >= 2
 
 

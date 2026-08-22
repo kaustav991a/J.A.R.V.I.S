@@ -146,6 +146,17 @@ class GestureDaemon:
         self.thread: threading.Thread | None = None
         self.gestures_enabled = os.getenv("JARVIS_GESTURE", "1") == "1"
         self.auto_lock = os.getenv("JARVIS_AUTO_LOCK", "1") == "1"
+        # Mirror both switches into the published state. Live-gate session 4:
+        # the daemon was launched with JARVIS_AUTO_LOCK=0 and honoured it
+        # internally, while GET /api/gesture/state kept answering
+        # `"auto_lock": true` — the dict literal's default, which only the
+        # voice-toggle setters ever corrected. The HUD and the phone read this
+        # endpoint, so an operator who turned a switch OFF at boot was shown it
+        # ON, which is the same "the barrier said one thing and did another"
+        # class as F-19/F-21/F-25. Env-configured OFF is a real state, not a
+        # default to be overwritten by one.
+        gesture_state["enabled"] = self.gestures_enabled
+        gesture_state["auto_lock"] = self.auto_lock
         # 60s, NOT 6s: at 6 a glance away from the camera blanked the monitor
         # (_lock spawns the lock overlay AND powers the display off), and a fresh
         # setup gets this default the moment face enrollment makes the gate

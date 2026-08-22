@@ -444,10 +444,29 @@ def test_gemini_rotates_keys_on_failure():
     assert used == ["bad", "good"] and turn.ok
 
 
-def test_groq_tool_model_is_separate_from_the_chat_model():
-    """The 8B instant model can't hold a tool loop; making the agent smarter must
-    not make every cheap classification turn expensive."""
-    assert lr.GROQ_TOOL_MODEL != lr.GROQ_MODEL
+def test_groq_tool_model_is_configured_and_alive():
+    """Both Groq legs must be set, and neither may be a decommissioned id.
+
+    This asserted `GROQ_TOOL_MODEL != GROQ_MODEL` until live-gate session 4. The
+    reason was sound: a cheap chat leg and a strong tool leg on separate ids mean
+    a rate limit on one does not close the other, and the 8B instant chat model
+    could not hold a tool loop anyway.
+
+    What changed is the catalogue, not the reasoning. Groq decommissioned
+    `llama-3.1-8b-instant`, and measured against the desk's real payload (9-14
+    messages, ~16-19k chars, streamed) there is no second viable id left on this
+    account: `gpt-oss-20b` answered one turn with ZERO characters and answered
+    the live desk with `400 tool_use_failed`; `compound`/`compound-mini` route
+    internally and hit other models' rate limits; `qwen/qwen3.6-27b` streams
+    3,271 characters of `<think>` monologue inside content. Only
+    `openai/gpt-oss-120b` survives, and it is already the tool model.
+
+    So the two legs now share one id and therefore one daily bucket. The cost is
+    real and is recorded in modules/groq_key_manager.py. What is still worth
+    pinning is what a dead or empty id would break, so that is what this asserts.
+    Split them again the day a small plain instruct model returns.
+    """
+    assert lr.GROQ_MODEL, "GROQ_MODEL must not be empty"
     sent = {}
 
     def fake_rotation(fn):

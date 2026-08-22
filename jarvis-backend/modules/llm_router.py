@@ -22,13 +22,13 @@ import os
 import json
 import time
 import requests
-from modules.groq_key_manager import run_with_key_rotation
+from modules.groq_key_manager import groq_model, run_with_key_rotation
 
 # --- Configuration (all env-overridable) ------------------------------------
 OLLAMA_URL        = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 LOCAL_MODEL       = os.getenv("OLLAMA_MODEL", "llama3:8b")          # primary reasoning
 VISION_MODEL      = os.getenv("OLLAMA_VISION_MODEL", "llava:latest")  # vision cortex
-GROQ_MODEL        = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_MODEL        = groq_model()
 # Agentic core: tool turns need a strong tool-use model. The 8B instant model
 # above is right for cheap classification and wrong for a multi-step tool loop —
 # it invents tool names, drops required args and loops. Kept as a SEPARATE env so
@@ -319,6 +319,19 @@ def _call_ollama(messages, temperature, max_tokens, stream, json_mode, model, ti
 # ===========================================================================
 # Provider: GROQ CLOUD (escalation / fallback)
 # ===========================================================================
+#: Groq accepts `reasoning_format` only on models that reason. Measured session 4:
+#: `allam-2-7b` answers 400 "`reasoning_format` is not supported with this model",
+#: so this is sent per-model rather than always. `hidden` drops the reasoning from
+#: the response entirely — identical content, and 0.6s instead of 1.0s on
+#: gpt-oss-20b, because none of it is serialised back.
+_GROQ_REASONING_FAMILIES = ("openai/gpt-oss",)
+
+
+def _groq_reasoning_kwargs(model: str) -> dict:
+    return ({"reasoning_format": "hidden"}
+            if model.startswith(_GROQ_REASONING_FAMILIES) else {})
+
+
 def _call_groq(messages, temperature, max_tokens, stream, json_mode, timeout):
     if not stream:
         kwargs = {
@@ -327,6 +340,7 @@ def _call_groq(messages, temperature, max_tokens, stream, json_mode, timeout):
             "temperature": temperature,
             "max_tokens": max_tokens,
             "timeout": timeout,
+            **_groq_reasoning_kwargs(GROQ_MODEL),
         }
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
@@ -340,6 +354,7 @@ def _call_groq(messages, temperature, max_tokens, stream, json_mode, timeout):
         "max_tokens": max_tokens,
         "stream": True,
         "timeout": timeout,
+        **_groq_reasoning_kwargs(GROQ_MODEL),
     }
 
     def _gen():
@@ -618,6 +633,12 @@ def _call_openrouter_model(model, messages, temperature, max_tokens, stream, jso
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": stream,
+        # Session 4: this is the leg that spoke a monologue out loud in the room.
+        # OpenRouter's own parameter, measured on nemotron-3.5-lightning: the
+        # reasoning field comes back empty, the content is identical, and the call
+        # took 15s instead of 45s because thousands of thinking characters are no
+        # longer generated for a caller that discards them.
+        "reasoning": {"exclude": True},
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}

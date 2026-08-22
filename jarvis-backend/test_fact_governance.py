@@ -50,6 +50,24 @@ from modules import memory_crypto as mc
 _TMP = Path(tempfile.mkdtemp(prefix="jarvis_factgov_"))
 _REAL_PATHS = (mc.DPAPI_KEY_FILE, mc.RECOVERY_KEY_FILE, mc.X25519_KEY_FILE, mc.CANARY_FILE)
 _REAL_LEDGER, _REAL_OUTBOX = fd.LEDGER_DB, fo.OUTBOX_FILE
+# Live-gate session 4: these two lines asserted the real files did not EXIST,
+# which is only true on a machine where JARVIS has never run. The desk ran during
+# the gate, stored a fact, and created `jarvis_fact_ledger.db` — so three
+# harnesses went red for the one reason that is not a defect: the product had been
+# used. What they are actually for is proving this harness writes to its temp dir
+# and not to the operator's data, so that is what they check now — a fingerprint
+# taken at import, compared at the end. An untouched file passes whether or not it
+# exists; a harness that writes to the real path still fails.
+def _fingerprint(p):
+    try:
+        st = p.stat()
+        return (True, st.st_mtime_ns, st.st_size)
+    except FileNotFoundError:
+        return (False, 0, 0)
+
+
+_REAL_LEDGER_FP = _fingerprint(_REAL_LEDGER)
+_REAL_OUTBOX_FP = _fingerprint(_REAL_OUTBOX)
 
 
 def _fingerprint_real_keys():
@@ -618,8 +636,8 @@ def test_the_harness_never_touched_the_real_key_files():
 
 def test_the_harness_never_touched_the_real_ledger_or_outbox():
     assert fd.LEDGER_DB.parent == _TMP and fo.OUTBOX_FILE.parent == _TMP
-    assert not _REAL_LEDGER.exists(), "the real fact ledger was created"
-    assert not _REAL_OUTBOX.exists(), "the real outbox spill file was created"
+    assert _fingerprint(_REAL_LEDGER) == _REAL_LEDGER_FP,         "this harness touched the operator's real fact ledger"
+    assert _fingerprint(_REAL_OUTBOX) == _REAL_OUTBOX_FP,         "this harness touched the operator's real outbox spill file"
 
 
 def test_the_harness_wrote_memory_only_into_its_temp_database():

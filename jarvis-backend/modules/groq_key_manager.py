@@ -43,6 +43,70 @@ def parse_groq_api_keys() -> list[str]:
 _KEYS: list[str] = parse_groq_api_keys()
 GROQ_API_KEYS_LIST: list[str] = list(_KEYS)
 
+# ── Which Groq model, in ONE place ────────────────────────────────────────────
+# Live-gate session 4. `llama-3.1-8b-instant` was hardcoded in five files and was
+# the default in two more, and Groq had decommissioned it: every call answered
+#
+#   404 — "The model `llama-3.1-8b-instant` does not exist or you do not have
+#          access to it."
+#
+# so memory extraction, episodic summaries and the GUI agent's parser failed on
+# EVERY turn. All three swallow their errors by design, which is why a dead model
+# id looked like nothing at all.
+#
+# This is the SAME decommissioning that took `llama-3.3-70b-versatile` on
+# 2026-08-16. That one was fixed where it was noticed — `GROQ_TOOL_MODEL` in
+# llm_router, and the cloud gateway, which already runs gpt-oss-120b — and the
+# cheap leg was left behind. Root cause #4: a class fixed one site at a time
+# stays open. So the id lives here, next to the keys, where the four callers that
+# hardcoded it already import from.
+#
+# Measured against the live catalogue this session, one real desk-shaped payload
+# (17,755 chars, JSON reply carrying a whole file) per model:
+#
+#   openai/gpt-oss-120b    1.5s  finish=stop  288 completion tokens  valid JSON
+#   openai/gpt-oss-20b     1.9s  finish=stop  815 completion tokens  valid JSON
+#   qwen/qwen3.6-27b       400 — its template needs a `user` message, not `system`
+#   groq/compound-mini     400 — "last message role must be 'user'"
+#
+# 20b was tried first, to keep the chat leg on a different id from the tool leg
+# (`test_tool_call.py` asserted they differ, so that a rate limit on one would not
+# close the other). It does not survive the desk's REAL payload. Measured on the
+# failing shape — 9-14 messages, ~16-19k chars, action catalogue, conversation
+# history, streamed:
+#
+#   openai/gpt-oss-120b   0.6s / 0.6s / 5.0s   clean JSON on all three turns
+#   openai/gpt-oss-20b    0.5s / 3.6s / 30.0s  one turn returned ZERO characters,
+#                         and on the live desk it answered
+#                           400 tool_use_failed — "Tool choice is none, but model
+#                           called a tool"
+#                         with failed_generation holding the action it wanted:
+#                           {"name":"assistant","arguments":{"actions":[...]}}
+#                         so the whole Groq leg failed and every turn escalated
+#   groq/compound-mini    routes internally to other models and hit THEIR rate
+#                         limits (gpt-oss-120b, llama-3.3-70b-versatile)
+#   groq/compound         "Request Entity Too Large" on a 19k-char payload
+#   qwen/qwen3.6-27b      streams a <think> block INSIDE content — 3,271 chars of
+#                         monologue for "what is the capital of Iceland"
+#
+# So there is no second viable id on this account, and the separation the harness
+# asked for cannot be bought. Both legs run 120b, which means they now share one
+# daily bucket: a chat-side rate limit takes the tool loop with it. That is a real
+# cost, accepted knowingly, because the alternative measured worse — an empty
+# answer and a dead leg are worse than a shared quota. If a small plain instruct
+# model returns to this account, split them again.
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+def groq_model() -> str:
+    """The Groq model id every desk-side caller should use.
+
+    Read through a function rather than bound at import time so a corrected
+    `.env` takes effect on the next call instead of on the next reboot.
+    """
+    return (os.getenv("GROQ_MODEL") or "").strip() or DEFAULT_GROQ_MODEL
+
+
 _lock = threading.Lock()
 _active_idx: int = 0
 

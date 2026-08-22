@@ -11,6 +11,8 @@ import glob
 import io
 import wave
 
+from modules import reasoning_guard
+
 # ==========================================
 # PHASE 8: LOCAL TTS TOGGLE
 # Set to True to use Piper (100% offline, ~250ms latency)
@@ -161,11 +163,22 @@ def stop_audio():
 
 async def speak_text(text):
     global is_system_speaking
-    
+
+    # Last line of defence before anything is audible in the room. Session 4:
+    # the desk spoke a model's monologue aloud ("Here's a thinking process: 1.
+    # **Analyze User Input** …"), which carries whatever was in the prompt out
+    # with it. The router now asks each provider to withhold reasoning and the
+    # callers guard their own text, but every spoken line in the process funnels
+    # through here, so this is the one place that cannot be bypassed by a new
+    # caller. See modules/reasoning_guard.py.
+    text = reasoning_guard.guard_spoken(text)
+    if not text:
+        return
+
     # Queue up the speech so he finishes sentences naturally
     async with speech_lock:
-        is_system_speaking = True 
-        
+        is_system_speaking = True
+
         print(f"[JARVIS] {text}")
         regression_append_utterance(text)
 

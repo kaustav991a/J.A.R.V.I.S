@@ -71,11 +71,11 @@ def _compress_oldest_memories():
     transcript = "\n".join(transcript_lines)
 
     try:
-        from modules.groq_key_manager import run_with_key_rotation
+        from modules.groq_key_manager import groq_model, run_with_key_rotation
 
         completion = run_with_key_rotation(
             lambda c: c.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model=groq_model(),
                 messages=[{
                     "role": "system",
                     "content": (

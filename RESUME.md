@@ -11,7 +11,112 @@
 > `LIVE_GATE_FINDINGS.md` (most recent section first), then
 > `JARVIS_MASTER_ROADMAP.md`.
 
-## 🟢 START HERE — 2026-08-22. Every code finding is closed. What is left is hardware.
+## 🟢 START HERE — 2026-08-22 evening, after live-gate SESSION 4 (run unattended).
+
+**Suite 95/95 harnesses, 3042 checks, 0 failed**
+(`jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python
+fakes failures). The mobile app's own suite is **883/883**.
+
+**Session 4 was the machine half of the gate**, driven while he was away: the text
+command door, the HTTP routes and the websocket, seven boots, stdout captured every
+time. **44 rows reached. Nine new findings, seven fixed here.** Read
+`GATE_SESSION_4.md` for the row-by-row verdicts and `LIVE_GATE_FINDINGS.md`'s last
+section for the findings.
+
+### Row `4.1` PASSED — for the first time, through the typed door
+
+It had failed four times on four causes. This session found a **fifth and a sixth**
+and closed both:
+
+- **F-51** — his Desktop is OneDrive-redirected, so `~/Desktop/add.py` expanded to
+  a folder that does not exist and the write was refused as outside the roots.
+- **F-52** — the row's own sentence ("write … **and save** it") tripped the
+  multi-step heuristic, and a CONFIRM step inside a plan is a dead end: the planner
+  cancels the pending confirmation and asks for an authorisation nobody can give.
+
+With both fixed: one confirm prompt naming the resolved path, "confirm", and
+`Created: …\Desktop\add.py`. **The voice door is still owed.**
+
+### The one thing to understand before touching the brain
+
+**Every model in both cascades now spends output budget on reasoning, and nothing
+was sized for it.** The desk was speaking three-word answers:
+
+```
+"What's the weather?"  ->  [JARVIS] It is
+"System status"        ->  [JARVIS] System load is
+"read my unread mail"  ->  [JARVIS] You have 201
+```
+
+F-44 fixed this for the classifier in August and nobody asked the same question of
+the other budgets (150, 220, 300, 600). There is now a declared
+`_THINKING_HEADROOM = 1024` in `brain.py` added to every one of them, the streamed
+answer runs at 3072, and a harness fails on any `max_tokens` below 1024 in that
+file. **Do not "tidy" those numbers back down.**
+
+Two more from the same root: the desk **spoke a model's private monologue aloud**
+(F-49 — there is a `modules/reasoning_guard.py` now, and the guard sits inside
+`speak_text` so no caller can bypass it), and `llama-3.1-8b-instant` was
+**decommissioned and hardcoded in five files** (F-46 — one id in
+`groq_key_manager.groq_model()` now, and `test_model_ids.py` scans Python source,
+which is the gap that let five copies live).
+
+### ⚠️ OWED BY HAND — unchanged, and now measured twice
+
+```
+# .env — the spoken admin override is CLOSED until this exists (F-27).
+#        It is the recovery path F-23 and F-25 need.
+JARVIS_ADMIN_OVERRIDE_CODE=<a phrase only you know>
+```
+
+**Rotate `GEMINI_API_KEY`** — measured again this session: `400 API key not valid`.
+And the whole Gemini leg is capped at **20 requests per day shared across all four
+keys** (`limit: 20, model: gemini-3.7-flash`), so it is a burst resource, not a
+first leg. Groq is doing the work now.
+
+### Three decisions that are yours, not defects
+
+1. **The planner's CONFIRM dead end** (F-52's open half). `agent_yield` already
+   solves the shape — park, notify, "approve task ab12cd34" — but wiring it changes
+   what happens to a plan mid-flight.
+2. **Row `5.7` vs the ruleset** (F-56): the row expects a sandboxed directory
+   listing to work; governance makes `run_terminal_command` BLOCK and refuses it.
+3. **`GROQ_MODEL` and `GROQ_TOOL_MODEL` are now the same id** (F-50). Only
+   `gpt-oss-120b` survives the desk's real payload; the cost is one shared daily
+   bucket. Split them again if a small plain instruct model returns.
+
+### ▶ NEXT: the hardware gate. 148 rows were skipped by design.
+
+Everything needing a microphone, a camera, hands, a phone, a TV or a second person
+is untouched and owed unchanged — A2, A3, A12, A17–A21, A22's 24 agentic rows, and
+Groups B, C, D. `LIVE_GATE_CHECKLIST.md` has the running order.
+
+**A23 is not gated even though both rows refused** (F-57): the model routes "text
+Priya" to `send_whatsapp_message`, which governance blocks as high-risk, so the
+partner allowlist — the thing that has to hold before Group C's real sends — was
+never exercised.
+
+### First three commands of the next session
+
+```powershell
+cd F:\work\JARVIS-Project
+git log --oneline -3
+cd jarvis-backend
+venv\Scripts\python.exe run_harnesses.py    # expect 95/95, 3042 checks, 0 failed
+```
+
+Then, for a hardware session: set the two secrets, launch with `JARVIS_AUTO_LOCK=0`,
+and **capture stdout to a file** — that single habit has now opened findings in two
+consecutive sessions without a line of code being touched.
+
+```powershell
+venv\Scripts\python.exe watchdog.py *> gate-session-5.log
+```
+
+---
+
+## EARLIER — 2026-08-22 morning. Eleven findings closed in code.
+
 
 **Suite 94/94 harnesses, 2987 checks, 0 failed**
 (`jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python

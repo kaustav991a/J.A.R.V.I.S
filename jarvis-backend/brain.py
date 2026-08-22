@@ -25,6 +25,7 @@ import memory_manager  # Phase 5: Memory OS — persistent cross-session memory
 from modules.groq_key_manager import (
     get_initial_client,
     groq_key_count,
+    groq_model,
     GROQ_API_KEYS_LIST,
 )
 from modules.llm_router import universal_llm_call
@@ -37,10 +38,33 @@ print(
     flush=True,
 )
 
-# Model is configurable via GROQ_MODEL in .env — swap this to use a fresh token bucket
-# without touching any other code.  Default: llama-3.1-8b-instant (fast, small).
-# Alternatives: llama-3.3-70b-versatile, llama3-groq-8b-8192-tool-use-preview, gemma2-9b-it
-_GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+# Model is configurable via GROQ_MODEL in .env — swap this to use a fresh token
+# bucket without touching any other code. The DEFAULT now lives beside the key
+# pool in groq_key_manager, because this id was hardcoded in five files and stale
+# in two more; see the note there for the 404 that closed the whole Groq leg.
+_GROQ_MODEL: str = groq_model()
+
+# ── Output budgets in a world where every model thinks ───────────────────────
+# Live-gate session 4. `max_tokens` on these providers covers REASONING as well
+# as the answer, and the answer is now the smaller half. The desk said, out loud
+# and in full:
+#
+#     [JARVIS] You have 201
+#
+# for "read my unread emails" — the inbox synthesis runs at max_tokens=220, the
+# model spent it thinking, and three words came out. Same shape as "It is" for
+# the weather (150) and "System load is".
+#
+# Measured this session on openai/gpt-oss-120b: 288 completion tokens for a JSON
+# reply carrying a whole file, and 1,020 reasoning tokens on a similar call. So
+# ~1,000 tokens can disappear into thinking before a single word is spoken.
+#
+# The prose LENGTH is controlled by the instructions in each prompt ("maximum 2
+# sentences", "cap at 6 sentences"), not by this ceiling — which is why adding
+# headroom does not make him ramble. F-44 established exactly this for the
+# classifier: "the answer is ~40 tokens and the rest is thinking".
+_THINKING_HEADROOM = 1024
+
 print(f"[BRAIN] Active model: {_GROQ_MODEL}", flush=True)
 
 # =============================================================================
@@ -1507,7 +1531,7 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
             # coin-flip between emitting JSON and prose run-to-run. Only clearly
             # conversational turns (include_actions False) keep the warmer 0.7.
             temperature=0.0 if (is_locked or deterministic_action or include_actions) else 0.7,
-            max_tokens=600,
+            max_tokens=600 + _THINKING_HEADROOM,
             stream=False,
             json_mode=_is_json_mode,
             timeout=60.0,
@@ -1837,7 +1861,33 @@ def process_stream(user_text: str, active_user: str = "KAUSTAV"):
             # coin-flip between emitting JSON and prose run-to-run. Only clearly
             # conversational turns (include_actions False) keep the warmer 0.7.
             temperature=0.0 if (is_locked or deterministic_action or include_actions) else 0.7,
-            max_tokens=1024,
+            # 3072, not 1024. Live-gate session 4: this call was cut off mid-value
+            # on real turns and the desk spoke the prefix —
+            #
+            #   "What's the weather?"  ->  [JARVIS] It is
+            #   "System status"        ->  [JARVIS] System load is
+            #   the 4.1 write          ->  [JARVIS] (nothing at all)
+            #
+            # and `[ACTION PARSER] refusing truncated 'workspace_write'` fired,
+            # so the write was correctly refused and the turn was still lost.
+            #
+            # This is F-44's root cause on the ANSWER path. F-44 raised the
+            # CLASSIFIER to 1024 because flash models spend output budget on
+            # thinking; every leg of the cascade does that now, and this call has
+            # to fit reasoning AND a spoken sentence AND an action payload that
+            # may carry a whole file. Measured on the desk's own payload shape
+            # (17,755 chars, JSON reply carrying a file):
+            #
+            #   openrouter nemotron-3.5-lightning  785 completion tokens, 657 of
+            #                                      them reasoning — 77% of 1024
+            #   groq openai/gpt-oss-120b           288 completion tokens
+            #   groq openai/gpt-oss-20b            815 completion tokens
+            #
+            # 1024 was not a wrong guess when it was written; it is simply below
+            # what a reasoning model needs, and it sat one long answer away from
+            # the edge. An unused ceiling costs nothing — a truncated instruction
+            # costs the instruction.
+            max_tokens=3072,
             stream=True,
             json_mode=False,
             timeout=60.0,
@@ -2035,7 +2085,7 @@ def synthesize_info_gen(original_query: str, raw_data: str, active_user: str = "
     if is_inbox_batch:
         rule_one_and_two = """    1. INBOX EXECUTIVE BRIEFING: Give a tight spoken summary. Lead with total unread count if present.
     2. Per-message rule: at most **one short sentence** per listed email (sender + what matters). NEVER read long snippets or bodies verbatim. Cap at **6 sentences** total including the count."""
-        max_tokens_syn = 220
+        max_tokens_syn = 220 + _THINKING_HEADROOM
     else:
         rule_one_and_two = """    1. HARD LIMIT: Maximum 2 sentences. No exceptions.
     2. LEAD WITH THE DATA: Start with the most critical number, name, or fact immediately.
@@ -2043,7 +2093,7 @@ def synthesize_info_gen(original_query: str, raw_data: str, active_user: str = "
        Good: "<TEMP> in <CITY> currently, Sir — humidity is sitting at <HUMIDITY>, so it'll feel worse."
        (Placeholders, not sample data. Never speak a number that came from these
        instructions rather than from a tool result.)"""
-        max_tokens_syn = 150
+        max_tokens_syn = 150 + _THINKING_HEADROOM
 
     synthesis_prompt = f"""You are J.A.R.V.I.S.
     You are currently speaking to: {active_user}
@@ -2213,7 +2263,7 @@ Speak as J.A.R.V.I.S. now — one flowing monologue, max 6 sentences."""
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.65,
-            max_tokens=600,
+            max_tokens=600 + _THINKING_HEADROOM,
             stream=True,
             json_mode=False,
             timeout=90.0,
@@ -2307,7 +2357,7 @@ def synthesize_deep_memory_gen(payload: str, active_user: str = "KAUSTAV"):
         stream = universal_llm_call(
             messages=messages,
             temperature=0.72,
-            max_tokens=600,
+            max_tokens=600 + _THINKING_HEADROOM,
             stream=True,
             json_mode=False,
             timeout=90.0,
@@ -2390,7 +2440,7 @@ def synthesize_info(original_query: str, raw_data: str, active_user: str = "KAUS
         return universal_llm_call(
             messages=[{"role": "system", "content": synthesis_prompt}],
             temperature=0.6,
-            max_tokens=150,
+            max_tokens=150 + _THINKING_HEADROOM,
             stream=False,
             json_mode=False,
             timeout=45.0,
@@ -3011,7 +3061,7 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
 
     Keep it polished and cinematic — 5 to 7 sentences. This is the marquee briefing of the day."""
         _temperature = 0.75
-        _max_tokens = 300
+        _max_tokens = 300 + _THINKING_HEADROOM
     else:
         requirements = f"""Requirements:
     1. A unique, polite greeting suitable for the {time_of_day}. Reply directly to the user's wake phrase if it was conversational (e.g., if he said "Daddy's home", respond with "Welcome home, sir").
@@ -3025,7 +3075,7 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
 
     Keep it brief (3-4 sentences max) and extremely human-like."""
         _temperature = 0.8
-        _max_tokens = 150
+        _max_tokens = 150 + _THINKING_HEADROOM
 
     prompt = f"""You are J.A.R.V.I.S. The system has just booted up. The user just woke you up by saying: "{wake_phrase}".
     Write a conversational startup briefing for the user ({active_user}).
