@@ -112,9 +112,39 @@ def test_the_page_works_offline():
     check("charset" in doc, "the charset is declared, so the status glyphs survive")
 
 
+def test_long_status_text_wraps_instead_of_overflowing():
+    """He opened the page and Tier 0 ran off the side of it.
+
+    The status column started as short marks and grew into whole sentences -- the
+    longest is over 400 characters -- while the CSS still said
+    `white-space:nowrap` on it. A fixed table with wrappable cells is the fix;
+    content decides the height, the container decides the width.
+    """
+    doc = PAGE.read_text(encoding="utf-8")
+
+    check("table-layout:fixed" in doc,
+          "tables are fixed-layout, so one long cell cannot widen the page")
+    check(re.search(r"\.st \{ white-space:normal \}", doc) is not None,
+          "the status column wraps")
+    check("overflow-wrap:anywhere" in doc,
+          "and a single long token cannot push a column open")
+    check("overflow-x:auto" in doc,
+          "wide tables scroll inside their own box, not the page")
+
+    longest = max((len(c) for c in
+                   re.findall(r"<td class='st'>(.*?)</td>", doc, re.S)), default=0)
+    check(longest > 200,
+          f"there really is long status prose to wrap ({longest} chars) — if this "
+          f"ever fails, the guard above is no longer load-bearing")
+
+
 def test_the_markup_is_balanced():
     class Balance(html.parser.HTMLParser):
-        VOID = {"br", "hr", "img", "meta", "link", "input", "source"}
+        # The full HTML void set. `col` was missing, so a perfectly valid
+        # <colgroup><col><col></colgroup> read as four mismatched tags — the
+        # checker was wrong, not the page.
+        VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+                "link", "meta", "param", "source", "track", "wbr"}
 
         def __init__(self):
             super().__init__()

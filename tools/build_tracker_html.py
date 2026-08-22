@@ -232,7 +232,9 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
         tiers_html.append(
             f"<section class='tier'><h3>{_strip_md(t['title'])}"
             f"<span class='tally'>{done}/{n}</span></h3>"
-            f"<table>{rows}</table>{scores_html}</section>")
+            f"<div class='tw'><table>"
+            f"<colgroup><col class='c1'><col class='c2'><col class='c3'></colgroup>"
+            f"{rows}</table></div>{scores_html}</section>")
 
     gate_html = "".join(
         f"<tr class='{g['kind']}'><td>{_strip_md(g['batch'])}</td>"
@@ -285,15 +287,22 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
  .legend {{ color:var(--dim); font-size:12px; margin-top:8px }}
  .dot {{ display:inline-block; width:8px; height:8px; border-radius:99px;
    margin:0 5px 0 12px }}
- table {{ width:100%; border-collapse:collapse }}
+ /* table-layout:fixed and a wrappable status column, because the status cells
+    carry whole sentences now ("still owed - re-measured after his .env update:
+    ...") and `white-space:nowrap` on that column pushed the whole page sideways.
+    Content decides the height; the container decides the width. */
+ table {{ width:100%; border-collapse:collapse; table-layout:fixed }}
  td,th {{ padding:7px 9px; border-bottom:1px solid var(--line);
-   vertical-align:top; text-align:left }}
+   vertical-align:top; text-align:left; overflow-wrap:anywhere;
+   word-break:break-word }}
+ .tw {{ overflow-x:auto }}
  tr:last-child td {{ border-bottom:0 }}
  .num {{ white-space:nowrap; font-variant-numeric:tabular-nums }}
  .how,.who {{ color:var(--dim); font-size:12.5px }}
  .id {{ font-family:ui-monospace,Consolas,monospace; color:var(--accent);
    white-space:nowrap }}
- .st {{ white-space:nowrap }}
+ /* NOT nowrap: see the note above the table rule. */
+ .st {{ white-space:normal }}
  tr.done .st {{ color:var(--done) }} tr.partial .st {{ color:var(--part) }}
  tr.todo .st {{ color:var(--dim) }}
  .tier {{ margin-bottom:14px }}
@@ -301,6 +310,9 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
    background:#1b2230; border:1px solid var(--line); border-bottom:0;
    border-radius:9px 9px 0 0; display:flex; justify-content:space-between }}
  .tally {{ color:var(--dim); font-weight:500 }}
+ .tier table col.c1 {{ width:7ch }}
+ .tier table col.c2 {{ width:52% }}
+ .tier table col.c3 {{ width:auto }}
  .tier table {{ background:var(--panel); border:1px solid var(--line);
    border-radius:0 0 9px 9px }}
  ul.ship {{ list-style:none; padding:0; margin:0 }}
@@ -337,18 +349,18 @@ it is derived, and a second place to update is how the last set of docs drifted.
 </div>
 
 <h2>Where it actually is</h2>
-<div class="panel"><table>{state_html}</table></div>
+<div class="panel tw"><table>{state_html}</table></div>
 
 <h2>The ladder</h2>
 {"".join(tiers_html)}
 
 <h2>The gate — 192 rows</h2>
-<div class="panel"><table>
+<div class="panel tw"><table>
 <tr><th>Batch</th><th>Rows</th><th>Needs</th><th>State</th></tr>
 {gate_html}</table></div>
 
 <h2>Open findings</h2>
-<div class="panel"><table>{find_html}</table></div>
+<div class="panel tw"><table>{find_html}</table></div>
 
 <h2>Ship gates</h2>
 <div class="panel"><ul class="ship">{ship_html}</ul></div>
