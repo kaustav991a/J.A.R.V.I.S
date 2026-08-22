@@ -101,8 +101,20 @@ def main() -> int:
         head = block.splitlines()[0] if block.splitlines() else ""
         if not head.startswith("### "):
             continue
-        items = []
+        items, scores = [], []
         for cells in _rows(block):
+            if len(cells) < 2:
+                continue
+            # A competence row looks like  | calendar | 0/3 | 🔴 |  — the second
+            # cell is a score, not a description. The generator used to skip
+            # these, so the one table that says WHY tier 2 exists never reached
+            # the page.
+            m = re.fullmatch(r"\**(\d+)/(\d+)\**", cells[1].strip())
+            if m:
+                got, want = int(m.group(1)), int(m.group(2))
+                scores.append({"what": cells[0], "got": got, "want": want,
+                               "pct": round(got * 100 / want) if want else 0})
+                continue
             if len(cells) < 3:
                 continue
             ident, what, status = cells[0], cells[1], cells[2]
@@ -110,8 +122,9 @@ def main() -> int:
             if kind is None:
                 continue
             items.append({"id": ident, "what": what, "status": status, "kind": kind})
-        if items:
-            tiers.append({"title": head[4:].strip(), "items": items})
+        if items or scores:
+            tiers.append({"title": head[4:].strip(), "items": items,
+                          "scores": scores})
     if not tiers:
         raise SystemExit("[build_tracker_html] FAILED: the ladder has no "
                          "status-marked rows. Did the marks change?")
@@ -142,10 +155,19 @@ def main() -> int:
     total = sum(counts.values()) or 1
     pct_done = round(counts[DONE] * 100 / total)
 
+    # The gate figure is the one that matters most, so it gets its own stat
+    # rather than being a row in a table the eye slides past.
+    gate_stat = None
+    m = re.search(r"gate rows ticked \|\s*\*\*~?(\d+) of (\d+)\*\*\s*\((\d+)%\)", md)
+    if m:
+        gate_stat = {"done": int(m.group(1)), "total": int(m.group(2)),
+                     "pct": int(m.group(3))}
+
     stamp = re.search(r"^## 1 · Where JARVIS actually is — (.+)$", md, re.M)
     asof = stamp.group(1).strip() if stamp else "see tracker"
 
-    doc = _render(state, tiers, gate, findings, ship, counts, pct_done, asof)
+    doc = _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
+                  gate_stat)
     OUT.write_text(doc, encoding="utf-8")
     print(f"[build_tracker_html] wrote {OUT.relative_to(ROOT)}  "
           f"({len(doc):,} bytes)")
@@ -161,8 +183,19 @@ def _bar(counts: dict, total: int) -> str:
             f'<span class="p" style="width:{p:.1f}%"></span></div>')
 
 
-def _render(state, tiers, gate, findings, ship, counts, pct_done, asof) -> str:
+def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
+            gate_stat=None) -> str:
     total = sum(counts.values()) or 1
+
+    # The gate is the number that decides whether JARVIS is finished, so it sits
+    # beside the ladder percentage instead of inside a table.
+    if gate_stat:
+        gate_block = (
+            f'<div class="big alt">{gate_stat["pct"]}%<br>'
+            f'<small>of the {gate_stat["total"]} gate rows ticked '
+            f'({gate_stat["done"]})</small></div>')
+    else:
+        gate_block = ""
 
     state_html = "".join(
         f"<tr><td>{_strip_md(k)}</td><td class='num'>{_strip_md(v)}</td>"
@@ -178,10 +211,28 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof) -> str:
             f"<td>{_strip_md(i['what'])}</td>"
             f"<td class='st'>{_strip_md(i['status'])}</td></tr>"
             for i in t["items"])
+        scores_html = ""
+        if t.get("scores"):
+            bars = "".join(
+                f"<tr><td class='sw'>{_strip_md(sc['what'])}</td>"
+                f"<td class='num'>{sc['got']}/{sc['want']}</td>"
+                f"<td class='sbar'><span style='width:{sc['pct']}%;"
+                f"background:{'var(--done)' if sc['pct'] >= 80 else ('var(--part)' if sc['pct'] >= 50 else 'var(--bad)')}'>"
+                f"</span></td></tr>"
+                for sc in t["scores"])
+            got = sum(sc["got"] for sc in t["scores"])
+            want = sum(sc["want"] for sc in t["scores"]) or 1
+            scores_html = (
+                f"<div class='scores'><div class='shead'>live tool selection "
+                f"— <strong>{got}/{want}</strong> "
+                # round(), not //: the tracker says 56% for 19/34 and a page
+                # that renders 55% is the drift this arrangement exists to stop.
+                f"({round(got * 100 / want)}%), by category</div>"
+                f"<table>{bars}</table></div>")
         tiers_html.append(
             f"<section class='tier'><h3>{_strip_md(t['title'])}"
             f"<span class='tally'>{done}/{n}</span></h3>"
-            f"<table>{rows}</table></section>")
+            f"<table>{rows}</table>{scores_html}</section>")
 
     gate_html = "".join(
         f"<tr class='{g['kind']}'><td>{_strip_md(g['batch'])}</td>"
@@ -205,7 +256,7 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof) -> str:
  :root {{
    --bg:#0e1116; --panel:#161b22; --line:#232a34; --ink:#e6edf3;
    --dim:#8b949e; --done:#2ea043; --part:#d29922; --todo:#484f58;
-   --accent:#58a6ff;
+   --accent:#58a6ff; --bad:#f85149;
  }}
  * {{ box-sizing:border-box }}
  body {{ margin:0; background:var(--bg); color:var(--ink);
@@ -221,6 +272,13 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof) -> str:
  .hero {{ display:flex; gap:26px; align-items:center; flex-wrap:wrap }}
  .big {{ font-size:44px; font-weight:700; line-height:1 }}
  .big small {{ font-size:15px; color:var(--dim); font-weight:500 }}
+ .big.alt {{ color:var(--part) }}
+ .scores {{ border-top:1px solid var(--line); padding:10px 0 2px }}
+ .shead {{ color:var(--dim); font-size:12.5px; padding:2px 9px 6px }}
+ .sw {{ width:34% }}
+ .sbar {{ width:46% }}
+ .sbar span {{ display:block; height:9px; border-radius:99px; min-width:2px }}
+ .scores td {{ border-bottom:0; padding:3px 9px }}
  .bar {{ flex:1; min-width:240px; height:12px; background:var(--todo);
    border-radius:99px; overflow:hidden; display:flex }}
  .bar .d {{ background:var(--done) }} .bar .p {{ background:var(--part) }}
@@ -265,6 +323,7 @@ it is derived, and a second place to update is how the last set of docs drifted.
 
 <div class="panel hero">
   <div class="big">{pct_done}%<br><small>of ladder items done</small></div>
+  {gate_block}
   <div style="flex:1">
     {_bar(counts, total)}
     <div class="legend">

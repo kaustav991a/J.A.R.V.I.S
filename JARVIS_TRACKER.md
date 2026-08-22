@@ -31,6 +31,12 @@
 unknown, and the single number that decides whether JARVIS is *dependable* is the
 56%.
 
+> **Correction, 2026-08-22.** The ladder figure read 33% until the dashboard
+> generator learned to tell a *score* row from an *item* row: two rows of the
+> competence table were being counted as completed ladder items. The real figure
+> is **3 of 13 done**. Nothing regressed — the number was wrong, and it is the
+> kind of wrong this tracker's first rule exists to catch.
+
 ---
 
 ## 2 · The ladder
@@ -43,8 +49,8 @@ Tier 1 work would have caught before a row was ever attempted.
 
 | | Item | Status |
 |---|---|---|
-| 0.1 | Set `JARVIS_ADMIN_OVERRIDE_CODE` in `.env` — the spoken recovery path F-23 and F-25 need does not exist without it | ☐ **his, 2 minutes** |
-| 0.2 | Rotate `GEMINI_API_KEY` — measured invalid twice (`400 API key not valid`) | ☐ **his** |
+| 0.1 | Set `JARVIS_ADMIN_OVERRIDE_CODE` in `.env` — the spoken recovery path F-23 and F-25 need | ✅ **done 2026-08-22** — set, 5 characters. Short for something guessed at rather than typed; the token match means `tiberiusx` is not `tiberius`, so length is the only defence it has. His call, recorded |
+| 0.2 | Rotate `GEMINI_API_KEY` | ☐ **still owed** — re-measured after his `.env` update: the primary is **still `400 API key not valid`** and is **not one of the four pool keys**. The pool itself is healthy (all four valid, three at their daily quota, one answered). Simplest fix: point `GEMINI_API_KEY` at a working key, or delete the line — the pool already carries the load |
 | 0.3 | Boot preflight that asks providers whether the configured models still exist | ✅ **done** — 11 ids checked, catalogues only, zero tokens, `JARVIS_MODEL_PREFLIGHT=0` to disable |
 | 0.4 | ollama auto-starting as a service — it was down all of session 4, so every vision feature was dead and nothing said so. Running now, but started by hand | ☐ |
 | 0.5 | Re-enroll the face on the **phone-camera angles actually used** — until then every camera feature mistrusts him and F-62 recurs | ☐ **needs him + the phone** |
@@ -63,16 +69,23 @@ losing; the habits have to become suite failures.
 
 The eval localises it precisely. **Fix retrieval before building anything.**
 
-| Group | Live score | |
-|---|---|---|
-| tv | 5/5 | ✅ |
-| files, mail, hud, media | 2/2, 2/2, 1/1, 1/1 | ✅ |
-| git | 2/3 | |
-| apps | 2/4 | |
-| memory, partner, system | 1/2 each | |
-| **web** | **1/4** | 🔴 |
-| **calendar** | **0/3** | 🔴 |
-| **misc** | **0/3** | 🔴 |
+One row per category, so the table sums to the headline: **19/34**.
+
+| Group | Live score |
+|---|---|
+| tv | 5/5 |
+| files | 2/2 |
+| mail | 2/2 |
+| hud | 1/1 |
+| media | 1/1 |
+| git | 2/3 |
+| apps | 2/4 |
+| memory | 1/2 |
+| partner | 1/2 |
+| system | 1/2 |
+| web | 1/4 |
+| calendar | 0/3 |
+| misc | 0/3 |
 
 **The diagnosis was wrong, and the correction is the useful part.** This section
 used to say the misses were retrieval — descriptions, aliases, ranking. They were
