@@ -631,6 +631,33 @@ async def run_agent_command(
         shelf = ToolShelf(searchable, base=registry.set_names(tool_set),
                           max_tools=limits.max_tools, allow_confirm=at_desk,
                           extra=extra_defs)
+        # ── Pre-seed the free slots from the GOAL ─────────────────────────────
+        # Tier 2.1. The live eval scored 19/34, and the cause was not
+        # findability: the offline retrieval eval is 40/40, so the catalogue
+        # surfaces the right tool for every one of these requests. The cause was
+        # that `tool_set_for` can only return `files` or `authoring`, and NOT ONE
+        # of the fifteen missed tools is in either set — so the model was handed
+        # five file tools and asked to book a dentist appointment. Its only route
+        # to `check_calendar` was to decide, unprompted, that nothing it could see
+        # fit and to call `search_tools`. Sometimes it did (tv scored 5/5);
+        # for calendar and misc it never did, and reached for `find_file` three
+        # times instead.
+        #
+        # So the search the model might have made is made FOR it, once, with the
+        # goal as the query. This is the same ranking the offline eval measures at
+        # 40/40 — the retrieval was always right, nothing was asking it. The
+        # ceiling is untouched: `room()` already accounts for `search_tools` and
+        # the base set, so this fills free slots and evicts nothing, and
+        # `search_tools` remains available for the turns where one hint is not
+        # enough.
+        _room = shelf.room()
+        if _room > 0:
+            _seed = [h.name for h in shelf.search(goal)[:_room]]
+            if _seed:
+                _got, _ = shelf.promote(_seed)
+                if _got:
+                    print(f"[AGENT] shelf preload for this goal: "
+                          f"{', '.join(_got)}", flush=True)
         print(f"[AGENT] shelf: {len(shelf.resident())} resident of "
               f"{len(registry.names())} catalogued, {shelf.room()} free slot(s)",
               flush=True)

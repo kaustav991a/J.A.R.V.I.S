@@ -18,7 +18,7 @@
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **98 harnesses, 3246 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
+| Automatic suite | **99 harnesses, 3280 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -74,13 +74,33 @@ The eval localises it precisely. **Fix retrieval before building anything.**
 | **calendar** | **0/3** | 🔴 |
 | **misc** | **0/3** | 🔴 |
 
-The 15 misses share one shape: **the shelf offers `search_documents`/`find_file`
-for calendar, vitals and web goals.** That is retrieval — descriptions, aliases,
-ranking in the tool registry — not model capability.
+**The diagnosis was wrong, and the correction is the useful part.** This section
+used to say the misses were retrieval — descriptions, aliases, ranking. They were
+not: the **offline retrieval eval is 40/40**, so the catalogue surfaces the right
+tool for every one of these requests.
+
+The cause was upstream. `tool_set_for()` returns only `files` or `authoring`, and
+**not one** of the fifteen missed tools is in either set — so the model was handed
+five file tools and asked to book a dentist appointment. Reaching `check_calendar`
+required it to decide, unprompted, that nothing it could see fit and to call
+`search_tools`. Sometimes it did (tv 5/5); for calendar and misc it never did, and
+reached for `find_file` three times instead.
+
+Fixed by making that search once, for the model, with the goal as the query,
+filling only slots that were already free. Measured across the eval's 40 tasks —
+expected tool resident **before the model's first turn**:
+
+| | |
+|---|---|
+| before the preload | **4/40 (10%)** — the baseline the 56% came from |
+| after the preload | **39/40 (97%)** — only `tv-04` still needs to search |
+
+`research` is defined in the registry and **never selected** by `tool_set_for` —
+harmless now that the preload reaches the web tools anyway, but recorded.
 
 | | Item | Status |
 |---|---|---|
-| 2.1 | Fix tool descriptions/aliases/ranking; re-measure with `run_evals.py` offline **and** `--live`. Target **≥85%** | ☐ |
+| 2.1 | ~~Fix descriptions/aliases/ranking~~ — **the diagnosis was wrong**; retrieval was already 40/40. The shelf is **preloaded from the goal** instead: expected tool in front of the model **4/40 → 39/40**, harnessed in `test_shelf_preload.py` (34 checks). **The `--live` re-measure is still owed** — it drives real actions on his desk, so it needs his go-ahead | ⚠️ **mechanism fixed + measured offline; live number pending** |
 | 2.2 | Settle **F-59** — `should_use_agent` accepts two sentence shapes while A22 has 24 rows written against goals it will not accept. Widen the gate or rewrite the rows; until then A22 cannot validate any of this | ☐ **decision** |
 | 2.3 | Only if retrieval tops out and it is still wrong: the tiered brain (a stronger model for tool selection) | ☐ blocked by 2.1 |
 
