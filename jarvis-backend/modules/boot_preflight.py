@@ -245,6 +245,100 @@ def _default_fetch(url: str, env=None) -> list:
     return []
 
 
+def classify_credential_error(err) -> str | None:
+    """`"invalid"`, `"quota"` or None for an error that is not about the key.
+
+    Tier 0.2, and the distinction is the whole point. The primary Gemini key on
+    this machine answers **400 API key not valid**; the four pool keys answer
+    **429 RESOURCE_EXHAUSTED**. Those need opposite responses -- waiting fixes the
+    second and never the first -- and telling them apart by hand cost a full audit
+    on 2026-08-22. The provider already said which it was; nothing was reading it.
+    """
+    text = str(err).lower()
+    if ("api key not valid" in text or "api_key_invalid" in text
+            or "api key expired" in text or "invalid api key" in text
+            or " 401" in text or "http error 401" in text
+            or "unauthorized" in text or "unauthenticated" in text):
+        return "invalid"
+    if ("resource_exhausted" in text or "429" in text
+            or "quota" in text or "rate limit" in text):
+        return "quota"
+    # A bare 400 from a catalogue listing is about the credential: the request
+    # carries no user content that could be malformed.
+    if " 400" in text or "http error 400" in text or "bad request" in text:
+        return "invalid"
+    return None
+
+
+def check_gemini_keys(env=None, fetch=None) -> list:
+    """One verdict per configured Gemini key: valid / invalid / quota / unreachable.
+
+    Why per KEY and not per provider: the preflight used to list the catalogue
+    with the FIRST key only. With five configured and the first one invalid, the
+    whole provider was reported as merely "unverified" while four working keys sat
+    behind it and the cascade ran fine. That is a report that makes a healthy
+    system look broken and a broken key look like weather.
+    """
+    env = os.environ if env is None else env
+    raw = (env.get("GEMINI_API_KEYS") or env.get("GEMINI_API_KEY") or "")
+    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    base = _CATALOGUE_URLS["gemini"]
+    out = []
+    for n, key in enumerate(keys, 1):
+        try:
+            if fetch is not None:
+                fetch(base + "?key=" + key)
+            else:
+                # NOT through _default_fetch: that helper appends its own
+                # "?key=<first key>" for this host, so handing it a URL that
+                # already carries one produces a doubly-parameterised request and
+                # a 400 for EVERY key -- which reads exactly like five dead keys.
+                # Nearly filed as a finding; it was this line.
+                import urllib.request as _u
+                with _u.urlopen(base + "?key=" + key + "&pageSize=1",
+                                timeout=8) as r:
+                    r.read(1)
+            out.append((n, "valid", ""))
+        except Exception as e:                          # noqa: BLE001
+            kind = classify_credential_error(e) or "unreachable"
+            out.append((n, kind, type(e).__name__ + ": " + str(e)[:120]))
+    return out
+
+
+def format_gemini_keys(verdicts: list) -> str:
+    """One line he can act on, or nothing when every key is fine."""
+    if not verdicts:
+        return ("  ⚠️  no Gemini key configured (GEMINI_API_KEY / GEMINI_API_KEYS) "
+                "— cloud reasoning and the vision cascade's first leg are off.")
+    total = len(verdicts)
+    bad = [n for n, k, _ in verdicts if k == "invalid"]
+    quota = [n for n, k, _ in verdicts if k == "quota"]
+    good = [n for n, k, _ in verdicts if k == "valid"]
+    if len(good) == total:
+        return "  ✅ all " + str(total) + " Gemini key(s) accepted."
+    lines = []
+    if bad:
+        lines.append("  ❌ INVALID KEY: Gemini key(s) " +
+                     ", ".join("#" + str(n) for n in bad) + " of " + str(total) +
+                     " are REJECTED as invalid — this is not a quota problem and "
+                     "waiting will not fix it. Replace or delete them in .env "
+                     "(GEMINI_API_KEYS).")
+    if quota:
+        lines.append("  ⚠️  quota: Gemini key(s) " +
+                     ", ".join("#" + str(n) for n in quota) +
+                     " are valid but exhausted right now. Keys in the SAME Google "
+                     "project share one bucket, so adding more of them adds "
+                     "nothing; a separate project is what multiplies the quota.")
+    if good:
+        lines.append("  ✅ " + str(len(good)) + " of " + str(total) +
+                     " Gemini key(s) still accepted, so the cascade has a first leg.")
+    else:
+        lines.append("  ❌ NO working Gemini key, so every request falls through to "
+                     "Groq and OpenRouter. That is the designed fallback, not an "
+                     "outage — but the first leg is gone.")
+    return chr(10).join(lines)
+
+
 def check_model_liveness(fetch=None, env=None) -> dict:
     """Compare every configured id against its provider live catalogue.
 
@@ -253,11 +347,12 @@ def check_model_liveness(fetch=None, env=None) -> dict:
     """
     env = os.environ if env is None else env
     if (env.get("JARVIS_MODEL_PREFLIGHT") or "1").strip() == "0":
-        return {"dead": [], "alive": [], "unknown": [], "skipped": True}
+        return {"dead": [], "alive": [], "unknown": [], "down": [],
+                "bad_key": [], "skipped": True}
 
     fetch = fetch or (lambda url: _default_fetch(url, env))
     catalogues: dict = {}
-    dead, alive, unknown, down = [], [], [], []
+    dead, alive, unknown, down, bad_key = [], [], [], [], []
 
     for provider, model, why in configured_models(env):
         if provider not in catalogues:
@@ -277,6 +372,12 @@ def check_model_liveness(fetch=None, env=None) -> dict:
                 down.append((provider, model, why,
                              type(cat).__name__ if isinstance(cat, Exception)
                              else "no models installed"))
+            elif isinstance(cat, Exception) and                     classify_credential_error(cat) == "invalid":
+                # The provider REJECTED THE CREDENTIAL. That is an answer, not a
+                # silence, and filing it under "unverified" is the tier 0.4
+                # mistake in a second place: a fact reported as weather.
+                bad_key.append((provider, model, why,
+                                type(cat).__name__ + ": " + str(cat)[:120]))
             else:
                 unknown.append((provider, model, why,
                                 type(cat).__name__ if isinstance(cat, Exception)
@@ -289,7 +390,7 @@ def check_model_liveness(fetch=None, env=None) -> dict:
                   for c in names) or model.endswith("-latest")
         (alive if hit else dead).append((provider, model, why))
     return {"dead": dead, "alive": alive, "unknown": unknown, "down": down,
-            "skipped": False}
+            "bad_key": bad_key, "skipped": False}
 
 
 def format_liveness(rep: dict) -> str:
@@ -308,10 +409,17 @@ def format_liveness(rep: dict) -> str:
                        "daemon.")
         lines.append("     Start it:  powershell -ExecutionPolicy Bypass -File "
                      "tools" + chr(92) + "ensure_ollama.ps1")
+    for provider, model, why, reason in (rep.get("bad_key") or []):
+        lines.append("  ❌ CREDENTIAL REJECTED: " + provider + " turned the key "
+                     "down (" + reason + "). The id '" + model + "' could not be "
+                     "checked because the KEY is bad — not because the provider "
+                     "was unreachable, and not a quota problem. Waiting will not "
+                     "fix it.")
     for provider, model, why, reason in rep["unknown"]:
         lines.append("  ⚠️  unverified: " + provider + " '" + model +
                      "' — catalogue unreachable (" + reason + "). Not necessarily dead.")
-    if not rep["dead"] and not rep["unknown"] and not _down:
+    _bad = rep.get("bad_key") or []
+    if not rep["dead"] and not rep["unknown"] and not _down and not _bad:
         lines.append("  ✅ all " + str(len(rep["alive"])) +
                      " configured model id(s) exist.")
     elif rep["alive"]:
@@ -332,4 +440,16 @@ def log_model_liveness() -> dict:
                     type(e).__name__ + ": " + str(e) + ") - continuing.")
         return {"dead": [], "alive": [], "unknown": [], "skipped": True}
     _safe_print(format_liveness(rep))
+
+    # Tier 0.2. The per-key report goes out on the same breath, because the
+    # question it answers -- "do I need to generate more keys?" -- previously took
+    # a hand audit to settle, and the answer turned on a distinction the log was
+    # not making: a rejected CREDENTIAL and an exhausted QUOTA look identical in a
+    # line that says the provider did not respond.
+    try:
+        rep["gemini_keys"] = check_gemini_keys()
+        _safe_print(format_gemini_keys(rep["gemini_keys"]))
+    except Exception as e:                              # noqa: BLE001
+        _safe_print("[PREFLIGHT] Gemini key check failed (" +
+                    type(e).__name__ + ": " + str(e)[:100] + ") - continuing.")
     return rep

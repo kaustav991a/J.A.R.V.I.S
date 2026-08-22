@@ -293,6 +293,110 @@ def test_an_installed_but_empty_ollama_is_also_down():
           f"and the reason distinguishes it from a refused connection ({reasons})")
 
 
+def test_a_rejected_credential_is_not_filed_as_unreachable():
+    """Tier 0.2, and the same mistake as tier 0.4 in a second place. When the
+    provider REJECTS THE KEY it has answered; calling that "catalogue unreachable,
+    not necessarily dead" turns a fact into weather. Waiting fixes a 429 and never
+    fixes a bad key, so the two must not share a line."""
+    def _bad_credential(url):
+        if "generativelanguage" in url:
+            raise OSError("HTTP Error 400: Bad Request")
+        return _FAKE_CATALOGUE[url]
+
+    rep = bp.check_model_liveness(fetch=_bad_credential, env=dict(_HEALTHY_ENV))
+    providers = {p for p, _m, _w, _r in rep.get("bad_key", [])}
+    check(providers == {"gemini"},
+          f"the rejected credential is its own bucket ({providers})")
+    check(not any(p == "gemini" for p, _m, _w, _r in rep["unknown"]),
+          "and NOT filed under 'unverified'")
+    check(not rep["dead"],
+          "and not called a dead model id -- the id was never checked")
+
+    text = bp.format_liveness(rep)
+    check("CREDENTIAL REJECTED" in text, "the report names the real problem")
+    check("the KEY is bad" in text, "and says which half is at fault")
+    check("not a quota problem" in text,
+          "and rules out the wrong fix explicitly")
+    check("Waiting will not fix it" in text, "including the useless remedy")
+
+
+def test_the_classifier_separates_invalid_from_exhausted():
+    """The distinction that cost a hand audit on 2026-08-22."""
+    for msg in ("400 API key not valid", "API_KEY_INVALID", "HTTP Error 401",
+                "Unauthorized", "invalid api key", "HTTP Error 400: Bad Request"):
+        check(bp.classify_credential_error(Exception(msg)) == "invalid",
+              f"{msg!r} is a credential problem")
+    for msg in ("429 RESOURCE_EXHAUSTED", "You exceeded your current quota",
+                "rate limit reached, retry in 48s"):
+        check(bp.classify_credential_error(Exception(msg)) == "quota",
+              f"{msg!r} is a quota problem, which waiting DOES fix")
+    for msg in ("connection refused", "timed out", "temporary failure in name "
+                "resolution"):
+        check(bp.classify_credential_error(Exception(msg)) is None,
+              f"{msg!r} is about neither -- it stays unverified")
+
+
+def test_each_gemini_key_is_judged_separately():
+    """The preflight used to list the catalogue with the FIRST key only. With the
+    first one invalid and four good ones behind it, the whole provider read as
+    "unverified" while the cascade was working fine -- a report that makes a
+    healthy system look broken and a broken key look like weather."""
+    def _first_bad(url):
+        if "NotAReal" in url:
+            raise OSError("HTTP Error 400: Bad Request")
+        return {"models": [{"name": "models/gemini-flash-latest"}]}
+
+    env = dict(_HEALTHY_ENV)
+    env["GEMINI_API_KEYS"] = "AIzaNotAReal,AIzaGoodOne,AIzaAlsoGood"
+    v = bp.check_gemini_keys(env=env, fetch=_first_bad)
+    check([k for _n, k, _d in v] == ["invalid", "valid", "valid"],
+          f"each key gets its own verdict ({[k for _n, k, _d in v]})")
+
+    text = bp.format_gemini_keys(v)
+    check("#1 of 3" in text, "the bad one is identified by position")
+    check("2 of 3" in text and "still accepted" in text,
+          "and the working ones are reported as working")
+    check("first leg" in text, "so he can see the cascade still has its first leg")
+
+
+def test_all_keys_good_says_so_in_one_line():
+    v = [(1, "valid", ""), (2, "valid", "")]
+    text = bp.format_gemini_keys(v)
+    check("all 2 Gemini key(s) accepted" in text, f"one clean line: {text.strip()}")
+    check("INVALID" not in text.upper(), "and no alarm when there is nothing wrong")
+
+
+def test_exhausted_keys_are_told_the_truth_about_more_keys():
+    """Measured 2026-08-22: four keys' retry-after counted down IN STEP (49/48/48/
+    47s, spread 2.3s), so they share one bucket. Adding more keys to the same
+    Google project multiplies nothing, and saying otherwise would send him to
+    generate keys that cannot help."""
+    text = bp.format_gemini_keys([(1, "quota", ""), (2, "quota", "")])
+    check("exhausted" in text, "exhaustion is named as exhaustion")
+    check("share one bucket" in text, "and the shared bucket is stated")
+    check("separate project" in text,
+          "along with the only thing that DOES multiply the quota")
+    check("INVALID" not in text.upper(),
+          "and an exhausted key is never called invalid")
+
+
+def test_no_key_at_all_is_reported_without_pretending_it_is_fatal():
+    text = bp.format_gemini_keys([])
+    check("no Gemini key configured" in text, "the absence is stated")
+    check("GEMINI_API_KEY" in text, "with the variable to set")
+
+
+def test_the_liveness_report_always_carries_the_new_bucket():
+    """A caller that reads rep["bad_key"] must not have to guess whether the key
+    exists. The skipped path returns the same shape as the real one."""
+    env = dict(_HEALTHY_ENV)
+    env["JARVIS_MODEL_PREFLIGHT"] = "0"
+    skipped = bp.check_model_liveness(env=env)
+    for key in ("dead", "alive", "unknown", "down", "bad_key"):
+        check(key in skipped, f"the skipped report still has '{key}'")
+    check(skipped["skipped"] is True, "and says it was skipped")
+
+
 TESTS = [test_all_present_ok, test_missing_required_not_ok,
          test_required_any_alternate_key_satisfies, test_whitespace_key_counts_as_missing,
          test_missing_critical_file_not_ok, test_recommended_missing_still_ok,
@@ -307,7 +411,14 @@ TESTS = [test_all_present_ok, test_missing_required_not_ok,
          test_reporting_never_raises_on_a_cp1252_console,
          test_a_local_daemon_that_is_not_answering_is_reported_as_DOWN,
          test_a_remote_catalogue_being_unreachable_is_still_only_unverified,
-         test_an_installed_but_empty_ollama_is_also_down,]
+         test_an_installed_but_empty_ollama_is_also_down,
+         test_a_rejected_credential_is_not_filed_as_unreachable,
+         test_the_classifier_separates_invalid_from_exhausted,
+         test_each_gemini_key_is_judged_separately,
+         test_all_keys_good_says_so_in_one_line,
+         test_exhausted_keys_are_told_the_truth_about_more_keys,
+         test_no_key_at_all_is_reported_without_pretending_it_is_fatal,
+         test_the_liveness_report_always_carries_the_new_bucket,]
 
 
 def main():
