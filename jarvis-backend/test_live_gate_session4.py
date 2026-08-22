@@ -376,13 +376,24 @@ def test_no_answer_budget_is_below_the_thinking_floor():
 
     src = (HERE / "brain.py").read_text(encoding="utf-8", errors="replace")
     tree = ast.parse(src)
-    floor = None
+    assigned = False
     for node in ast.walk(tree):
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
                 and getattr(node.targets[0], "id", None) == "_THINKING_HEADROOM"):
-            floor = node.value.value
+            assigned = True
+    check(assigned, "brain.py declares a thinking headroom")
+
+    # The VALUE is asserted on the shared constant rather than on brain.py's
+    # literal, because the literal is gone: it moved to reasoning_guard so that
+    # llm_router's Groq vision leg could use the same number. Pinning the syntax
+    # here would have forbidden that, which is a harness dictating a design.
+    # What must not regress is the FLOOR and the single definition.
+    from modules import reasoning_guard
+    floor = reasoning_guard.THINKING_HEADROOM
     check(isinstance(floor, int) and floor >= 512,
-          f"there is a declared thinking headroom, and it is real ({floor})")
+          f"and the shared headroom is real ({floor})")
+    check("_THINKING_HEADROOM = 1024" not in src,
+          "with no second literal in brain.py to drift out of step")
 
     bare = []
     for node in ast.walk(tree):

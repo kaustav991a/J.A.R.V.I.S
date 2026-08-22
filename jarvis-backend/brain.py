@@ -61,9 +61,11 @@ _GROQ_MODEL: str = groq_model()
 #
 # The prose LENGTH is controlled by the instructions in each prompt ("maximum 2
 # sentences", "cap at 6 sentences"), not by this ceiling — which is why adding
+from modules import reasoning_guard
+
 # headroom does not make him ramble. F-44 established exactly this for the
 # classifier: "the answer is ~40 tokens and the rest is thinking".
-_THINKING_HEADROOM = 1024
+_THINKING_HEADROOM = reasoning_guard.THINKING_HEADROOM  # one definition, see modules/reasoning_guard.py
 
 print(f"[BRAIN] Active model: {_GROQ_MODEL}", flush=True)
 

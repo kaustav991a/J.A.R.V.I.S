@@ -41,9 +41,26 @@ answer can discuss thinking ("I think the calendar is wrong, Sir"); no real
 answer BEGINS "Here's a thinking process:".
 """
 
+
+
 from __future__ import annotations
 
 import re
+
+#: Tokens to add to every budget so a reasoning model does not spend the whole
+#: allowance thinking and return nothing. Measured on openai/gpt-oss-120b: 288
+#: completion tokens for a JSON reply carrying a whole file, and 1,020 REASONING
+#: tokens on a similar call -- so ~1,000 can disappear before a word is spoken.
+#:
+#: Prose length is controlled by each prompt's own instructions ("maximum 2
+#: sentences"), not by this ceiling, which is why headroom does not make him
+#: ramble. F-44 established it for the classifier: "the answer is ~40 tokens and
+#: the rest is thinking".
+#:
+#: It lives HERE rather than in brain.py because llm_router needs it too, and a
+#: second copy is root cause #4 waiting to happen: the day one is raised and the
+#: other is not, the symptom is an empty answer from one provider only.
+THINKING_HEADROOM = 1024
 
 _THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
 # An unclosed tag means the budget ran out mid-thought: everything after it is

@@ -909,15 +909,35 @@ def _openai_tool_http(url, key, model, messages, tools, tool_choice,
 # ===========================================================================
 # Vision cascade (Phase 5): Gemini flash first, local llava as offline fallback
 # ===========================================================================
+#: How long Gemini gets as the FIRST leg of the vision cascade before the next
+#: cloud provider is tried. Not the caller's timeout: a fast leg behind it makes
+#: patience here expensive rather than safe.
+_GEMINI_FIRST_LEG_S = float(os.getenv("JARVIS_GEMINI_VISION_TIMEOUT_S", "20"))
+
+
 def universal_vision_call(prompt: str, img_b64: str,
                           temperature: float = 0.2, max_tokens: int = 1024,
                           timeout: float = 60.0) -> str:
     """Describe/reason over one JPEG (base64) with the free-vision cascade.
 
-    Gemini flash is a big quality upgrade over local llava on this CPU-only
-    box, so it goes first; llava stays as the offline/no-key fallback. Returns
-    the model text, or raises if EVERY vision provider failed (callers keep
-    their own honest-failure handling).
+    Three legs, in this order, and the middle one was missing until 2026-08-22:
+
+        Gemini flash   a real quality upgrade over llava on this CPU-only box
+        Groq vision    cloud, ~2 s, needs no local RAM at all
+        local llava    offline / no-key fallback, 4.4 GB and 30-90 s
+
+    Why the middle leg matters more than it looks. Gemini's free tier is a small
+    DAILY quota, so it is routinely exhausted -- measured on 2026-08-22 with all
+    four keys valid and all four returning 429. Without a cloud leg behind it,
+    every "what is on my screen?" for the rest of that day fell straight to
+    llava: 4.4 GB loaded on a 16 GB box, about 30 s warm and **91.9 s measured
+    under memory pressure**. Groq answered the same question in **2.3 s** with
+    five working keys, and had been sitting there unused because this function
+    never asked it. `screen_reader` already had a Groq leg; this one did not,
+    which is root cause #4 across two files again.
+
+    Returns the model text, or raises if EVERY vision provider failed (callers
+    keep their own honest-failure handling).
     """
     last_err: Exception | None = None
 
@@ -929,9 +949,15 @@ def universal_vision_call(prompt: str, img_b64: str,
                     generation_config={"temperature": temperature,
                                        "max_output_tokens": max_tokens},
                 )
+                # A SHORTER deadline than the caller asked for, deliberately.
+                # There is a cloud leg behind this one now that answers in about
+                # two seconds, so spending the full 60 s on the SDK's internal
+                # retries is 60 s of pure loss -- measured exactly that on
+                # 2026-08-22, then Groq answered in 2.4 s. If Gemini cannot
+                # answer in 20 s it is not the fast path any more.
                 resp = model_obj.generate_content(
                     [{"mime_type": "image/jpeg", "data": img_b64}, prompt],
-                    request_options={"timeout": timeout},
+                    request_options={"timeout": min(timeout, _GEMINI_FIRST_LEG_S)},
                 )
                 return (resp.text or "").strip()
             out = _run_with_gemini_rotation(_once)
@@ -941,6 +967,39 @@ def universal_vision_call(prompt: str, img_b64: str,
             last_err = e
             print(f"[ROUTER] Gemini vision failed ({type(e).__name__}: {e}) — "
                   f"falling back to local llava.", flush=True)
+
+    # Cloud leg two: Groq vision. Costs no local RAM, so it is strictly better
+    # than llava whenever a key is live -- and on this box "no local RAM" is the
+    # whole argument, because llava's 4.4 GB is what turns a 30 s answer into a
+    # 92 s one. Groq's vision model emits a <think> block, which is why the
+    # reasoning guard is applied here exactly as screen_reader applies it.
+    try:
+        from modules.groq_key_manager import (groq_vision_model,
+                                              run_with_key_rotation)
+        from modules import reasoning_guard
+
+        def _groq_vision(client):
+            resp = client.chat.completions.create(
+                model=groq_vision_model(),
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {
+                        "url": "data:image/jpeg;base64," + img_b64}},
+                ]}],
+                max_tokens=(max(max_tokens, 1024)
+                            + reasoning_guard.THINKING_HEADROOM),
+                temperature=temperature,
+            )
+            return reasoning_guard.strip_reasoning(
+                resp.choices[0].message.content or "").strip()
+
+        out = run_with_key_rotation(_groq_vision)
+        if out:
+            return out
+    except Exception as e:                              # noqa: BLE001
+        last_err = last_err or e
+        print(f"[ROUTER] Groq vision failed ({type(e).__name__}: {e}) - "
+              f"falling back to local llava.", flush=True)
 
     # Offline fallback: local llava via Ollama /api/generate.
     #

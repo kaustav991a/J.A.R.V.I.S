@@ -7,6 +7,8 @@ Feeds synthetic env dicts + a fake exists() through boot_preflight.preflight and
 asserts the required/recommended/file classification and the `ok` flag.
 """
 
+import pathlib
+
 from modules import boot_preflight as bp
 
 _passed = 0
@@ -397,6 +399,137 @@ def test_the_liveness_report_always_carries_the_new_bucket():
     check(skipped["skipped"] is True, "and says it was skipped")
 
 
+_SRC = (pathlib.Path(__file__).resolve().parent / "modules"
+        / "llm_router.py").read_text(encoding="utf-8")
+
+
+def test_both_key_variables_are_read_not_one_of_them():
+    """The router MERGES GEMINI_API_KEYS with the legacy single GEMINI_API_KEY.
+    The first version of this check used `or`, so it read the 4 pool keys, never
+    saw the 5th, and reported "all 4 accepted" while the router was hitting
+    API_KEY_INVALID on the one it had not been shown. Checking a subset and
+    reporting confidently is the exact defect this function exists to catch."""
+    seen = []
+
+    def _ok(url):
+        seen.append(url)
+        return {"models": [{"name": "models/gemini-flash-latest"}]}
+
+    env = dict(_HEALTHY_ENV)
+    env["GEMINI_API_KEYS"] = "poolA,poolB"
+    env["GEMINI_API_KEY"] = "legacyC"
+    v = bp.check_gemini_keys(env=env, fetch=_ok)
+    check(len(v) == 3, f"all three keys are checked, not two ({len(v)})")
+    check(any("legacyC" in u for u in seen),
+          "including the one in the legacy singular variable")
+    check(sum(1 for u in seen if "poolA" in u) == 1,
+          "and no key is checked twice")
+
+
+def test_a_key_in_both_variables_is_only_checked_once():
+    def _ok(_url):
+        return {"models": [{"name": "models/gemini-flash-latest"}]}
+    env = dict(_HEALTHY_ENV)
+    env["GEMINI_API_KEYS"] = "same"
+    env["GEMINI_API_KEY"] = "same"
+    check(len(bp.check_gemini_keys(env=env, fetch=_ok)) == 1,
+          "the duplicate is dropped, matching the router's own merge")
+
+
+def test_the_report_names_the_variable_the_bad_key_lives_in():
+    """It used to say "fix GEMINI_API_KEYS" when the bad key was the legacy
+    singular GEMINI_API_KEY -- sending him to edit the wrong line, which is worse
+    than saying nothing."""
+    def _legacy_bad(url):
+        if "legacyC" in url:
+            raise OSError("HTTP Error 400: Bad Request")
+        return {"models": [{"name": "models/gemini-flash-latest"}]}
+
+    env = dict(_HEALTHY_ENV)
+    env["GEMINI_API_KEYS"] = "poolA,poolB"
+    env["GEMINI_API_KEY"] = "legacyC"
+    v = bp.check_gemini_keys(env=env, fetch=_legacy_bad)
+    text = bp.format_gemini_keys(v)
+    check("(GEMINI_API_KEY)" in text,
+          f"the singular variable is named: {text.splitlines()[0][-60:]}")
+    check("GEMINI_API_KEYS)" not in text,
+          "and the plural one, which is fine, is NOT blamed")
+    check("#3 of 3" in text, "with the position of the bad key")
+
+
+def test_an_invalid_key_is_dropped_before_the_first_request_pays_for_it():
+    """Measured 2026-08-22: one invalid key in the rotation cost 60 SECONDS on the
+    first vision call -- the Gemini leg spent its whole timeout inside the SDK's
+    retries before the cascade moved on, and Groq then answered the same question
+    in 2.4 s. The preflight knows at boot, for free; throwing that away means
+    every process re-learns it the expensive way."""
+    from modules import llm_router
+    before = set(llm_router._gemini_dead_keys)
+    try:
+        llm_router._gemini_dead_keys.clear()
+        n = bp.preseed_dead_gemini_keys(
+            [(1, "valid", "GEMINI_API_KEYS"),
+             (2, "invalid", "GEMINI_API_KEYS | 400"),
+             (3, "quota", "GEMINI_API_KEYS | 429")])
+        check(n == 1, f"one key is preseeded as dead ({n})")
+        check(llm_router._gemini_dead_keys == {1},
+              f"by ZERO-BASED index, matching the router ({llm_router._gemini_dead_keys})")
+        check(2 not in llm_router._gemini_dead_keys,
+              "and an EXHAUSTED key is NOT dropped -- waiting does fix that one")
+    finally:
+        llm_router._gemini_dead_keys.clear()
+        llm_router._gemini_dead_keys.update(before)
+
+
+def test_preseeding_nothing_touches_nothing():
+    from modules import llm_router
+    before = set(llm_router._gemini_dead_keys)
+    check(bp.preseed_dead_gemini_keys([(1, "valid", "")]) == 0,
+          "all-good verdicts preseed nothing")
+    check(set(llm_router._gemini_dead_keys) == before,
+          "and the router's state is untouched")
+
+
+def test_gemini_gets_a_short_first_leg_because_something_faster_is_behind_it():
+    """A 60 s runway is only safe when nothing faster follows. Groq vision answers
+    in about 2 s, so patience in front of it is pure loss -- 63.4 s measured, then
+    3.5 s after this cap."""
+    from modules import llm_router
+    check(llm_router._GEMINI_FIRST_LEG_S <= 30,
+          f"the first leg is capped at {llm_router._GEMINI_FIRST_LEG_S}s")
+    src = _SRC
+    i = src.index("def universal_vision_call")
+    # To the END of the function, not a guessed character count: the llava leg is
+    # the last thing in it and a 4000-char window stopped short of the ollama
+    # call, so the ordering assertion below could not find its second landmark.
+    nxt = src.find(chr(10) + "def ", i + 10)
+    j = len(src) if nxt == -1 else nxt   # it is the last function in the file
+    body = src[i:j]
+    check("min(timeout, _GEMINI_FIRST_LEG_S)" in body,
+          "and the cap is applied to the request, not merely defined")
+    check(body.index("groq_vision_model") < body.index("VISION_MODEL"),
+          "Groq vision is tried BEFORE local llava, which needs 4.4 GB of RAM")
+    check("strip_reasoning" in body,
+          "and its <think> block is stripped, as screen_reader already does")
+
+
+def test_the_thinking_headroom_has_exactly_one_definition():
+    """It is applied in brain.py and in llm_router. Two copies is root cause #4
+    waiting: raise one and not the other, and the symptom is an empty answer from
+    one provider only."""
+    from modules import reasoning_guard
+    check(reasoning_guard.THINKING_HEADROOM >= 512,
+          f"the shared constant exists ({reasoning_guard.THINKING_HEADROOM})")
+    brain_src = (pathlib.Path(__file__).resolve().parent / "brain.py").read_text(
+        encoding="utf-8")
+    check("_THINKING_HEADROOM = reasoning_guard.THINKING_HEADROOM" in brain_src,
+          "brain.py defers to it rather than declaring its own number")
+    check("_THINKING_HEADROOM = 1024" not in brain_src,
+          "so there is no second literal to drift")
+    check("reasoning_guard.THINKING_HEADROOM" in _SRC,
+          "and llm_router uses the same one")
+
+
 TESTS = [test_all_present_ok, test_missing_required_not_ok,
          test_required_any_alternate_key_satisfies, test_whitespace_key_counts_as_missing,
          test_missing_critical_file_not_ok, test_recommended_missing_still_ok,
@@ -418,7 +551,14 @@ TESTS = [test_all_present_ok, test_missing_required_not_ok,
          test_all_keys_good_says_so_in_one_line,
          test_exhausted_keys_are_told_the_truth_about_more_keys,
          test_no_key_at_all_is_reported_without_pretending_it_is_fatal,
-         test_the_liveness_report_always_carries_the_new_bucket,]
+         test_the_liveness_report_always_carries_the_new_bucket,
+         test_both_key_variables_are_read_not_one_of_them,
+         test_a_key_in_both_variables_is_only_checked_once,
+         test_the_report_names_the_variable_the_bad_key_lives_in,
+         test_an_invalid_key_is_dropped_before_the_first_request_pays_for_it,
+         test_preseeding_nothing_touches_nothing,
+         test_gemini_gets_a_short_first_leg_because_something_faster_is_behind_it,
+         test_the_thinking_headroom_has_exactly_one_definition,]
 
 
 def main():

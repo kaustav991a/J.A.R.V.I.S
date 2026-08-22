@@ -218,7 +218,11 @@ def test_the_sealed_table_reaches_the_page():
     # `<strong>0.3</strong> model liveness`, so the words are all present while
     # the phrase never appears contiguously in the raw HTML. The first version of
     # this check compared raw and reported six false absences.
-    text = " ".join(_re.sub(r"<[^>]*>", " ", doc).split())
+    # Unescape too: an apostrophe in a title renders as &#x27;, so a raw text
+    # comparison reports "the vision cascade's middle leg" as absent when it is
+    # right there on the page.
+    import html as _html
+    text = " ".join(_html.unescape(_re.sub(r"<[^>]*>", " ", doc)).split())
     missing = [t for t in titles if " ".join(t.split()) not in text]
     check(not missing, f"and every one of them appears on the page ({missing})")
     check("Sealed —" in doc or "Sealed &" in doc,

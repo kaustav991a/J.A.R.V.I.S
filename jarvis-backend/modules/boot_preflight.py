@@ -280,11 +280,26 @@ def check_gemini_keys(env=None, fetch=None) -> list:
     system look broken and a broken key look like weather.
     """
     env = os.environ if env is None else env
-    raw = (env.get("GEMINI_API_KEYS") or env.get("GEMINI_API_KEY") or "")
-    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    # BOTH variables, merged, in the router's own order -- not one OR the other.
+    # The first version used `or`, so it read the 4 pool keys and never saw the
+    # legacy single key, then reported "all 4 accepted" while the router was
+    # merging both into FIVE and hitting API_KEY_INVALID on the one it had not
+    # been shown. Checking a subset and reporting confidently is the exact defect
+    # this function exists to fix, committed one level up.
+    keys, seen = [], set()
+    for var in ("GEMINI_API_KEYS", "GEMINI_API_KEY"):
+        for k in (env.get(var, "") or "").split(","):
+            k = k.strip()
+            if k and k not in seen:
+                seen.add(k)
+                # Carry the variable it came from. Without it the report told him
+                # to fix GEMINI_API_KEYS when the bad key was the legacy single
+                # GEMINI_API_KEY -- an instruction that sends him to edit the
+                # wrong line, which is worse than no instruction.
+                keys.append((k, var))
     base = _CATALOGUE_URLS["gemini"]
     out = []
-    for n, key in enumerate(keys, 1):
+    for n, (key, var) in enumerate(keys, 1):
         try:
             if fetch is not None:
                 fetch(base + "?key=" + key)
@@ -298,11 +313,32 @@ def check_gemini_keys(env=None, fetch=None) -> list:
                 with _u.urlopen(base + "?key=" + key + "&pageSize=1",
                                 timeout=8) as r:
                     r.read(1)
-            out.append((n, "valid", ""))
+            out.append((n, "valid", var))
         except Exception as e:                          # noqa: BLE001
             kind = classify_credential_error(e) or "unreachable"
-            out.append((n, kind, type(e).__name__ + ": " + str(e)[:120]))
+            out.append((n, kind,
+                        var + " | " + type(e).__name__ + ": " + str(e)[:100]))
     return out
+
+
+def preseed_dead_gemini_keys(verdicts: list) -> int:
+    """Tell the router which keys are already known bad. Returns how many.
+
+    Without this the knowledge is thrown away and re-learned the expensive way.
+    Measured 2026-08-22: one invalid key in the rotation cost **60 seconds** on
+    the first vision call -- the Gemini leg spent its entire timeout on the SDK's
+    internal retries before the cascade moved on, and Groq then answered the same
+    question in 2.4 s. The preflight already knows, at boot, for free.
+    """
+    bad = [n - 1 for n, kind, _d in verdicts if kind == "invalid"]
+    if not bad:
+        return 0
+    try:
+        from modules import llm_router
+        llm_router._gemini_dead_keys.update(bad)
+    except Exception:                                   # noqa: BLE001
+        return 0
+    return len(bad)
 
 
 def format_gemini_keys(verdicts: list) -> str:
@@ -318,11 +354,14 @@ def format_gemini_keys(verdicts: list) -> str:
         return "  ✅ all " + str(total) + " Gemini key(s) accepted."
     lines = []
     if bad:
+        where = sorted({d.split(" | ")[0] for n, k, d in verdicts
+                        if k == "invalid" and d})
         lines.append("  ❌ INVALID KEY: Gemini key(s) " +
                      ", ".join("#" + str(n) for n in bad) + " of " + str(total) +
                      " are REJECTED as invalid — this is not a quota problem and "
-                     "waiting will not fix it. Replace or delete them in .env "
-                     "(GEMINI_API_KEYS).")
+                     "waiting will not fix it. Replace or delete "
+                     + ("them" if len(bad) > 1 else "it") + " in .env"
+                     + (" (" + ", ".join(where) + ")" if where else "") + ".")
     if quota:
         lines.append("  ⚠️  quota: Gemini key(s) " +
                      ", ".join("#" + str(n) for n in quota) +
@@ -449,6 +488,11 @@ def log_model_liveness() -> dict:
     try:
         rep["gemini_keys"] = check_gemini_keys()
         _safe_print(format_gemini_keys(rep["gemini_keys"]))
+        n = preseed_dead_gemini_keys(rep["gemini_keys"])
+        if n:
+            _safe_print("     " + str(n) + " invalid key(s) dropped from the "
+                        "rotation before first use, so no request pays to "
+                        "rediscover them.")
     except Exception as e:                              # noqa: BLE001
         _safe_print("[PREFLIGHT] Gemini key check failed (" +
                     type(e).__name__ + ": " + str(e)[:100] + ") - continuing.")
