@@ -453,3 +453,114 @@ sentences.
 - Volume muted and unmuted again; nothing else on the machine was changed.
 - `gate-s4-boot*.log` in `jarvis-backend/` — seven consoles, the raw record.
 - Suite **95/95, 3042 checks, 0 failed**.
+
+---
+
+## A22 · The agentic core — 2026-08-22, later the same session
+
+He asked for these specifically. The headline is not a verdict on any single row:
+
+> **Most of A22's 24 rows cannot reach the agent loop at all.** `should_use_agent`
+> accepts exactly two hardwired sentence shapes, and the goals the rows are written
+> around match neither.
+
+Probed directly against the router:
+
+```
+False   read the file gate_prop.py on my desktop and tell me what it does
+False   what have I changed in the project              (23b.9)
+False   chart my last 5 days of steps                   (23b.15)
+False   did she message me today                        (23b.13)
+False   order me a pizza from Dominos                   (23b.3)
+True    find the newest python file in my workspace and read it
+True    write a note called x.md saying hello
+```
+
+`_is_read_intent` needs a recency word (`recent|latest|last|newest`) **and** a thing
+word **and** a read phrase; `_is_write_intent` needs `write|save|create|append`
+**and** a thing word **and** a content phrase (`saying|that says|with the text|…`).
+Everything else — TV, git, web, chart, partner, image, MCP — goes down the ordinary
+one-shot path, where there is no shelf, no `search_tools` and no playbooks. So
+`23b.4`–`23b.6`, `23b.9`–`23b.15` and `23b.18` as phrased are testing a loop they
+never enter. That is **F-59**, and it is the finding that matters most in this
+group, because it means most of the §6.8 arc has never been exercised by its own
+gate rows.
+
+### What the loop does when it IS reached — and it is good
+
+| Row | Verdict | Evidence |
+|---|---|---|
+| `23b.1` | **PASS-SUB** (after F-58) | `[AGENT] shelf: 5 resident of 56 catalogued, 1 free slot(s)`, `[AGENT] skills: 6 playbook(s)`, `[AGENT] limits: steps=8`. Then `find_file` → `workspace_read` → `workspace_read(offset=3000)` → a real answer naming `action_engine.py` and describing what it does. Three steps, 47s |
+| `23b.2` | **PASS-SUB** | a goal mixing a file read with "what's on my calendar" — a tool outside the wired `files` set — produced `searches: 1` and then a call to **`check_calendar` by name**. Never `unknown tool`, and no repeated identical search |
+| `23b.10` (away half) | **PASS — and gated for real** | the loop hit `workspace_write` with `presence: unknown`, and instead of failing it **parked** the action: `[AGENT_YIELD] Parked … as task 8cd8dfe4 (delivered: ['hud', 'tts', 'phone'])`, with the full payload read back verbatim. **Kaustav then approved it from his phone** — `[REMOTE:bridge] Command from KAUSTAV: approve task 8cd8dfe4` → `[TASK_QUEUE] ✅ approved — re-queued with authorisation` → `[WORKER] [DONE]` → the file on disk with the exact content. The whole away path, on real hardware, with the owner genuinely absent |
+| `23b.17` | **PASS-SUB** | `[AGENT] skills: 6 playbook(s) — ask-about-her, edit-a-file, find-a-file, handle-email, the-two-screens, work-with-git` |
+| `23b.24` | **PASS-SUB** | `run_evals.py --metrics`: 2511 runs, 92% completed, first-call-valid **0.999**, per-tool table with calls/err/deny/ms — my runs present in it |
+| `23b.25` | **PASS** | grepped `metrics/agent_runs.jsonl` for five phrases I had actually used in goals — **zero hits**. A record holds `goal_chars: 109`, `answer_chars: 418`, and argument **names** only (`args: ["limit","path"]`) |
+| `23b.3` | **FAIL** | see F-60 below |
+| `23b.4`–`23b.6` | **SKIP-H** | his TV, in an empty house |
+| `23b.7`, `23b.22` | **SKIP-H** | phone; second device |
+| `23b.8`, `23b.20`, `23b.16`, `23b.21`, `23b.23` | **not run** | one boot each; ran out of session |
+| `23b.9`, `23b.11`–`23b.15`, `23b.18`, `23b.19` | **blocked by F-59** | the phrasing never reaches the loop |
+| `23b.26` | **run on his explicit instruction** | see the section below |
+
+### F-58 🔴 · An oversized file cost the loop all eight of its steps
+
+Row `23b.1`, first attempt. `find_file` returned `brain.py` (192,187 bytes) and
+`workspace_read` answered:
+
+```
+File too large to read in full (192,187 bytes). Consider reading a specific line range.
+```
+
+The model did exactly as instructed — `limit=200`, then `limit=200 offset=0`,
+`limit=50`, `limit=20`, `offset=1000`, `limit=10` — **six calls, the identical
+sentence every time** — and then hit `cap: max_steps` having read nothing. Then the
+one-shot fallback ran `find_file("*.py")` and said *"No files matching '*.py' were
+located in your common directories, sir"* — seconds after the loop had listed ten of
+them.
+
+`agent_tools` had grown `offset`/`limit` for this exact reason; its own comment says
+the schema gained them because `read_file` "used to advise 'consider reading a
+specific line range' for a parameter that did not exist." The parameter existed
+after that change — and the byte-size check still returned **before** any window
+could apply. **Root cause #4: closed at one layer, left open at the layer
+underneath.** And `paginate_read` is a `shape_output` hook, so by the time it sees a
+refusal there is nothing left to window.
+
+Fixed: the cap now bounds the **window**, not the request. `read_file` takes a
+`line_offset`, fills a window up to the byte cap, and ends with a footer naming the
+next offset; `_workspace_read` parses an optional `path|offset`; the tool's
+`build_target` appends the offset only when there is one. A 3,134-line file now
+reads in three continuable passes, and a path that happens to contain a pipe is
+still read as a path. Verified live afterwards: `find_file` →
+`workspace_read` → `workspace_read(offset=3000)` → a real answer, in three steps.
+
+The one-shot path benefits too: it has no pager, so it used to get the refusal and
+nothing else. It now gets a readable first window.
+
+### F-59 🟠 · A22's rows mostly test a loop their phrasing cannot enter
+
+Described above. Two honest readings, and it is **his call which**:
+
+- the rows are aspirational — written for a wired set that was planned and never
+  widened; or
+- `should_use_agent` is narrower than the §6.8 arc it gates, and the shelf, the
+  playbooks and `search_tools` are unreachable for most of the catalogue.
+
+The narrowness is deliberate and documented ("routes a trivial command through a
+multi-step loop" is the cost it avoids). What is not defensible is a 24-row gate
+section written against goals the gate cannot deliver to the thing under test.
+
+### F-60 🟠 · "Order me a pizza" was answered as though he could
+
+Row `23b.3` asks for a capability JARVIS has none of, and wants an honest "no tool
+for this". What came back:
+
+> "I'll need the pizza type, size and any toppings you prefer, Sir, before I can
+> place the order."
+
+There is no ordering tool anywhere in the catalogue. That sentence claims a
+capability that does not exist and invites him to supply arguments for it — the
+F-09/F-41 class, a claim made without the thing being possible. It came down the
+one-shot path (F-59), so the row's own subject — the loop's single-search-then-stop
+behaviour — remains untested.

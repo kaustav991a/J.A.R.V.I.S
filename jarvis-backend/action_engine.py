@@ -1697,8 +1697,19 @@ class ActionEngine:
         """
         if not target or not target.strip():
             return "No file path specified for workspace read."
+        # `path|offset` — the optional second field is the 0-based line to start
+        # at, so the agent loop's `offset` argument can actually reach the reader.
+        # Session 4: it could not, and a large file cost a whole 8-step run for
+        # nothing. A missing or unparseable offset means "from the top", which is
+        # every existing caller.
+        _raw = target.strip()
+        _path, _sep, _off = _raw.rpartition("|")
+        if _sep and _off.strip().isdigit():
+            _target, _offset = _path.strip(), int(_off.strip())
+        else:
+            _target, _offset = _raw, 0
         try:
-            result = self.workspace_agent.read_file(target.strip())
+            result = self.workspace_agent.read_file(_target, line_offset=_offset)
             # Inject the file content into working memory (capped at 600 chars)
             # so the LLM can use the exact strings on the next patch command.
             memory.add_to_working_memory(

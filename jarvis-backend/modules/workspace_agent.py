@@ -132,10 +132,14 @@ class WorkspaceAgent:
 
     # ── Core public API ───────────────────────────────────────────────────────
 
-    def read_file(self, filepath: str) -> str:
+    def read_file(self, filepath: str, line_offset: int = 0) -> str:
         """
         Read the contents of a workspace file and return them as a string.
         Returns an error string (not an exception) on any failure.
+
+        `line_offset` starts the window at that 0-based line, so a file too big
+        to hand over whole can still be read all the way through, one window at a
+        time. Live-gate session 4 is why it exists — see the size note below.
         """
         safe = self._resolve_safe(filepath)
         if safe is None:
@@ -152,19 +156,62 @@ class WorkspaceAgent:
 
         try:
             size = safe.stat().st_size
-            if size > _MAX_READ_BYTES:
-                return (
-                    f"File too large to read in full ({size:,} bytes). "
-                    f"Consider reading a specific line range."
-                )
             content = safe.read_text(encoding="utf-8", errors="replace")
-            line_count = content.count("\n") + 1
-            return (
-                f"FILE: {safe}\n"
-                f"LINES: {line_count} | SIZE: {size:,} bytes\n"
-                f"{'─'*60}\n"
-                f"{content}"
-            )
+            lines = content.split("\n")
+            line_count = len(lines)
+
+            # ── An oversized file is WINDOWED, not refused ────────────────────
+            # Live-gate session 4. This used to return
+            #
+            #   "File too large to read in full (192,187 bytes). Consider
+            #    reading a specific line range."
+            #
+            # and the agent loop did exactly as told: it called back with
+            # limit=200, then limit=50, limit=20, offset=1000, limit=10 — SIX
+            # times, receiving the identical sentence each time — and then hit its
+            # 8-step cap having read nothing at all.
+            #
+            # The advice was unactionable, because this size check returned before
+            # any window could apply. `agent_tools` had already grown
+            # `offset`/`limit` for precisely this reason; its own comment says the
+            # schema gained them because read_file "used to advise 'consider
+            # reading a specific line range' for a parameter that did not exist."
+            # The parameter existed after that change, and this guard still
+            # short-circuited ahead of it. Root cause #4: closed at one layer,
+            # left open at the layer underneath.
+            #
+            # The cap now bounds the WINDOW rather than the request, and the footer
+            # names the next offset. The one-shot path, which has no pager of its
+            # own, gets a readable first window instead of a refusal; the agent
+            # loop can walk a large file to its end.
+            start = max(0, int(line_offset or 0))
+            head = (f"FILE: {safe}\n"
+                    f"LINES: {line_count} | SIZE: {size:,} bytes\n"
+                    f"{'─'*60}\n")
+            if line_count and start >= line_count:
+                return (f"{head}[offset={start} is past the end of this file — it "
+                        f"has {line_count} lines. Read it again with a smaller "
+                        f"offset, or offset=0 to start.]")
+
+            window, used = [], 0
+            for ln in lines[start:]:
+                nxt = used + len(ln.encode("utf-8", errors="replace")) + 1
+                if window and nxt > _MAX_READ_BYTES:
+                    break
+                window.append(ln)
+                used = nxt
+            shown_to = start + len(window)
+            body = "\n".join(window)
+
+            if start == 0 and shown_to >= line_count:
+                return head + body
+            if shown_to < line_count:
+                return (f"{head}{body}\n\n[Showing lines {start + 1}-{shown_to} of "
+                        f"{line_count}. {line_count - shown_to} more line(s) below "
+                        f"— read this file again with offset={shown_to} to "
+                        f"continue.]")
+            return (f"{head}{body}\n\n[Showing lines {start + 1}-{shown_to} of "
+                    f"{line_count} — end of file.]")
         except Exception as e:
             return f"Read error: {e}"
 

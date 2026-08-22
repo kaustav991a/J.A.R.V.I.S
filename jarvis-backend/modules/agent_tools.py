@@ -943,6 +943,15 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                                "description": f"How many lines to show "
                                               f"(default {af.DEFAULT_READ_LIMIT})."}},
                     ["path"]),
+               # The offset has to travel to the READER, not just to the pager:
+               # a file over the reader's byte cap used to come back as a refusal
+               # that no `offset` or `limit` could act on, and the loop burned all
+               # eight steps rediscovering that. `path|offset` is what
+               # `_workspace_read` parses; the pager still windows by LINES on top.
+               build_target=lambda a: (f"{a.get('path', '')}|{int(a['offset'])}"
+                                       if str(a.get("offset", "")).strip().isdigit()
+                                       and int(a["offset"]) > 0
+                                       else f"{a.get('path', '')}"),
                shape_output=af.paginate_read,
                on_success=af.note_read,
                precondition=lambda a: af.absolute_path_problem(a.get("path")))

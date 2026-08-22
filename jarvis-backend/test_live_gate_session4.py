@@ -32,6 +32,7 @@ leading segment naming a root means THAT root, and fixed only the relative form.
 import ast
 import os
 import pathlib
+import re
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -407,6 +408,116 @@ def test_no_answer_budget_is_below_the_thinking_floor():
             small.append(f"line {node.lineno}: = {node.value.value}")
     check(not small,
           f"no synthesis budget is a bare small number any more: {small}")
+
+
+# ── F-58: an oversized file cost the agent loop all eight of its steps ──────
+
+def test_a_large_file_comes_back_as_a_continuable_window():
+    """The reader must hand over a window, not an unactionable refusal.
+
+    Live: the loop called find_file, got brain.py (192,187 bytes), and read_file
+    answered "File too large to read in full. Consider reading a specific line
+    range." It then called back with limit=200, limit=50, limit=20, offset=1000,
+    limit=10 -- SIX identical answers -- and hit its 8-step cap having read
+    nothing. `agent_tools` had already grown offset/limit for this exact reason;
+    the size check returned before either could apply. Root cause #4, one layer
+    down.
+    """
+    import tempfile
+    from modules import workspace_agent as wa
+
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="gate_s4_read_"))
+    original = wa.WORKSPACE_ROOTS
+    wa.WORKSPACE_ROOTS = [tmp]
+    try:
+        big = tmp / "big.py"
+        line = "x = 1  # " + ("filler " * 12)
+        total = (wa._MAX_READ_BYTES // len(line)) * 3
+        big.write_text("\n".join(f"{line}{i}" for i in range(total)), encoding="utf-8")
+
+        agent = wa.WorkspaceAgent()
+        first = agent.read_file(str(big))
+        check("too large" not in first.lower(),
+              "an oversized file is no longer refused outright")
+        check("x = 1" in first, "the first window carries real file content")
+        check(len(first) <= wa._MAX_READ_BYTES + 2000,
+              f"and it still respects the byte cap ({len(first)})")
+
+        m = re.search(r"offset=(\d+) to continue", first)
+        check(m is not None, "the footer names the offset to continue from")
+        nxt = int(m.group(1)) if m else 0
+        second = agent.read_file(str(big), line_offset=nxt)
+        check("x = 1" in second, "the second window carries content too")
+        check(second.splitlines()[3] != first.splitlines()[3],
+              "and it is a DIFFERENT window, not the same one again")
+
+        # Walking to the end must terminate, and say so.
+        seen, off, hops = set(), 0, 0
+        while hops < 50:
+            out = agent.read_file(str(big), line_offset=off)
+            check(out not in seen, f"window at offset={off} is new (no retry loop)")
+            seen.add(out)
+            m2 = re.search(r"offset=(\d+) to continue", out)
+            if not m2:
+                check("end of file" in out.lower(),
+                      "the last window says it is the end of the file")
+                break
+            off = int(m2.group(1))
+            hops += 1
+        check(hops < 50, f"walking the file terminates ({hops + 1} windows)")
+
+        past = agent.read_file(str(big), line_offset=10_000_000)
+        check("past the end" in past.lower(),
+              "an offset past the end is announced, not silently empty")
+
+        small = tmp / "small.py"
+        small.write_text("def f():\n    return 1\n", encoding="utf-8")
+        out_small = agent.read_file(str(small))
+        check("[Showing lines" not in out_small,
+              "a small file is returned whole, with no pager footer")
+    finally:
+        wa.WORKSPACE_ROOTS = original
+
+
+def test_the_offset_reaches_the_reader_through_the_engine():
+    """`path|offset` is the wire. Every existing caller passes no offset."""
+    import tempfile
+    from modules import workspace_agent as wa
+
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="gate_s4_eng_"))
+    original = wa.WORKSPACE_ROOTS
+    wa.WORKSPACE_ROOTS = [tmp]
+    try:
+        f = tmp / "lines.py"
+        f.write_text("\n".join(f"line {i}" for i in range(200)), encoding="utf-8")
+
+        import action_engine
+        eng = action_engine.ActionEngine()
+        plain = eng._workspace_read(str(f))
+        check("line 0" in plain, "no offset still reads from the top")
+        moved = eng._workspace_read(f"{f}|100")
+        check("line 100" in moved and "line 0" not in moved,
+              "an offset in the target reaches the reader")
+
+        # A path that legitimately contains a pipe must not be read as an offset.
+        odd = eng._workspace_read(str(tmp / "we|ird.py"))
+        check("line 0" not in odd, "a pipe in a path is not parsed as an offset")
+
+        # And the tool layer only appends the field when it has one to append.
+        from modules import agent_tools
+        reg = agent_tools.build_registry() if hasattr(agent_tools, "build_registry") else None
+        if reg is not None:
+            entry = reg.get("workspace_read") if hasattr(reg, "get") else None
+            if entry is not None and getattr(entry, "build_target", None):
+                bt = entry.build_target
+                check(bt({"path": "C:/x/y.py"}) == "C:/x/y.py",
+                      "no offset argument -> a bare path, exactly as before")
+                check(bt({"path": "C:/x/y.py", "offset": 0}) == "C:/x/y.py",
+                      "offset=0 is still a bare path")
+                check(bt({"path": "C:/x/y.py", "offset": 40}) == "C:/x/y.py|40",
+                      "a real offset is appended")
+    finally:
+        wa.WORKSPACE_ROOTS = original
 
 
 TESTS = sorted(
