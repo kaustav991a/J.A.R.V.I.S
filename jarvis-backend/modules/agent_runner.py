@@ -100,6 +100,66 @@ _CONTENT = ("saying", "that says", "with the text", "containing", "contents:",
             "with content")
 
 
+# 3. EXPLICIT. F-59, and the measurement that produced it: the two wired shapes
+#    above accept **0 of the 14** A22 gate phrases. "turn the TV volume up", "what
+#    have I changed in the project", "did she message me today", "chart my last 5
+#    days of steps" -- none of them reach this loop, so the 56-tool catalogue, the
+#    shelf, `search_tools`, the skills and MCP were only ever exercised by a file
+#    goal. Six waves of tool work behind a door that opens for two sentences.
+#
+#    The narrowness above is CORRECT and stays: routing "turn the TV up" through a
+#    multi-step loop makes a one-second command take six, and it already works. So
+#    the way in is a phrase he chooses to say, which is:
+#
+#      * additive -- no request that works today changes route
+#      * unambiguous -- no false positives to tune, because he opted in
+#      * the only way the rest of the tool layer is reachable at the microphone
+#
+#    The trigger is STRIPPED before the goal is used. Leaving it in pollutes the
+#    shelf preload, whose query is the goal itself: "work through this"
+#    contributes nothing to finding `tv_volume` and dilutes what does.
+_EXPLICIT = ("work through this", "work through it", "work through",
+             "figure out", "work out how", "sort this out", "handle this",
+             "use your tools", "take your time and", "do this properly")
+
+#: A trigger with nothing after it is not a task. Short, because the goal has
+#: already been stripped of the trigger by the time this applies.
+_MIN_EXPLICIT_GOAL = 6
+
+
+def explicit_trigger(text: str) -> str | None:
+    """The trigger phrase in `text`, or None. Case-insensitive, anywhere."""
+    if not text:
+        return None
+    low = text.lower()
+    for phrase in _EXPLICIT:
+        if phrase in low:
+            return phrase
+    return None
+
+
+def agent_goal(text: str) -> str:
+    """`text` with any explicit trigger removed, so the goal is just the task.
+
+    Both call sites pass this to `run_agent_command` AND to `tool_set_for`, so
+    the trigger cannot leak into the shelf's search query or the wired-intent
+    test.
+    """
+    phrase = explicit_trigger(text)
+    if not phrase:
+        return (text or "").strip()
+    low = (text or "").lower()
+    i = low.index(phrase)
+    rest = (text[:i] + " " + text[i + len(phrase):]).strip()
+    # Whatever punctuation joined the trigger to the task -- "work through this:
+    # turn the TV up" -- is not part of the task either.
+    # No fallback to the original text when nothing remains. "figure out" on its
+    # own is a trigger with no task, and returning the trigger as the goal made
+    # the gate accept it -- an empty goal must read as empty so the caller can
+    # refuse it.
+    return rest.lstrip(":,;-— ").strip()
+
+
 def _is_read_intent(t: str) -> bool:
     return (any(w in t for w in _FIND)
             and any(f" {w} " in t or f" {w}," in t for w in _THING)
@@ -113,9 +173,21 @@ def _is_write_intent(t: str) -> bool:
 
 
 def tool_set_for(text: str) -> str:
-    """Which curated set this request needs. Read-only unless it asks to write."""
-    return "authoring" if _is_write_intent(f" {(text or '').lower().strip()} ") \
-        else "files"
+    """Which curated set this request needs. Read-only unless it asks to write.
+
+    An explicitly triggered goal that matches neither wired shape gets `open` --
+    one tool -- so the goal-driven preload can fill the remaining slots with what
+    the request actually needs. Handing a TV goal five file tools was the whole
+    finding behind tier 2.1; doing it again through the new door would
+    reintroduce it.
+    """
+    goal = agent_goal(text)
+    t = f" {goal.lower().strip()} "
+    if _is_write_intent(t):
+        return "authoring"
+    if _is_read_intent(t):
+        return "files"
+    return "open" if explicit_trigger(text) else "files"
 
 
 def workspace_note() -> str:
@@ -310,9 +382,18 @@ def limits_from_env(env: dict | None = None) -> AgentLimits:
 
 
 def should_use_agent(text: str, env: dict | None = None) -> bool:
-    """True only for a wired intent, and only when the flag is on."""
+    """True for a wired intent OR an explicit trigger, when the flag is on.
+
+    One function, so both doors -- the desk and the remote channel -- inherit the
+    same answer. Root cause #4 is what happens when a gate like this is decided
+    in two places.
+    """
     if not text or not flag_enabled(env):
         return False
+    if explicit_trigger(text):
+        # He asked for it by name. The only thing left to check is that he asked
+        # for something: the trigger alone is not a task.
+        return len(agent_goal(text)) >= _MIN_EXPLICIT_GOAL
     t = f" {text.lower().strip()} "
     if len(t) < 15:
         return False

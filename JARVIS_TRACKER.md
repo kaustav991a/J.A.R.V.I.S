@@ -18,7 +18,7 @@
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **101 harnesses, 3445 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
+| Automatic suite | **102 harnesses, 3497 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -114,8 +114,8 @@ harmless now that the preload reaches the web tools anyway, but recorded.
 | | Item | Status | Verified end to end? |
 |---|---|---|---|
 | 2.1 | ~~Fix descriptions/aliases/ranking~~ — **the diagnosis was wrong**; retrieval was already 40/40. The shelf is **preloaded from the goal** instead: expected tool in front of the model **4/40 → 39/40**, harnessed in `test_shelf_preload.py` (34 checks). **The `--live` re-measure is still owed** — it drives real actions on his desk, so it needs his go-ahead | ⚠️ **mechanism fixed + measured offline; live number pending** | harness 34 checks + offline **4/40 → 39/40**. ⚠️ **the LIVE number is NOT re-measured** — this is the one open loop |
-| 2.2 | Settle **F-59** — `should_use_agent` accepts two sentence shapes while A22 has 24 rows written against goals it will not accept. Widen the gate or rewrite the rows; until then A22 cannot validate any of this | ☐ **decision** | — |
-| 2.3 | Only if retrieval tops out and it is still wrong: the tiered brain (a stronger model for tool selection) | ☐ blocked by 2.1 | — |
+| 2.2 | Settle **F-59** — the agent gate | ✅ **done 2026-08-22.** Measured first, and it was worse than the finding said: the gate accepts **0 of the 14** A22 phrases, not some. The two wired shapes are a file-recency read and a file write, so **six waves of tool work — 56 tools, the shelf, `search_tools`, the skills, MCP — were reachable only by a request about a file.** Neither recorded option was right: the narrowness is CORRECT (the code says why — *"a false positive routes a trivial command through a multi-step loop"*) and the rows are testing the real product. **Kaustav chose an explicit trigger:** he says *"work through this: …"* or *"figure out …"* and the whole tool layer is reachable; anything else routes exactly as it does today. No false positives to tune, because opting in is not a guess | **SEALED** — harness `test_agent_trigger.py` **52 checks**, every A22 phrase quoted verbatim · the trigger is **stripped** from the goal (the shelf's preload searches the goal text) · a triggered non-file goal gets the new `open` base of ONE tool so the preload fills the rest — handing a TV goal five file tools was tier 2.1's finding and a new door would have reintroduced it · **all 8 checked gate phrases now surface their tool** · retrieval eval still **40/40** · both doors verified to share one gate |
+| 2.3 | Only if retrieval tops out and it is still wrong: the tiered brain (a stronger model for tool selection) | ☐ **still blocked by 2.1's live re-measure**, which now measures something different: before the trigger, the live eval could only exercise file goals | — |
 
 ### Tier 3 · Unattended reliability
 
@@ -144,6 +144,7 @@ discovered. An item that meets all four does not get revisited.
 | **reference compliance** (rules 1 + 11) | ✅ | harness `test_reference_compliance.py` **28 checks** · 11 descriptions rewritten and 7 confusable pairs made MUTUAL · every backticked tool name in every description now resolves to a real tool (**56 cross-references**), with the six non-tool identifiers declared and reasoned · rule 11's serial execution is a **written decision** at the loop, pinned so it cannot be silently "finished" · retrieval eval re-run **40/40**, so the rewrites cost nothing |
 | **0.2** the Gemini keys | ✅ | harness 104 checks · negative-tested live on all three branches · **5 keys: 4 valid, the legacy singular one invalid** · the bad key is named WITH ITS VARIABLE and preseeded into the router's dead set at boot · this row was wrong twice before it was right, both times by reading a subset |
 | **the vision cascade's middle leg** | ✅ | Groq vision inserted between Gemini and llava: **63.4 s → 3.5 s** measured end to end on a real image the model read correctly, with Gemini genuinely out of quota · llava (4.4 GB, up to 92 s) is now the third choice, not the second · `THINKING_HEADROOM` given one home so the two callers cannot drift |
+| **2.2** the agent trigger (F-59) | ✅ | harness 52 checks · the gate accepted **0 of 14** A22 phrases and now accepts all of them when he opts in, with nothing about today's routing changed · two retrieval gaps found by quoting the checklist verbatim: row 23b.9's exact words matched **nothing** (`changed`/`project` were not aliases) and `web_browse` had **no aliases at all** · the offline eval is 40/40 and missed both, because it uses its own phrasings |
 | the fixes F-45 … F-67 | ✅ | each harnessed; F-60/61/62/63/66/67 also re-run live after the fix |
 | the docs + dashboard | ✅ | harness 25 checks · regenerating the page must change nothing, so a stale page fails the suite |
 
@@ -270,30 +271,69 @@ Sequence (from the roadmap's after-the-gate list, which still stands):
 
 ---
 
-## 7 · Next three actions
+## 7 · Resume point — start here
+
+**Stamped 2026-08-22, evening.** Everything below is measured, not remembered.
 
 ```powershell
 cd F:\work\JARVIS-Project
-git log --oneline -3
+git log --oneline -3          # head should be the agent-trigger commit
 cd jarvis-backend
-venv\Scripts\python.exe run_harnesses.py    # expect 96/96, 3135 checks, 0 failed
+venv\Scripts\python.exe run_harnesses.py   # expect 102/102, 3497 checks, 0 failed
 ```
 
-Then, in order:
-1. **Tier 0.1 + 0.2** — the two secrets. His, two minutes, and they unblock a
-   recovery path that currently does not exist.
-2. **Tier 2.1** — tool descriptions, aliases and ranking, then re-measure
-   `run_evals.py --live`. This is the 56%, and it is what decides whether JARVIS
-   can be relied on at all. `AGENT-TOOLING-REFERENCE.md` is the doc to work from.
-3. **Tier 0.4** — ollama as a service, so vision is never silently dead again.
+If that number is lower, read the harness name before anything else: the system
+python fakes nine failures, and a harness reporting **0 checks is broken, not
+green**.
 
-For a hardware session: set the two secrets, launch with `JARVIS_AUTO_LOCK=0`, and
-**capture stdout to a file** — that one habit has opened findings in two
-consecutive sessions without a line of code being touched.
+### Where the ladder stands
+
+**8 of 13 done (62%)**, 1 partial, 4 to do. Everything a machine can finish alone
+is finished. The four that remain need Kaustav, the phone, or a week of clock.
+
+| Left | Needs |
+|---|---|
+| 0.5 re-enroll the face | him + the phone camera, 10 minutes |
+| 2.1 the `--live` re-measure | his go-ahead — it drives real actions on his desk |
+| 3.1 run the 192 gate rows | him at the desk, 4–6 sessions |
+| 3.3 the 7-day soak | a week of wall-clock, and it is the long pole |
+
+### The two one-liners that are his
+
+1. **`GEMINI_API_KEY`** — delete or replace it in `.env`. It is `400
+   API_KEY_INVALID`; the four keys in `GEMINI_API_KEYS` are fine. Nothing breaks
+   until he does it, and boot now names it explicitly.
+2. **Row 0.1** — say the override phrase into the microphone once. It is the only
+   done item not SEALED, and the gap is the door, not the code.
+
+### What to do first, in this order
+
+1. **3.3, the soak** — it is the only item whose cost is *elapsed time*, so
+   starting it is worth more than finishing anything else. Nothing else on the
+   ladder blocks it.
+2. **0.5 + 3.1 together** — one hardware session. Re-enroll the face first,
+   because every camera row after it depends on that.
+3. **2.1's `--live`** — it now measures something different from before: until
+   the explicit trigger landed, the live eval could only exercise file goals.
+
+### For a hardware session
+
+Set the two secrets, launch with `JARVIS_AUTO_LOCK=0`, and **capture stdout to a
+file**. That one habit has opened findings in three consecutive sessions without a
+line of code being touched.
 
 ```powershell
 venv\Scripts\python.exe watchdog.py *> gate-session-5.log
 ```
+
+### Two things that will not be obvious from the code
+
+* **The agent has a door now.** Say *"work through this: …"* or *"figure out …"*
+  and the request goes through the 56-tool agent loop. Say anything else and it
+  routes exactly as it always did. Every A22 row needs that prefix.
+* **Vision has three legs**, Gemini then Groq then local llava. If a vision answer
+  takes 90 seconds, the first two failed and llava is loading under memory
+  pressure — that is the designed behaviour, not a hang.
 
 ---
 

@@ -917,6 +917,15 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "link that turned out to be wrong.",
                _obj({"url": {"type": "string",
                              "description": "Full URL, including https://"}}),
+               # It had NO aliases while `open_link` had five, so "open the
+               # wikipedia page and search for red pandas" -- row 23b.11 -- ranked
+               # open_link first and never surfaced the tool that can actually
+               # READ the page and hand back the element ids `web_type` needs.
+               # The overlap with open_link on "page" and "url" is deliberate:
+               # both should surface, and their descriptions already say which is
+               # which ("so HE can look at it" against "read the page").
+               aliases=("browse", "page", "url", "article", "read", "fetch",
+                        "contents", "website"),
                # file:// would render a local file and hand its CONTENTS back as
                # page text — a read of any file on the disk, around
                # `workspace_read` and around the protected-file list.
@@ -1409,8 +1418,14 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                                    "description": "ABSOLUTE repo path. Omit for "
                                                   "the active workspace repo."}},
                     []),
-               aliases=("git", "repo", "repository", "uncommitted", "branch",
-                        "working", "tree"),
+               # "project" and "changed" are here because row 23b.9 asks
+               # "what have I changed in the project" and that phrase matched
+               # NOTHING -- "changed" was an alias of github_diff only, and
+               # "project" of nothing at all. The offline retrieval eval scores
+               # 40/40 while missing this, because it uses its own phrasings
+               # rather than the gate checklist's.
+               aliases=("git", "repo", "repository", "project", "uncommitted",
+                        "changed", "branch", "working", "tree"),
                build_target=lambda a: str(a.get("repo_path") or "").strip())
 
     r.register("github_diff",
@@ -1723,6 +1738,15 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
     # Answer a question that needs looking things up. Read-only by construction:
     # nothing in this set can change the machine, so it is the safe first intent
     # to hand to the loop (phase 4).
+    # F-59. The base for an EXPLICITLY triggered goal, which by definition can be
+    # about anything -- the TV, git, the browser, her messages. Deliberately one
+    # tool, not six: every slot spent on a guess is a slot the goal-driven preload
+    # (tier 2.1) cannot fill with something the request actually needs. The one
+    # kept is `memory_recall` because "check what he has already told you" is a
+    # sane first move for a task nobody has classified. An empty set is refused by
+    # the registry, and rightly -- a shelf with no floor is a different bug.
+    r.define_set("open", ["memory_recall"])
+
     r.define_set("research", ["tavily_search", "web_browse", "search_documents",
                               "memory_recall", "workspace_read", "system_status"])
     # "Where did I put that file" — local filesystem, still read-only.

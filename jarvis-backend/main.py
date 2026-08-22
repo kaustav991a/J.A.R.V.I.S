@@ -1977,7 +1977,10 @@ async def run_remote_command(command_text: str, channel) -> None:
     # authorisation surface exists. Admin only, and any failure falls through to
     # the paths below exactly as on the desk.
     if tier == ADMIN_TIER and agent_runner.should_use_agent(command_text):
-        print(f"[REMOTE:{kind}] Wired intent → agentic loop.", flush=True)
+        print(f"[REMOTE:{kind}] "
+                  + ("Explicit trigger" if agent_runner.explicit_trigger(command_text)
+                     else "Wired intent")
+                  + " → agentic loop.", flush=True)
         try:
             async def _agent_notify(payload):
                 # A typing ping, not a play-by-play: narrating eight steps into a
@@ -1985,8 +1988,12 @@ async def run_remote_command(command_text: str, channel) -> None:
                 # full trace stays in the server log.
                 await channel.notify("processing_llm", payload.get("message") or "")
 
+            # F-59: the GOAL, with any explicit trigger stripped. Leaving
+            # "work through this" in pollutes the shelf's preload query, whose
+            # search text is the goal itself.
+            _agoal = agent_runner.agent_goal(command_text)
             _ares = await agent_runner.run_agent_command(
-                command_text, engine, lock=COMMAND_LOCK, send=_agent_notify,
+                _agoal, engine, lock=COMMAND_LOCK, send=_agent_notify,
                 tool_set=agent_runner.tool_set_for(command_text),
                 presence="remote",
             )
@@ -2650,11 +2657,14 @@ async def backdoor_command(req: BackdoorRequest):
         # falls through to the one-shot pipeline, so the flag can never cost the
         # user a working command.
         if agent_runner.should_use_agent(command_text):
-            print("[BACKDOOR] Wired intent → agentic loop.", flush=True)
+            print("[BACKDOOR] "
+                  + ("Explicit trigger" if agent_runner.explicit_trigger(command_text)
+                     else "Wired intent")
+                  + " → agentic loop.", flush=True)
             try:
                 _res = await agent_runner.run_agent_command(
-                    command_text, engine, lock=COMMAND_LOCK,
-                    send=safe_send_all,
+                    agent_runner.agent_goal(command_text), engine,
+                    lock=COMMAND_LOCK, send=safe_send_all,
                     tool_set=agent_runner.tool_set_for(command_text),
                 )
                 if _res.ok and _res.answer:
