@@ -191,6 +191,40 @@ def test_the_open_loops_reach_the_page():
           f"and drops none ({len(listed)} listed, {len(rendered)} shown)")
 
 
+def test_the_sealed_table_reaches_the_page():
+    """Section 2b holds TWO things: a numbered list of open loops and a table of
+    work that is sealed. Only the first was ever rendered, so every sealed row --
+    real evidence, present in the tracker -- was invisible on the page. It was
+    found by adding a row and noticing the file did not change size, which is not
+    a way to find things. Pinned in both directions now."""
+    import re as _re
+
+    md = TRACKER.read_text(encoding="utf-8")
+    doc = PAGE.read_text(encoding="utf-8")
+    section = md.split("## 2b", 1)[-1].split(chr(10) + "## ", 1)[0]
+    rows = [ln for ln in section.splitlines()
+            if ln.strip().startswith("|") and ln.count("|") >= 4]
+    titles = []
+    for ln in rows:
+        first = ln.strip().strip("|").split("|")[0].strip()
+        plain = _re.sub(r"[*`]", "", first).strip()
+        if not plain or set(plain) <= set("- :"):
+            continue                        # the table's separator row
+        if plain.lower() in ("sealed", "evidence", "what"):
+            continue                        # its header
+        titles.append(plain)
+    check(len(titles) >= 5, f"section 2b records {len(titles)} sealed items")
+    # Compare against the page's TEXT, not its markup: a title renders as
+    # `<strong>0.3</strong> model liveness`, so the words are all present while
+    # the phrase never appears contiguously in the raw HTML. The first version of
+    # this check compared raw and reported six false absences.
+    text = " ".join(_re.sub(r"<[^>]*>", " ", doc).split())
+    missing = [t for t in titles if " ".join(t.split()) not in text]
+    check(not missing, f"and every one of them appears on the page ({missing})")
+    check("Sealed —" in doc or "Sealed &" in doc,
+          "the page gives them a heading of their own")
+
+
 def test_the_markup_is_balanced():
     class Balance(html.parser.HTMLParser):
         # The full HTML void set. `col` was missing, so a perfectly valid

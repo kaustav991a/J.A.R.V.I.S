@@ -893,7 +893,11 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
 
     r.register("tavily_search",
                "Search the live web and get a synthesised answer. Best first "
-               "choice for current facts, news, prices, scores.",
+               "choice for current facts, news, prices, scores. NOT for anything "
+               "personal — his own notes, documents and past decisions are not on "
+               "the public web, so use `search_documents` or `memory_recall` for "
+               "those. If the URL is already known, read it with `web_browse` "
+               "instead of searching for it.",
                _obj(_QUERY),
                aliases=("google", "internet", "online", "news", "lookup",
                         "current"),
@@ -905,7 +909,12 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                format_output=_tavily_guard)
     r.register("web_browse",
                "Open a specific URL and read the page. Use when a search result "
-               "must be verified or a named page has to be read in full.",
+               "must be verified or a named page has to be read in full. It needs "
+               "a URL you already have — to FIND a page, search first with "
+               "`tavily_search`. Only http(s): a local path is refused, so it is "
+               "not a way to read a file. Returns the top of the page; use "
+               "`web_scroll` for what is further down and `web_back` to undo a "
+               "link that turned out to be wrong.",
                _obj({"url": {"type": "string",
                              "description": "Full URL, including https://"}}),
                # file:// would render a local file and hand its CONTENTS back as
@@ -913,12 +922,19 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                # `workspace_read` and around the protected-file list.
                precondition=_url_precondition)
     r.register("search_documents",
-               "Search Kaustav's own indexed documents and notes. Use for "
-               "anything personal that would not be on the public web.",
+               "Search Kaustav's own indexed documents and notes by their "
+               "CONTENTS. Use for anything personal that would not be on the "
+               "public web — for the public web use `tavily_search` instead. It "
+               "searches inside files, so to find a file by its NAME use "
+               "`find_file`, and to read one whose path is known use "
+               "`workspace_read`.",
                _obj(_QUERY))
     r.register("memory_recall",
                "Recall facts JARVIS has been told before (preferences, people, "
-               "past decisions). Check here before claiming something is unknown.",
+               "past decisions). Check here before claiming something is "
+               "unknown. It only reads and never stores — to record something "
+               "new use `remember_fact`. These are things he has SAID; for what "
+               "is in his files use `search_documents`.",
                _obj(_QUERY),
                aliases=("remember", "told", "tell", "said", "know", "about",
                         "forgot", "mentioned"))
@@ -929,7 +945,9 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "Read a file. Returns NUMBERED lines, so you can cite exact "
                "locations as path:line. Long files come back one window at a "
                "time — the footer tells you the offset to pass to continue. "
-               "The path must be ABSOLUTE.",
+               "The path must be ABSOLUTE: this tool has no notion of a current "
+               "directory. If the path is unknown, find it with `find_file` "
+               "first, or search inside files with `search_documents`.",
                _obj({"path": {"type": "string",
                               "description": "ABSOLUTE file path. Relative paths "
                                              "are refused — different tools "
@@ -963,17 +981,28 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                _obj({"path": {"type": "string", "description": "Directory path."}}),
                format_output=format_directory_listing)
     r.register("find_file",
-               "Locate a file by name when its directory is unknown.",
+               "Locate a file by NAME when its directory is unknown. It matches "
+               "the name only and never the contents — for what is INSIDE a file "
+               "use `search_documents`, and to list a folder whose path is "
+               "already known use `list_directory`. Returns paths; read one with "
+               "`workspace_read`. An empty result means nothing matched that "
+               "name: say so rather than guessing at a path.",
                _obj({"name": {"type": "string",
                               "description": "File name or fragment."}}))
     r.register("system_status",
-               "Current machine telemetry: CPU, memory, disk, battery.",
+               "Current telemetry for the MACHINE: CPU, memory, disk, battery. "
+               "This is the computer; for Kaustav's own heart rate, steps and "
+               "sleep use `check_vitals`. Read-only — it cannot free memory, "
+               "close anything or change a setting.",
                _obj({}, []),
                aliases=("machine", "computer", "cpu", "memory", "disk", "ram",
                         "battery", "performance", "load"))
     r.register("read_screen",
                "Describe what is currently on Kaustav's screen. Use only when the "
-               "answer depends on what he is looking at.",
+               "answer depends on what he is looking at. It describes what is "
+               "VISIBLE — anything minimised or behind another window is not "
+               "there to be read. Not for a file whose path is known: use "
+               "`workspace_read`, which is exact where this is a description.",
                _obj({}, []))
     r.register("workspace_write",
                "Create a file, or replace one ENTIRELY. Requires the owner's "
@@ -1286,7 +1315,8 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "Explorer is protected and will not be killed. If the thing "
                "playing is the HUD's own player rather than an application, "
                "say so — this stops that instead, and nothing at the "
-               "operating-system level is closed.",
+               "operating-system level is closed. This closes a PROGRAM; to "
+               "close a panel on the desk display use `hud_close_widget`.",
                _obj({"app": {"type": "string",
                              "description": "App name, e.g. \"chrome\"."}}))
 
@@ -1302,7 +1332,11 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                aliases=("panel", "widget", "show", "display", "screen"))
 
     r.register("hud_close_widget",
-               "Close a panel on the desk display.",
+               "Close a panel on the desk display. Rule 1: this is the HUD's own "
+               "overlay — NOT an application window and not whatever is playing. "
+               "To close a program use `close_app`; to stop playback use "
+               "`os_control`. Closing a panel that is already closed is harmless, "
+               "so it needs no check first.",
                _obj({"widget": {"type": "string", "enum": list(HUD_WIDGETS),
                                 "description": "Which panel to close."}}),
                aliases=("panel", "widget", "hide", "dismiss", "display"))
@@ -1312,7 +1346,8 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "system audio and whatever is currently playing on it. This is "
                "the DESK machine's audio, not the television's — for that use "
                "`tv_volume`. `lock_screen` locks him out until he signs back "
-               "in, so use it only when he asks.",
+               "in, so use it only when he asks. To wind the room down for the "
+               "night without locking anything, use `sleep_protocol`.",
                _obj({"command": {"type": "string",
                                  "enum": ["lock_screen", "mute", "unmute",
                                           "volume_up", "volume_down",
@@ -1393,7 +1428,9 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
     r.register("github_log",
                "Recent commits, newest first, one line each. Use it to answer "
                "\"what did I do last\", or to find the commit a change landed "
-               "in.",
+               "in. Read-only, and it shows HISTORY only — for what is "
+               "uncommitted right now use `github_status`, and for the actual "
+               "lines of a change use `github_diff`.",
                _obj({"count": {"type": "integer", "minimum": 1, "maximum": 50,
                                "description": "How many commits (default 5)."},
                      "repo_path": {"type": "string",
@@ -1453,7 +1490,10 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "Use ONLY an id from the element list in the most recent tool "
                "output — the page renumbers its elements every time it changes, "
                "so an id from an earlier step points at something else now. "
-               "Returns the page as it looks after the click, with a fresh list.",
+               "Returns the page as it looks after the click, with a fresh list. "
+               "It cannot click anything that is not in that list and it does not "
+               "scroll — if the element is further down the page, use "
+               "`web_scroll` first to bring it into the list.",
                _obj({"element_id": {"type": "string",
                                     "description": "Id from the CURRENT element "
                                                    "list, e.g. \"12\"."}}),
@@ -1478,21 +1518,29 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
     r.register("web_scroll",
                "Scroll the browser page by about one screen and return what is "
                "now visible. Use it when the answer is further down the page "
-               "than what came back.",
+               "than what came back. It does not load a new page and cannot reach "
+               "content the page has not rendered yet. Element ids from an "
+               "earlier step are stale afterwards, so `web_click` needs an id "
+               "from the list this returns.",
                _obj({"direction": {"type": "string", "enum": ["down", "up"],
                                    "description": "Which way to scroll."}}),
                aliases=("browser", "page", "further", "more"))
 
     r.register("web_back",
                "Go back one page in the browser, and return what is there. Use "
-               "it after following a link that turned out to be wrong.",
+               "it after following a link that turned out to be wrong. It moves "
+               "within the browser's history and cannot undo anything a click "
+               "actually submitted, and there is no forward. To open a different "
+               "page outright use `web_browse`.",
                _obj({}, []),
                aliases=("browser", "page", "previous", "return"))
 
     r.register("web_close",
                "Close the browser and free its memory. Do this when the "
                "browsing is finished — it is not needed between pages, and "
-               "closing mid-task means starting the next page from nothing.",
+               "closing mid-task means starting the next page from nothing. It "
+               "is not a way to leave a page: to retreat from one, use "
+               "`web_back`.",
                _obj({}, []),
                aliases=("browser", "quit", "finish", "done"))
 
@@ -1620,7 +1668,10 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
 
     r.register("sleep_protocol",
                "Wind the room down for the night: clears the desk displays and "
-               "pauses whatever is playing on the machine.",
+               "pauses whatever is playing on the machine. It does NOT shut down "
+               "or lock the machine — `os_control` does that — and does not touch "
+               "the television, which is `tv_power`. For an explicit instruction "
+               "to wind down, not as a reply to the word goodnight.",
                _obj({}, []),
                aliases=("bed", "night", "goodnight", "wind", "down"))
 
@@ -1642,7 +1693,9 @@ def build_default_registry(get_tier: Callable[[str], str] | None = None) -> Tool
                "Tidy his Downloads folder by MOVING every file into a "
                "subfolder for its type. Requires the owner's confirmation. "
                "Files move, so anything he was about to open is no longer "
-               "where he left it — only run it when he asks for the tidy-up.",
+               "where he left it — only run it when he asks for the tidy-up. It "
+               "touches Downloads and nothing else, and it cannot be undone from "
+               "here: the files are moved, not copied, and there is no reverse.",
                _obj({}, []),
                aliases=("tidy", "sort", "clean", "downloads", "folder"))
 

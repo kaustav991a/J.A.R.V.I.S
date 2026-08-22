@@ -158,6 +158,18 @@ def main() -> int:
     if cur:
         open_loops.append(cur)
 
+    # ── the sealed table itself, from the same section ─────────────────────
+    # The open-loop list above was the only thing read out of section 2b, so
+    # everything RECORDED AS SEALED there was invisible on the page: work with
+    # real evidence behind it, present in the tracker, absent from the view of
+    # the tracker. Found by adding a sealed row and noticing the page did not
+    # change size.
+    sealed_rows = [c for c in _rows(sealed_md)
+                   if len(c) >= 3 and "sealed" not in c[0].lower()]
+    if not sealed_rows:
+        raise SystemExit("build_tracker_html: section 2b has no sealed table "
+                         "rows — the parser or the heading changed")
+
     # ── findings + ship gates ──────────────────────────────────────────────
     findings = [c for c in _rows(_section(md, "Open findings"))
                 if len(c) >= 3 and not c[0].lower().startswith("id")]
@@ -187,7 +199,7 @@ def main() -> int:
     asof = stamp.group(1).strip() if stamp else "see tracker"
 
     doc = _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
-                  gate_stat, open_loops)
+                  gate_stat, open_loops, sealed_rows)
     OUT.write_text(doc, encoding="utf-8")
     print(f"[build_tracker_html] wrote {OUT.relative_to(ROOT)}  "
           f"({len(doc):,} bytes)")
@@ -204,7 +216,7 @@ def _bar(counts: dict, total: int) -> str:
 
 
 def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
-            gate_stat=None, open_loops=None) -> str:
+            gate_stat=None, open_loops=None, sealed_rows=()) -> str:
     total = sum(counts.values()) or 1
 
     # The gate is the number that decides whether JARVIS is finished, so it sits
@@ -279,6 +291,11 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
         f"<div class='loop'><strong>{_strip_md(l['title'])}</strong>"
         f"<div>{_strip_md(l['body'])}</div></div>" for l in (open_loops or []))
         or "<div class='loop'>Nothing open — every completed item is sealed.</div>")
+
+    sealed_html = "".join(
+        f"<tr><td class='id'>{_strip_md(r[0])}</td>"
+        f"<td class='who'>{_strip_md(r[1])}</td>"
+        f"<td class='st'>{_strip_md(r[2])}</td></tr>" for r in sealed_rows)
 
     ship_html = "".join(
         f"<li class='{s['kind']}'><span class='mark'>{s['mark']}</span>"
@@ -410,6 +427,12 @@ it is derived, and a second place to update is how the last set of docs drifted.
 
 <h2>The ladder</h2>
 {"".join(tiers_html)}
+
+<h2>Sealed — code, harness, proven live, boundaries stated</h2>
+<div class="wrap"><table>
+<colgroup><col style="width:22%"><col style="width:8%"><col style="width:70%"></colgroup>
+<thead><tr><th>What</th><th>Sealed</th><th>Evidence</th></tr></thead>
+<tbody>{sealed_html}</tbody></table></div>
 
 <h2>Not closed — the open loops</h2>
 <div class="panel">{loops_html}</div>

@@ -462,6 +462,36 @@ async def run_agent_loop(
 
         messages.append(assistant_message(turn))
 
+        # RULE 11 IS HALF-IMPLEMENTED ON PURPOSE. WRITTEN DECISION, 2026-08-22.
+        #
+        # The reference rule has two halves. The second half is met here: every
+        # call in the batch gets a `tool_result_message`, errors included, so the
+        # call/result pairing is never broken and the model is never taught that
+        # some calls vanish.
+        #
+        # The first half -- execute the batch CONCURRENTLY -- is deliberately not
+        # implemented, and this note exists so nobody "finishes the job" without
+        # reading the reasons:
+        #
+        #   1. These tools are not reads. They close applications, change the
+        #      television, send messages, write files and drive the mouse. Two of
+        #      them running at once is not a faster version of running them in
+        #      order -- it is a different, untested outcome, and the ordering the
+        #      model intended is information we would be throwing away. "Mute the
+        #      TV and then tell me what is playing" has one correct order.
+        #
+        #   2. The confirmation layer is a singleton. `agent_confirm` asks the HUD
+        #      and waits; `agent_yield` parks ONE action and pings the owner. Two
+        #      CONFIRM-tier calls arriving together have nowhere to queue, so
+        #      concurrency here would need that layer rebuilt first.
+        #
+        #   3. The box is CPU-only with 16 GB (see `ram_budget`). The expensive
+        #      tools are expensive because of the machine, not the network, so
+        #      running two at once mostly makes both slower.
+        #
+        # If this is ever revisited, the safe subset is narrow and worth naming:
+        # AUTO-tier, read-only, network-bound tools with no shared state -- in
+        # practice the search and fetch family. Everything else stays serial.
         for call in turn.tool_calls:
             # --- schema / name validation, with ONE repair (rule 2) ---------
             problem = None

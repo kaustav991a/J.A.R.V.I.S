@@ -18,7 +18,7 @@
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **100 harnesses, 3355 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
+| Automatic suite | **101 harnesses, 3386 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -141,6 +141,7 @@ discovered. An item that meets all four does not get revisited.
 | **1.2** single-source pins | ✅ | harness 27 checks · it found **F-66 and F-67 on its first run**, both fixed |
 | **0.4** ollama autostart | ✅ | harness 47 checks · both script paths run live (recovery 13s/6s, then `already listening`) · logon task **Ready** · preflight verified live with the daemon stopped: **NOT RUNNING**, not "unverified" |
 | **3.2** the RAM budget | ✅ | harness 49 checks, every value injected · the design was **overturned by measurement** — 91.9 s at 2.56 GB free proved refusal wrong · free RAM 2.74 → 6.87 GB on unload · one function for both vision legs · the text-leg exclusion is a written, pinned decision |
+| **reference compliance** (rules 1 + 11) | ✅ | harness `test_reference_compliance.py` **28 checks** · 11 descriptions rewritten and 7 confusable pairs made MUTUAL · every backticked tool name in every description now resolves to a real tool (**56 cross-references**), with the six non-tool identifiers declared and reasoned · rule 11's serial execution is a **written decision** at the loop, pinned so it cannot be silently "finished" · retrieval eval re-run **40/40**, so the rewrites cost nothing |
 | the fixes F-45 … F-67 | ✅ | each harnessed; F-60/61/62/63/66/67 also re-run live after the fix |
 | the docs + dashboard | ✅ | harness 25 checks · regenerating the page must change nothing, so a stale page fails the suite |
 
