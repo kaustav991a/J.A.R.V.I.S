@@ -215,9 +215,9 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
 
     if gate_stat:
         gate_block = (
-            f'<div class="big alt">{gate_stat["pct"]}%<br>'
-            f'<small>of the {gate_stat["total"]} gate rows ticked '
-            f'({gate_stat["done"]})</small></div>')
+            f'<div class="stat alt"><b>{gate_stat["pct"]}%</b>'
+            f'<span>gate — {gate_stat["done"]} of {gate_stat["total"]} rows '
+            f'ticked</span></div>')
     else:
         gate_block = ""
 
@@ -305,9 +305,19 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
    color:var(--dim); margin:30px 0 10px; font-weight:600 }}
  .panel {{ background:var(--panel); border:1px solid var(--line);
    border-radius:10px; padding:16px 18px }}
- .hero {{ display:flex; gap:26px; align-items:center; flex-wrap:wrap }}
- .big {{ font-size:44px; font-weight:700; line-height:1 }}
- .big small {{ font-size:15px; color:var(--dim); font-weight:500 }}
+ /* Three stats in ONE shape. They used to be a percentage, a percentage with a
+    bare count in brackets, and a raw ratio with a caption — three formats for
+    three numbers of equal standing, which is why the block read as clutter. */
+ .hero {{ display:flex; gap:14px; align-items:stretch; flex-wrap:wrap }}
+ .stat {{ flex:1 1 190px; background:#1b2230; border:1px solid var(--line);
+   border-radius:9px; padding:13px 15px }}
+ .stat b {{ display:block; font-size:34px; font-weight:700; line-height:1.05 }}
+ .stat span {{ display:block; color:var(--dim); font-size:12.5px; margin-top:5px }}
+ .stat em {{ display:block; font-style:normal; color:var(--todo);
+   font-size:11.5px; margin-top:2px }}
+ .stat.alt b {{ color:var(--part) }}
+ .stat.ok2 b {{ color:var(--done) }}
+ .barwrap {{ flex:1 1 100%; margin-top:2px }}
  .big.alt {{ color:var(--part) }}
  .big.ok2 {{ color:var(--done); font-size:40px }}
  .big.ok2 small {{ display:block; font-size:13px }}
@@ -380,18 +390,17 @@ of truth. State as of <strong>{html.escape(asof)}</strong>. Regenerate with
 it is derived, and a second place to update is how the last set of docs drifted.</div>
 
 <div class="panel hero">
-  <div class="big">{pct_done}%<br><small>of ladder items done</small></div>
+  <div class="stat"><b>{pct_done}%</b><span>ladder — {counts[DONE]} of {total}
+    items done</span></div>
   {gate_block}
-  <div class="big ok2">{sealed_done}<small>of {all_done} done items SEALED<br>
-    <span class="fine">code + harness + proven live, boundaries stated</span></small></div>
-  <div style="flex:1">
+  <div class="stat ok2"><b>{sealed_done}/{all_done}</b><span>done items sealed
+    <em>code + harness + proven live</em></span></div>
+  <div class="barwrap">
     {_bar(counts, total)}
     <div class="legend">
       <span class="dot" style="background:var(--done)"></span>{counts[DONE]} done
       <span class="dot" style="background:var(--part)"></span>{counts[PARTIAL]} partial
       <span class="dot" style="background:var(--todo)"></span>{counts[TODO]} to do
-      &nbsp;·&nbsp; ladder progress only — the gate is counted separately below,
-      because 8% of its rows are ticked and that is the number that matters most.
     </div>
   </div>
 </div>

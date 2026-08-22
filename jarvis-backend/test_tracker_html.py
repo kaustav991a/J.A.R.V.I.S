@@ -162,8 +162,13 @@ def test_a_done_item_must_say_how_it_was_verified():
           "the ladder tables carry the Verified column")
 
     doc = PAGE.read_text(encoding="utf-8")
-    check("done items SEALED" in doc,
+    # Case-insensitive on purpose: this check broke once when the hero copy was
+    # reworded from "SEALED" to "sealed". A pin on presentation wording rather
+    # than on the FACT is a pin that cries wolf.
+    check("done items sealed" in doc.lower(),
           "the page shows how many done items are sealed")
+    check(re.search(r"<b>\d+/\d+</b>", doc) is not None,
+          "and shows it as a ratio of the done items")
     check("class='ver sealed'" in doc, "and marks the sealed ones")
 
 
