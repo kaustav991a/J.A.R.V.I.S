@@ -228,6 +228,71 @@ def test_reporting_never_raises_on_a_cp1252_console():
     check(ok, "a report full of ticks prints on a cp1252 console without raising")
 
 
+def test_a_local_daemon_that_is_not_answering_is_reported_as_DOWN():
+    """Tier 0.4. "Unverified" is the right word for a cloud provider behind a
+    flaky network. It is the wrong word for a socket on this machine.
+
+    Session 4 ran for hours with ollama not running: every local-vision feature
+    was dead, row 12.1 could not be attempted, and nothing anywhere said so. The
+    preflight now separates a local daemon that is DOWN -- a fact -- from a remote
+    catalogue that is merely UNREACHABLE.
+    """
+    def _local_down(url):
+        if "localhost" in url or "127.0.0.1" in url:
+            raise OSError("connection refused")
+        return _FAKE_CATALOGUE[url]
+
+    rep = bp.check_model_liveness(fetch=_local_down, env=dict(_HEALTHY_ENV))
+    down_providers = {p for p, _m, _w, _r in rep.get("down", [])}
+    check(down_providers == {"ollama"},
+          f"the local daemon is listed as down ({down_providers})")
+    check(not rep["dead"],
+          "and NOT as a dead model id -- the id is fine, the server is off")
+    check(not any(p == "ollama" for p, _m, _w, _r in rep["unknown"]),
+          "it is not filed under 'unverified' any more")
+
+    text = bp.format_liveness(rep)
+    check("NOT RUNNING" in text, "the report says NOT RUNNING")
+    check("fact, not a maybe" in text,
+          "and says plainly that this is not a maybe")
+    check("ensure_ollama.ps1" in text,
+          "and names the command that fixes it, rather than leaving him to guess")
+    check("local vision" in text,
+          "and names what stops working")
+
+
+def test_a_remote_catalogue_being_unreachable_is_still_only_unverified():
+    """The distinction has to cut both ways or it is just a louder alarm."""
+    def _remote_down(url):
+        if "localhost" in url or "127.0.0.1" in url:
+            return _FAKE_CATALOGUE[url]
+        raise OSError("no network")
+
+    rep = bp.check_model_liveness(fetch=_remote_down, env=dict(_HEALTHY_ENV))
+    check(not rep.get("down"),
+          f"nothing local is reported down ({rep.get('down')})")
+    check(bool(rep["unknown"]), "the remote ids are unverified")
+    check(not rep["dead"], "and none of them is called dead")
+    check("unverified" in bp.format_liveness(rep),
+          "the wording stays cautious for a network we cannot see")
+
+
+def test_an_installed_but_empty_ollama_is_also_down():
+    """A running daemon with no models pulled cannot serve vision either, and the
+    honest word for that is still 'cannot work'."""
+    def _empty_local(url):
+        if "localhost" in url or "127.0.0.1" in url:
+            return []
+        return _FAKE_CATALOGUE[url]
+
+    rep = bp.check_model_liveness(fetch=_empty_local, env=dict(_HEALTHY_ENV))
+    check(any(p == "ollama" for p, _m, _w, _r in rep.get("down", [])),
+          "an empty local catalogue counts as down")
+    reasons = {r for _p, _m, _w, r in rep.get("down", [])}
+    check("no models installed" in reasons,
+          f"and the reason distinguishes it from a refused connection ({reasons})")
+
+
 TESTS = [test_all_present_ok, test_missing_required_not_ok,
          test_required_any_alternate_key_satisfies, test_whitespace_key_counts_as_missing,
          test_missing_critical_file_not_ok, test_recommended_missing_still_ok,
@@ -239,7 +304,10 @@ TESTS = [test_all_present_ok, test_missing_required_not_ok,
          test_an_unreachable_provider_is_unknown_and_never_dead,
          test_the_check_can_be_switched_off,
          test_the_openrouter_defaults_are_checked_not_just_the_env_var,
-         test_reporting_never_raises_on_a_cp1252_console,]
+         test_reporting_never_raises_on_a_cp1252_console,
+         test_a_local_daemon_that_is_not_answering_is_reported_as_DOWN,
+         test_a_remote_catalogue_being_unreachable_is_still_only_unverified,
+         test_an_installed_but_empty_ollama_is_also_down,]
 
 
 def main():

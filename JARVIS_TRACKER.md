@@ -18,7 +18,7 @@
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **99 harnesses, 3280 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
+| Automatic suite | **100 harnesses, 3355 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -52,7 +52,7 @@ Tier 1 work would have caught before a row was ever attempted.
 | 0.1 | Set `JARVIS_ADMIN_OVERRIDE_CODE` in `.env` — the spoken recovery path F-23 and F-25 need | ✅ **done 2026-08-22** — set, 5 characters. Short for something guessed at rather than typed; the token match means `tiberiusx` is not `tiberius`, so length is the only defence it has. His call, recorded | `.env` re-measured — **the spoken path is a gate row, still owed** |
 | 0.2 | Fix `GEMINI_API_KEY` — and understand the quota | ☐ **low priority, and the reason matters.** Audited all five keys 2026-08-22: the primary is **`400 API key not valid` — NOT exhausted.** `400 not valid` and `429 RESOURCE_EXHAUSTED` are different failures; waiting fixes the second and never the first. It is also not one of the four pool keys. The four ARE valid and all `429`, `limit 20 on gemini-3.7-flash`, and their retry-after counted down **in step** (49/48/48/47s, spread 2.3s) → **one shared bucket**, so more keys in the same Google project add nothing. Multiplying the quota needs **one key per separate Google Cloud project**. Not urgent: this entire session ran with Gemini exhausted and Groq carrying it, exactly as the cascade is designed to | — |
 | 0.3 | Boot preflight that asks providers whether the configured models still exist | ✅ **done** — 11 ids checked, catalogues only, zero tokens, `JARVIS_MODEL_PREFLIGHT=0` to disable | **SEALED** — harness 8 checks + live boot (`all 11 configured model id(s) exist`) + negative-tested against the two ids that were really dead |
-| 0.4 | ollama auto-starting as a service — it was down all of session 4, so every vision feature was dead and nothing said so. Running now, but started by hand | ☐ | — |
+| 0.4 | ollama auto-starting — it was down all of session 4, so every vision feature was dead and nothing said so | ✅ **done 2026-08-22** — `tools\ensure_ollama.ps1` (idempotent: starts the **HTTP server**, waits for READY, exits 0 if already listening) + `tools\install_ollama_task.ps1` registering the logon task **JARVIS ensure ollama**. Not a Windows service: a per-user logon task needs no elevation and he can see and disable it in Task Scheduler. Windows' own Startup shortcut launches the **tray app**, which is not what JARVIS depends on | **SEALED** — both paths run live: recovery from down in **13s** then **6s** (`4 model(s) available`), and the idempotent path (`already listening -- nothing to do`); task registered, state **Ready**; and `boot_preflight` now calls a dead local daemon **NOT RUNNING** rather than "unverified" — verified live with ollama stopped. Harness `test_boot_preflight.py` **47 checks** |
 | 0.5 | Re-enroll the face on the **phone-camera angles actually used** — until then every camera feature mistrusts him and F-62 recurs | ☐ **needs him + the phone** | — |
 
 ### Tier 1 · Make the two habits fail the suite
@@ -122,7 +122,7 @@ harmless now that the preload reaches the web tools anyway, but recorded.
 | | Item | Status | Verified end to end? |
 |---|---|---|---|
 | 3.1 | Run all 192 rows once and fix what they find — **4–6 sessions**, most needing him at the desk | ☐ see §3 | — |
-| 3.2 | A RAM budget. 16 GB, ~6 free; `llava` alone loads 4.41 GB. Vision and reasoning cannot both be resident | ☐ | — |
+| 3.2 | A RAM budget — **and measuring it overturned the design.** The plan was to REFUSE a local model that would not fit. Measured live first: with **2.56 GB free**, far under `llava`'s 4.41 GB, the call loaded and answered correctly in **91.9 s** — slow, not broken. Refusing would have deleted a working feature at the one moment it is the only option left (the vision cascade reaches llava only after Gemini has already failed). The two REAL defects the measurement exposed: a fixed **120 s** deadline over a **92 s** call leaves 28 s of margin, so a working answer gets cancelled and reported as *"vision offline"*; and **nothing ever set `keep_alive`**, so one screen read parked 4.4 GB for ollama's default **5 minutes** | ✅ **done 2026-08-22** — `modules/ram_budget.py` **advises, never blocks**: a tight load gets a **longer** deadline (240 s) and a short `keep_alive` (30s). Footprints are **read** from ollama, so they stay right when he pulls a new model; a model already resident is free however little RAM is left | **SEALED** — harness `test_ram_budget.py` **49 checks**, all values injected so it does not depend on what the machine is doing. Live measurements recorded in the module: llava 4.41 GB on disk / 4.39 resident, llama3.2:3b 1.88 / 2.55, free RAM **2.74 → 6.87 GB** the instant llava was unloaded. Both vision legs go through one function (root cause #4); the **text leg is excluded by a written decision**, pinned by the harness |
 | 3.3 | **7-day unattended soak** — no false intruder alert, no fabricated claim in the logs, no silent config rot. Nothing in this project currently proves *sustained* reliability, and that is what "rely on it" means | ☐ | — |
 
 ---
@@ -139,6 +139,8 @@ discovered. An item that meets all four does not get revisited.
 | **0.3** model liveness at boot | ✅ | harness 8 checks · live boot printed `all 11 configured model id(s) exist` · negative-tested by feeding it the two ids that really were dead · offline → UNVERIFIED not DEAD · cp1252-safe |
 | **1.1** the claims layer | ✅ | harness 91 checks · live: *"I have no way to order anything, Sir"* and *"book me a table"* refused, while *"check my calendar"* still answered |
 | **1.2** single-source pins | ✅ | harness 27 checks · it found **F-66 and F-67 on its first run**, both fixed |
+| **0.4** ollama autostart | ✅ | harness 47 checks · both script paths run live (recovery 13s/6s, then `already listening`) · logon task **Ready** · preflight verified live with the daemon stopped: **NOT RUNNING**, not "unverified" |
+| **3.2** the RAM budget | ✅ | harness 49 checks, every value injected · the design was **overturned by measurement** — 91.9 s at 2.56 GB free proved refusal wrong · free RAM 2.74 → 6.87 GB on unload · one function for both vision legs · the text-leg exclusion is a written, pinned decision |
 | the fixes F-45 … F-67 | ✅ | each harnessed; F-60/61/62/63/66/67 also re-run live after the fix |
 | the docs + dashboard | ✅ | harness 25 checks · regenerating the page must change nothing, so a stale page fails the suite |
 

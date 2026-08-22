@@ -168,8 +168,17 @@ def _call_ollama_vision(img_b64: str, prompt: str = _SCREEN_PROMPT) -> str:
         "images": [img_b64],
         "stream": False
     }
-    
-    response = requests.post(url, json=payload, timeout=120)
+
+    # Tier 3.2: the same budget the router's leg consults, through the same
+    # function -- this entry point is the one used when JARVIS_VLM_PROVIDER=ollama
+    # forces the local model, so it cannot rely on the cascade having asked. A
+    # tight load gets a longer deadline and a short keep_alive; it is never
+    # refused, because here there is no cloud provider behind it at all.
+    from modules import ram_budget
+    deadline = ram_budget.apply(OLLAMA_VISION_MODEL, payload, 120.0,
+                                "screen reader")
+
+    response = requests.post(url, json=payload, timeout=deadline)
     response.raise_for_status()
     return response.json().get("response", "")
 

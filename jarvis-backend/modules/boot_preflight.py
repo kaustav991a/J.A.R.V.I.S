@@ -149,6 +149,12 @@ def log_preflight() -> dict:
 #   * `JARVIS_MODEL_PREFLIGHT=0` turns it off entirely.
 #   * `fetch` is injectable, so the harness needs no network.
 
+#: Providers that run ON THIS MACHINE. For these, "unreachable" is not ambiguous
+#: -- the daemon is not running, and saying "not necessarily dead" about a local
+#: socket would be the same silence that let session 4 run for hours with no
+#: vision at all.
+_LOCAL_PROVIDERS = {"ollama"}
+
 #: Where each provider lists what it has. Ollama is local; the rest need a key.
 _CATALOGUE_URLS = {
     "groq": "https://api.groq.com/openai/v1/models",
@@ -251,7 +257,7 @@ def check_model_liveness(fetch=None, env=None) -> dict:
 
     fetch = fetch or (lambda url: _default_fetch(url, env))
     catalogues: dict = {}
-    dead, alive, unknown = [], [], []
+    dead, alive, unknown, down = [], [], [], []
 
     for provider, model, why in configured_models(env):
         if provider not in catalogues:
@@ -261,9 +267,20 @@ def check_model_liveness(fetch=None, env=None) -> dict:
                 catalogues[provider] = e
         cat = catalogues[provider]
         if isinstance(cat, Exception) or not cat:
-            unknown.append((provider, model, why,
-                            type(cat).__name__ if isinstance(cat, Exception)
-                            else "empty catalogue"))
+            # A LOCAL daemon that does not answer is DOWN, and that is a fact
+            # rather than a maybe. Session 4 ran for hours with ollama not
+            # running: every local-vision feature was dead, row 12.1 could not be
+            # attempted, and nothing anywhere said so. Reporting that as
+            # "unverified, not necessarily dead" — correct for a cloud provider
+            # behind a flaky network — would be the same silence in a nicer coat.
+            if provider in _LOCAL_PROVIDERS:
+                down.append((provider, model, why,
+                             type(cat).__name__ if isinstance(cat, Exception)
+                             else "no models installed"))
+            else:
+                unknown.append((provider, model, why,
+                                type(cat).__name__ if isinstance(cat, Exception)
+                                else "empty catalogue"))
             continue
         names = [str(c) for c in cat]
         # An evergreen alias resolves server-side and need not appear verbatim; a
@@ -271,7 +288,8 @@ def check_model_liveness(fetch=None, env=None) -> dict:
         hit = any(model == c or c.startswith(model + ":") or model.startswith(c + ":")
                   for c in names) or model.endswith("-latest")
         (alive if hit else dead).append((provider, model, why))
-    return {"dead": dead, "alive": alive, "unknown": unknown, "skipped": False}
+    return {"dead": dead, "alive": alive, "unknown": unknown, "down": down,
+            "skipped": False}
 
 
 def format_liveness(rep: dict) -> str:
@@ -281,10 +299,19 @@ def format_liveness(rep: dict) -> str:
     for provider, model, why in rep["dead"]:
         lines.append("  ❌ DEAD: " + provider + " '" + model + "' is NOT in the "
                      "live catalogue — " + why + " will fail on use. Fix the id.")
+    _down = rep.get("down") or []
+    if _down:
+        _names = ", ".join(sorted({p for p, _m, _w, _r in _down}))
+        lines.append("  ❌ NOT RUNNING: " + _names + " is not answering, so "
+                     + ", ".join(sorted({w for _p, _m, w, _r in _down}))
+                     + " CANNOT work. This is a fact, not a maybe — it is a local "
+                       "daemon.")
+        lines.append("     Start it:  powershell -ExecutionPolicy Bypass -File "
+                     "tools" + chr(92) + "ensure_ollama.ps1")
     for provider, model, why, reason in rep["unknown"]:
         lines.append("  ⚠️  unverified: " + provider + " '" + model +
                      "' — catalogue unreachable (" + reason + "). Not necessarily dead.")
-    if not rep["dead"] and not rep["unknown"]:
+    if not rep["dead"] and not rep["unknown"] and not _down:
         lines.append("  ✅ all " + str(len(rep["alive"])) +
                      " configured model id(s) exist.")
     elif rep["alive"]:

@@ -943,12 +943,27 @@ def universal_vision_call(prompt: str, img_b64: str,
                   f"falling back to local llava.", flush=True)
 
     # Offline fallback: local llava via Ollama /api/generate.
+    #
+    # Tier 3.2, and the measurement overturned the obvious design. llava is
+    # 4.4 GB on a box that usually has 4-6 GB free, so the first instinct was to
+    # refuse the load. Measured instead: with 2.56 GB free it loaded and answered
+    # correctly in 91.9 s -- three times a warm call, but not a failure. Refusing
+    # would have deleted a working feature, and there is nothing left to escalate
+    # to here anyway: Gemini above has already failed by the time we arrive.
+    #
+    # What a tight load DOES need is a longer deadline (a 120 s ceiling over a
+    # 92 s call is how a working answer gets reported as "vision offline") and a
+    # short keep_alive, because nothing ever set one and a single screen read was
+    # parking 4.4 GB for ollama's default five minutes.
+    from modules import ram_budget
     try:
+        payload = {"model": VISION_MODEL, "prompt": prompt,
+                   "images": [img_b64], "stream": False}
+        deadline = ram_budget.apply(VISION_MODEL, payload,
+                                    max(timeout, 120.0), "router vision")
         resp = requests.post(
             OLLAMA_URL.replace("/api/chat", "/api/generate"),
-            json={"model": VISION_MODEL, "prompt": prompt,
-                  "images": [img_b64], "stream": False},
-            timeout=max(timeout, 120.0),
+            json=payload, timeout=deadline,
         )
         resp.raise_for_status()
         out = (resp.json().get("response") or "").strip()
