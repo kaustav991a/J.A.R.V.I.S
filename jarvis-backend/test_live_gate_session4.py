@@ -660,6 +660,60 @@ def test_an_empty_room_lowers_the_intruder_flag():
           "an intruder still in view keeps the flag raised")
 
 
+# ── F-61: the screen read must not name what is not open ─────────────────────
+
+def test_the_screen_read_is_grounded_in_the_real_window_list():
+    """Row 12.1 said "a Chrome window with a Google Sheets document" about a
+    screen holding a markdown file and no Chrome window. The OS knows what is
+    open; the model should not have to guess."""
+    from modules import screen_reader as sr
+
+    titles = sr._open_window_titles()
+    check(isinstance(titles, list), "the window list comes back as a list")
+    check(len(titles) >= 1, f"and it found real windows ({len(titles)})")
+
+    fake = ["Notepad", "JARVIS-Project - Antigravity IDE", "Photopea - Google Chrome"]
+    desc = ("A code editor with a Python script, a Chrome window showing a Google "
+            "Sheets document, and Slack open on the right.")
+    bogus = sr._unverified_names(desc, fake)
+    check("google sheets" in bogus, "Google Sheets is flagged — it is not open")
+    check("slack" in bogus, "so is Slack")
+    check("chrome" not in bogus, "Chrome is NOT flagged — it really is open")
+    check("photopea" not in bogus, "nor is what the Chrome title actually names")
+    check(sr._unverified_names("just a terminal and an editor", fake) == [],
+          "a vague description flags nothing — only specific names are checkable")
+
+
+def test_every_vision_leg_uses_the_caller_s_prompt():
+    """The grounding rule is worthless on the leg that ignores it.
+
+    `_call_ollama_vision` held a hardcoded copy of the prompt, and
+    `_call_groq_vision` took a `prompt` parameter and then sent its own string
+    anyway — so the rule would have reached the router's cascade and silently
+    skipped the two direct legs. Root cause #4 inside one file.
+    """
+    import ast, inspect
+    from modules import screen_reader as sr
+
+    for name in ("_call_ollama_vision", "_call_groq_vision"):
+        fn = getattr(sr, name)
+        sig = inspect.signature(fn)
+        check("prompt" in sig.parameters, f"{name} takes a prompt")
+        body = inspect.getsource(fn)
+        check("prompt" in body.split("def ", 1)[1].split(":", 1)[1],
+              f"{name} actually USES it")
+        check("Analyze this screenshot of my computer screen. Describe the active "
+              "applications" not in body,
+              f"{name} holds no hardcoded copy of the prompt")
+
+    src = (HERE / "modules" / "screen_reader.py").read_text(encoding="utf-8",
+                                                            errors="replace")
+    check(src.count("Analyze this screenshot") == 1,
+          f"the prompt text exists in exactly ONE place "
+          f"({src.count('Analyze this screenshot')} found)")
+    check("GROUND TRUTH" in src, "and the grounding rule exists")
+
+
 TESTS = sorted(
     (fn for name, fn in list(globals().items())
      if name.startswith("test_") and callable(fn)),

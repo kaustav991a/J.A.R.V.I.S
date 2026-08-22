@@ -492,7 +492,7 @@ Do these first; they are the bulk. Work the blocks in order — reboots are batc
 
 | # | Do | Pass |
 |---|---|---|
-| 23b.16 | ⚠️ Temporarily unset `TAVILY_API_KEY`, ask for today's news — **restore it after** | Says it cannot look it up — never a confident answer, and never the raw `TAVILY_UNCONFIGURED` |
+| 23b.16 | ⚠️ Rename `TAVILY_API_KEY` **inside `.env`** and restart, then ask for today's news — **restore it after**. Unsetting the environment variable does NOT work: `main.py:31` calls `load_dotenv(override=True)`, which writes the `.env` value straight back over it (F-65, measured). Both earlier attempts at this row ran against a fully live Tavily | Says it cannot look it up — never a confident answer, and never the raw `TAVILY_UNCONFIGURED` |
 | 23b.17 | A file-editing goal, flag on | Log shows `[AGENT] skills: 6 playbook(s)`; the panel shows `load_skill` **before** the first edit, not after a refusal |
 | 23b.18 | Ask for an edit whose `old_string` appears **3×** | It extends the string with surrounding context (what `edit-a-file` says) instead of reaching for `replace_all` |
 | 23b.19 | ⚠️ Change a line in `skills/the-two-screens.md` **while the backend runs**, then trigger a TV goal — **`git checkout` the file after** | The new wording is what comes back — no restart needed |

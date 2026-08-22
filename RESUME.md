@@ -93,10 +93,17 @@ Four more findings, and the suite is **95/95, 3073 checks**.
   script handling JSON" and "a Chrome window with a Google Sheets document"; the
   screen held a markdown file and no Chrome window at all. I captured the screen and
   checked. Two of four claims fabricated, at full confidence, with no hedge.
-- **F-64** 🔴 with `TAVILY_API_KEY` unset it **invented today's news** — three
-  specific headlines — and called **no search tool at all**. Row `23b.16` exists to
-  catch exactly this. LEFT OPEN: how a news question with no live source should
-  behave is a judgement, and it touches the freshness machinery.
+- **~~F-64~~ 🔻 WITHDRAWN — it was my error, not a defect.** I reported that the
+  desk invented today's headlines with no search tool called. It DID call
+  `tavily_search` and got 5 results; the action lines sat 39 lines below the command
+  and I asserted the negative from too small a grep window. The guard I built for it
+  is **reverted in full** — no evidence it was needed, and it would have refused a
+  follow-up news question whose evidence was already in the conversation.
+- **F-65** 🟠 **row `23b.16` cannot be performed as written**, so it has no result.
+  "Temporarily unset `TAVILY_API_KEY`" does nothing: `main.py:31` calls
+  `load_dotenv(override=True)`, which writes the `.env` value back over it —
+  measured, `<RESTORED from .env, len=58>`. F-39's class with the direction
+  reversed. The checklist row now says to rename the key **inside `.env`**.
 - **F-62** 🟠 FIXED. Within a minute of the camera coming up it sent **two intruder
   alerts to his phone carrying photos of him**, while the proactive door logged
   "F-19: intruder reading held — streak 1/2" about the same room. Both doors were
@@ -112,7 +119,9 @@ Four more findings, and the suite is **95/95, 3073 checks**.
 
 `21.1` PASSED both halves (dead address skipped, `camera_error → idle`), and `21.9`
 on its key half — the phone reported `video_connections: 1` with two publishers
-running. `23b.8` passed. `12.1`, `23b.16` and `4.3` are the failures.
+running. `23b.8` passed. **F-61 is FIXED and verified live** — the screen read is
+grounded in the OS window list now and named two real titles correctly. `4.3` is
+the outstanding failure; `23b.16` has never run.
 
 **RAM on this box:** 5.3 GB free of 15.9 with the desk and ollama idle. A `llava`
 call loads 4.41 GB. Vision fits; vision plus `llama3:8b` does not.

@@ -2317,7 +2317,10 @@ family: a claim made without the thing being there. It is a model limitation —
 reading. Either the answer hedges when the model's confidence is low, or a wrong
 screen description is a thing JARVIS says to him with a straight face.
 
-### F-64 🔴 · With no search key, it invented today's news
+### ~~F-64~~ 🔻 **WITHDRAWN — my error. See the retraction at the end of this file.** The turn DID call `tavily_search` and got 5 results; I grepped too small a window and asserted the negative. Row `23b.16` has no result, because it cannot be performed as written (F-65).
+
+<details><summary>the original, wrong report, kept for the record</summary>
+
 
 Row `23b.16` unsets `TAVILY_API_KEY` and asks for today's technology news. The row
 wants "it cannot look it up", and specifically **never a confident answer**. What
@@ -2335,6 +2338,8 @@ This is the most dangerous class in the project, and it is the exact thing the r
 exists to catch. Left open deliberately: the fix is a judgement about how a
 news-shaped question with no live source should behave, and it touches the same
 freshness machinery `test_web_freshness.py` guards.
+
+</details>
 
 ### F-62 🟠 · Two debounces, one room, opposite conclusions — and the twitchy one owns the phone
 
@@ -2395,3 +2400,91 @@ nobody in view — the same threshold that branch already trusts to drop to the 
 interval — resets the streak, and logs it. An intruder still in view keeps the flag
 raised, and clearing a flag does not unsend an alert that has already gone: the
 field answers "is there an intruder in view NOW", so it has to follow the view.
+
+---
+
+## 🔻 RETRACTION — F-64 was my error, not a defect. And F-61 is fixed.
+
+### F-64 is WITHDRAWN
+
+I reported that with `TAVILY_API_KEY` unset, the desk answered "what is today's top
+technology news?" with three invented headlines and **no search tool called at
+all**. I quoted the answer and called it the most dangerous class in the project.
+
+It was sourced. The turn did call `tavily_search`, and Tavily returned 5 results:
+
+```
+[GOVERNANCE] action='tavily_search' -> tier=AUTO
+[ACTION ENGINE] Processing payload: {'action_type': 'tavily_search', 'target': 'top technology news today'}
+[ACTION ENGINE] Tavily returned 5 result(s).
+```
+
+Those lines sit **39 lines below** the command in the log. I grepped a window from
+the command line, saw no action inside it, and asserted the negative. A retest
+produced the same two lead headlines from a live search, which is what should have
+made me doubt the first reading immediately.
+
+**What I did about it.** I had already built `modules/freshness_guard.py` and wired
+it into both reply paths, with 20 harness checks. It is **reverted in full**. Not
+because the failure mode it guards is impossible, but because I had no evidence it
+occurs, and it introduced a NEW way to be wrong: a follow-up question like "what
+else is in today's news", whose evidence is already in the conversation from the
+previous turn's search, runs no action of its own and would have been refused. A
+guard that trades an unobserved fabrication for an observable false refusal is a bad
+trade.
+
+**Row `23b.16` therefore has no result at all** — see F-65 for why it could not have
+had one.
+
+### F-65 🟠 · Row `23b.16` cannot be performed as written
+
+The row says: *"Temporarily unset `TAVILY_API_KEY`, ask for today's news"*. Unsetting
+it does nothing. `main.py` line 31 calls `load_dotenv(override=True)` at import, so
+the value in `.env` is written back over whatever the operator set on the command
+line. Measured:
+
+```
+operator set it to: ''
+after load_dotenv(override=True): <RESTORED from .env, len=58>
+```
+
+Both of my attempts at that row ran against a fully live Tavily. The row has never
+been executed under its own stated condition, by me or by anyone.
+
+This is F-39's class with the direction reversed. F-39 was *"an empty key in `.env`
+silently erases what the operator set on the command line"*; this is *".env silently
+restores what the operator cleared on the command line"*. Same precedence rule, and
+in both cases what the operator did had no effect and nothing said so.
+
+`LIVE_GATE_CHECKLIST.md` is corrected: the row now says to rename the key **inside
+`.env`** and restart, which is the only way to make the condition real. No code
+change — `override=True` is deliberate and other subsystems depend on it.
+
+### F-61 🟠 · FIXED, and verified live
+
+Row `12.1` had described "a Python script handling JSON" and "a Chrome window with a
+Google Sheets document" for a screen holding a markdown file and no visible Chrome
+window. The fix is to stop asking a CPU-bound VLM for facts the machine can look up:
+the real window list now goes into the prompt as authoritative ground truth, with an
+explicit rule against naming anything absent from it, and the same list is appended
+to the returned block so the reasoning model that writes the spoken sentence is
+anchored too. Anything specific the description names that the OS does not have open
+is flagged `UNVERIFIED` rather than deleted — the window list can prove a thing is
+not running; it cannot prove what is legible in the image.
+
+Two more instances of root cause #4 turned up inside that one file while fixing it:
+`_call_ollama_vision` held a hardcoded copy of the prompt, and `_call_groq_vision`
+accepted a `prompt` parameter and then sent its own string anyway — so the grounding
+rule would have reached the router's cascade and silently skipped both direct legs.
+The prompt text now exists in exactly one place, and the harness asserts that.
+
+Verified on the live desk after the fix:
+
+```
+[SCREEN READER] grounding on 8 open window(s) reported by the OS.
+```
+
+> "Your screen shows a desktop with a code editor titled 'JARVIS-Project' and a
+> Chrome browser whose active tab reads 'Restore pages?', Sir — predictably busy."
+
+Both facts correct, and both taken from the real titles. No invented application.
