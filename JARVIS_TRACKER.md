@@ -47,23 +47,23 @@ Tier 1 work would have caught before a row was ever attempted.
 
 ### Tier 0 · Stop the bleeding
 
-| | Item | Status |
-|---|---|---|
-| 0.1 | Set `JARVIS_ADMIN_OVERRIDE_CODE` in `.env` — the spoken recovery path F-23 and F-25 need | ✅ **done 2026-08-22** — set, 5 characters. Short for something guessed at rather than typed; the token match means `tiberiusx` is not `tiberius`, so length is the only defence it has. His call, recorded |
-| 0.2 | Fix `GEMINI_API_KEY` — and understand the quota | ☐ **low priority, and the reason matters.** Audited all five keys 2026-08-22: the primary is **`400 API key not valid` — NOT exhausted.** `400 not valid` and `429 RESOURCE_EXHAUSTED` are different failures; waiting fixes the second and never the first. It is also not one of the four pool keys. The four ARE valid and all `429`, `limit 20 on gemini-3.7-flash`, and their retry-after counted down **in step** (49/48/48/47s, spread 2.3s) → **one shared bucket**, so more keys in the same Google project add nothing. Multiplying the quota needs **one key per separate Google Cloud project**. Not urgent: this entire session ran with Gemini exhausted and Groq carrying it, exactly as the cascade is designed to |
-| 0.3 | Boot preflight that asks providers whether the configured models still exist | ✅ **done** — 11 ids checked, catalogues only, zero tokens, `JARVIS_MODEL_PREFLIGHT=0` to disable |
-| 0.4 | ollama auto-starting as a service — it was down all of session 4, so every vision feature was dead and nothing said so. Running now, but started by hand | ☐ |
-| 0.5 | Re-enroll the face on the **phone-camera angles actually used** — until then every camera feature mistrusts him and F-62 recurs | ☐ **needs him + the phone** |
+| | Item | Status | Verified end to end? |
+|---|---|---|---|
+| 0.1 | Set `JARVIS_ADMIN_OVERRIDE_CODE` in `.env` — the spoken recovery path F-23 and F-25 need | ✅ **done 2026-08-22** — set, 5 characters. Short for something guessed at rather than typed; the token match means `tiberiusx` is not `tiberius`, so length is the only defence it has. His call, recorded | `.env` re-measured — **the spoken path is a gate row, still owed** |
+| 0.2 | Fix `GEMINI_API_KEY` — and understand the quota | ☐ **low priority, and the reason matters.** Audited all five keys 2026-08-22: the primary is **`400 API key not valid` — NOT exhausted.** `400 not valid` and `429 RESOURCE_EXHAUSTED` are different failures; waiting fixes the second and never the first. It is also not one of the four pool keys. The four ARE valid and all `429`, `limit 20 on gemini-3.7-flash`, and their retry-after counted down **in step** (49/48/48/47s, spread 2.3s) → **one shared bucket**, so more keys in the same Google project add nothing. Multiplying the quota needs **one key per separate Google Cloud project**. Not urgent: this entire session ran with Gemini exhausted and Groq carrying it, exactly as the cascade is designed to | — |
+| 0.3 | Boot preflight that asks providers whether the configured models still exist | ✅ **done** — 11 ids checked, catalogues only, zero tokens, `JARVIS_MODEL_PREFLIGHT=0` to disable | **SEALED** — harness 8 checks + live boot (`all 11 configured model id(s) exist`) + negative-tested against the two ids that were really dead |
+| 0.4 | ollama auto-starting as a service — it was down all of session 4, so every vision feature was dead and nothing said so. Running now, but started by hand | ☐ | — |
+| 0.5 | Re-enroll the face on the **phone-camera angles actually used** — until then every camera feature mistrusts him and F-62 recurs | ☐ **needs him + the phone** | — |
 
 ### Tier 1 · Make the two habits fail the suite
 
 Session 4 raised 16 findings. **15 of them were two habits.** Fixing instances is
 losing; the habits have to become suite failures.
 
-| | Item | Status |
-|---|---|---|
-| 1.1 | **The claims layer.** Audited first: the taxonomy was NOT scattered — `brain.py` already owned four strippers coherently, so consolidation would have been churn. The real gap was **coverage**, and one uncovered class. Closed: the F-60 capability rule (both the promise form and the request form), a coverage **inventory** of every LLM-text function with the guard it carries *or a written decision that it carries none*, and a scan for invisible control bytes | ✅ **done** — `test_claims_guard.py`, 91 checks |
-| 1.2 | **`test_single_source.py`** — root cause #4 asked mechanically, 7 pins | ✅ **done** — found F-66 and F-67 on its first run |
+| | Item | Status | Verified end to end? |
+|---|---|---|---|
+| 1.1 | **The claims layer.** Audited first: the taxonomy was NOT scattered — `brain.py` already owned four strippers coherently, so consolidation would have been churn. The real gap was **coverage**, and one uncovered class. Closed: the F-60 capability rule (both the promise form and the request form), a coverage **inventory** of every LLM-text function with the guard it carries *or a written decision that it carries none*, and a scan for invisible control bytes | ✅ **done** — `test_claims_guard.py`, 91 checks | **SEALED** — harness 91 checks + live on the desk (pizza refused, calendar unaffected). Caveats stated in the harness: 3 synthesis paths carry a recorded decision, and `transfer 500 rupees` is a documented miss |
+| 1.2 | **`test_single_source.py`** — root cause #4 asked mechanically, 7 pins | ✅ **done** — found F-66 and F-67 on its first run | **SEALED** — harness 27 checks; it found F-66 and F-67 on its first run. Pins only known surfaces, by design |
 
 ### Tier 2 · Competence — the 56%
 
@@ -111,19 +111,50 @@ expected tool resident **before the model's first turn**:
 `research` is defined in the registry and **never selected** by `tool_set_for` —
 harmless now that the preload reaches the web tools anyway, but recorded.
 
-| | Item | Status |
-|---|---|---|
-| 2.1 | ~~Fix descriptions/aliases/ranking~~ — **the diagnosis was wrong**; retrieval was already 40/40. The shelf is **preloaded from the goal** instead: expected tool in front of the model **4/40 → 39/40**, harnessed in `test_shelf_preload.py` (34 checks). **The `--live` re-measure is still owed** — it drives real actions on his desk, so it needs his go-ahead | ⚠️ **mechanism fixed + measured offline; live number pending** |
-| 2.2 | Settle **F-59** — `should_use_agent` accepts two sentence shapes while A22 has 24 rows written against goals it will not accept. Widen the gate or rewrite the rows; until then A22 cannot validate any of this | ☐ **decision** |
-| 2.3 | Only if retrieval tops out and it is still wrong: the tiered brain (a stronger model for tool selection) | ☐ blocked by 2.1 |
+| | Item | Status | Verified end to end? |
+|---|---|---|---|
+| 2.1 | ~~Fix descriptions/aliases/ranking~~ — **the diagnosis was wrong**; retrieval was already 40/40. The shelf is **preloaded from the goal** instead: expected tool in front of the model **4/40 → 39/40**, harnessed in `test_shelf_preload.py` (34 checks). **The `--live` re-measure is still owed** — it drives real actions on his desk, so it needs his go-ahead | ⚠️ **mechanism fixed + measured offline; live number pending** | harness 34 checks + offline **4/40 → 39/40**. ⚠️ **the LIVE number is NOT re-measured** — this is the one open loop |
+| 2.2 | Settle **F-59** — `should_use_agent` accepts two sentence shapes while A22 has 24 rows written against goals it will not accept. Widen the gate or rewrite the rows; until then A22 cannot validate any of this | ☐ **decision** | — |
+| 2.3 | Only if retrieval tops out and it is still wrong: the tiered brain (a stronger model for tool selection) | ☐ blocked by 2.1 | — |
 
 ### Tier 3 · Unattended reliability
 
-| | Item | Status |
+| | Item | Status | Verified end to end? |
+|---|---|---|---|
+| 3.1 | Run all 192 rows once and fix what they find — **4–6 sessions**, most needing him at the desk | ☐ see §3 | — |
+| 3.2 | A RAM budget. 16 GB, ~6 free; `llava` alone loads 4.41 GB. Vision and reasoning cannot both be resident | ☐ | — |
+| 3.3 | **7-day unattended soak** — no false intruder alert, no fabricated claim in the logs, no silent config rot. Nothing in this project currently proves *sustained* reliability, and that is what "rely on it" means | ☐ | — |
+
+---
+
+## 2b · What is SEALED, and what is still open
+
+**"Sealed" has a definition here, or the word is worthless:** the code is written,
+a harness in the suite pins the behaviour so it cannot silently regress, **and** it
+was proven on the running desk — with any boundary stated rather than left to be
+discovered. An item that meets all four does not get revisited.
+
+| | Sealed | Evidence |
 |---|---|---|
-| 3.1 | Run all 192 rows once and fix what they find — **4–6 sessions**, most needing him at the desk | ☐ see §3 |
-| 3.2 | A RAM budget. 16 GB, ~6 free; `llava` alone loads 4.41 GB. Vision and reasoning cannot both be resident | ☐ |
-| 3.3 | **7-day unattended soak** — no false intruder alert, no fabricated claim in the logs, no silent config rot. Nothing in this project currently proves *sustained* reliability, and that is what "rely on it" means | ☐ |
+| **0.3** model liveness at boot | ✅ | harness 8 checks · live boot printed `all 11 configured model id(s) exist` · negative-tested by feeding it the two ids that really were dead · offline → UNVERIFIED not DEAD · cp1252-safe |
+| **1.1** the claims layer | ✅ | harness 91 checks · live: *"I have no way to order anything, Sir"* and *"book me a table"* refused, while *"check my calendar"* still answered |
+| **1.2** single-source pins | ✅ | harness 27 checks · it found **F-66 and F-67 on its first run**, both fixed |
+| the fixes F-45 … F-67 | ✅ | each harnessed; F-60/61/62/63/66/67 also re-run live after the fix |
+| the docs + dashboard | ✅ | harness 25 checks · regenerating the page must change nothing, so a stale page fails the suite |
+
+**Two things are NOT closed, and I would rather name them than let them look done:**
+
+1. **2.1's live number.** The mechanism is fixed and measured offline — the expected
+   tool went from 4/40 to 39/40 in front of the model — but `run_evals.py --live`
+   has **not** been re-run, so the 56% still stands as the last real end-to-end
+   figure. It needs a run that touches his machine.
+2. **Row `4.3`.** `workspace_patch` stages its confirmation correctly and then never
+   applies the edit. Seen twice, cause not yet found. It is the one gate row that
+   failed for a reason still unexplained.
+
+And the standing one, which is not a defect but must not be forgotten: **every
+`PASS-SUB` row still owes its own door.** The text command line proves the brain and
+says nothing about the microphone, the camera, the hands or the phone.
 
 ---
 

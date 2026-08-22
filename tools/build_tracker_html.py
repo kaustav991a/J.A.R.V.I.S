@@ -118,10 +118,13 @@ def main() -> int:
             if len(cells) < 3:
                 continue
             ident, what, status = cells[0], cells[1], cells[2]
+            verified = cells[3] if len(cells) > 3 else ""
             kind = _classify(status)
             if kind is None:
                 continue
-            items.append({"id": ident, "what": what, "status": status, "kind": kind})
+            sealed = "SEALED" in verified.upper()
+            items.append({"id": ident, "what": what, "status": status,
+                          "kind": kind, "verified": verified, "sealed": sealed})
         if items or scores:
             tiers.append({"title": head[4:].strip(), "items": items,
                           "scores": scores})
@@ -137,6 +140,23 @@ def main() -> int:
         gate.append({"batch": cells[0], "rows": cells[1],
                      "needs": cells[2], "state": cells[3],
                      "kind": _classify(cells[3]) or TODO})
+
+    # ── the two open loops, from section 2b ───────────────────
+    sealed_md = _section(md, "What is SEALED")
+    open_loops, cur = [], None
+    for line in sealed_md.splitlines():
+        m = re.match(r'^(\d+)\. \*\*(.+?)\*\*(.*)$', line.strip())
+        if m:
+            if cur:
+                open_loops.append(cur)
+            cur = {"title": m.group(2), "body": m.group(3).strip()}
+        elif cur is not None and line.startswith("   "):
+            cur["body"] += " " + line.strip()
+        elif cur is not None and not line.strip():
+            open_loops.append(cur)
+            cur = None
+    if cur:
+        open_loops.append(cur)
 
     # ── findings + ship gates ──────────────────────────────────────────────
     findings = [c for c in _rows(_section(md, "Open findings"))
@@ -167,7 +187,7 @@ def main() -> int:
     asof = stamp.group(1).strip() if stamp else "see tracker"
 
     doc = _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
-                  gate_stat)
+                  gate_stat, open_loops)
     OUT.write_text(doc, encoding="utf-8")
     print(f"[build_tracker_html] wrote {OUT.relative_to(ROOT)}  "
           f"({len(doc):,} bytes)")
@@ -184,11 +204,15 @@ def _bar(counts: dict, total: int) -> str:
 
 
 def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
-            gate_stat=None) -> str:
+            gate_stat=None, open_loops=None) -> str:
     total = sum(counts.values()) or 1
 
     # The gate is the number that decides whether JARVIS is finished, so it sits
     # beside the ladder percentage instead of inside a table.
+    sealed_done = sum(1 for t in tiers for i in t["items"]
+                      if i["kind"] == DONE and i.get("sealed"))
+    all_done = sum(1 for t in tiers for i in t["items"] if i["kind"] == DONE)
+
     if gate_stat:
         gate_block = (
             f'<div class="big alt">{gate_stat["pct"]}%<br>'
@@ -208,7 +232,12 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
         n = len(t["items"])
         rows = "".join(
             f"<tr class='{i['kind']}'><td class='id'>{_strip_md(i['id'])}</td>"
-            f"<td>{_strip_md(i['what'])}</td>"
+            f"<td>{_strip_md(i['what'])}"
+            + (f"<div class='ver {'sealed' if i['sealed'] else 'unsealed'}'>"
+               f"<span class='vb'>{'SEALED' if i['sealed'] else 'verified?'}</span>"
+               f"{_strip_md(i['verified'])}</div>"
+               if i.get("verified") and i["verified"] != "—" else "")
+            + f"</td>"
             f"<td class='st'>{_strip_md(i['status'])}</td></tr>"
             for i in t["items"])
         scores_html = ""
@@ -246,6 +275,11 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
         f"<tr><td class='id'>{_strip_md(f[0])}</td><td>{_strip_md(f[1])}</td>"
         f"<td class='who'>{_strip_md(f[2])}</td></tr>" for f in findings)
 
+    loops_html = ("".join(
+        f"<div class='loop'><strong>{_strip_md(l['title'])}</strong>"
+        f"<div>{_strip_md(l['body'])}</div></div>" for l in (open_loops or []))
+        or "<div class='loop'>Nothing open — every completed item is sealed.</div>")
+
     ship_html = "".join(
         f"<li class='{s['kind']}'><span class='mark'>{s['mark']}</span>"
         f"{_strip_md(s['what'])}</li>" for s in ship)
@@ -275,6 +309,18 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
  .big {{ font-size:44px; font-weight:700; line-height:1 }}
  .big small {{ font-size:15px; color:var(--dim); font-weight:500 }}
  .big.alt {{ color:var(--part) }}
+ .big.ok2 {{ color:var(--done); font-size:40px }}
+ .big.ok2 small {{ display:block; font-size:13px }}
+ .fine {{ color:var(--dim); font-size:11.5px }}
+ .loop {{ padding:9px 0; border-bottom:1px solid var(--line) }}
+ .loop:last-child {{ border-bottom:0 }}
+ .loop strong {{ color:var(--part) }}
+ .loop div {{ color:var(--dim); font-size:13px; margin-top:3px }}
+ .ver {{ margin-top:5px; font-size:12px; color:var(--dim); line-height:1.45 }}
+ .vb {{ display:inline-block; font-size:10px; letter-spacing:.06em;
+   padding:1px 6px; border-radius:99px; margin-right:6px; font-weight:700 }}
+ .ver.sealed .vb {{ background:rgba(46,160,67,.18); color:var(--done) }}
+ .ver.unsealed .vb {{ background:rgba(210,153,34,.18); color:var(--part) }}
  .scores {{ border-top:1px solid var(--line); padding:10px 0 2px }}
  .shead {{ color:var(--dim); font-size:12.5px; padding:2px 9px 6px }}
  .sw {{ width:34% }}
@@ -336,6 +382,8 @@ it is derived, and a second place to update is how the last set of docs drifted.
 <div class="panel hero">
   <div class="big">{pct_done}%<br><small>of ladder items done</small></div>
   {gate_block}
+  <div class="big ok2">{sealed_done}<small>of {all_done} done items SEALED<br>
+    <span class="fine">code + harness + proven live, boundaries stated</span></small></div>
   <div style="flex:1">
     {_bar(counts, total)}
     <div class="legend">
@@ -353,6 +401,9 @@ it is derived, and a second place to update is how the last set of docs drifted.
 
 <h2>The ladder</h2>
 {"".join(tiers_html)}
+
+<h2>Not closed — the open loops</h2>
+<div class="panel">{loops_html}</div>
 
 <h2>The gate — 192 rows</h2>
 <div class="panel tw"><table>

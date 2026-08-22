@@ -138,6 +138,54 @@ def test_long_status_text_wraps_instead_of_overflowing():
           f"ever fails, the guard above is no longer load-bearing")
 
 
+def test_a_done_item_must_say_how_it_was_verified():
+    """"Done" without evidence is this project's own worst habit, in a document.
+
+    Seven of session 4's sixteen findings were a claim with nothing behind it. A
+    tracker that marks work complete without saying how it was proven is that
+    same habit wearing a tie. So every completed ladder item carries a Verified
+    column, and this fails if one does not.
+    """
+    md = TRACKER.read_text(encoding="utf-8")
+    ladder = md.split("## 2 · The ladder", 1)[-1].split(chr(10) + "## ", 1)[0]
+
+    naked = []
+    for line in ladder.splitlines():
+        line = line.strip()
+        if not line.startswith("|") or "✅" not in line:
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 4 or not cells[3] or cells[3] == "—":
+            naked.append(cells[0] if cells else line[:24])
+    check(not naked, f"every completed item states its verification ({naked})")
+    check("Verified end to end?" in ladder,
+          "the ladder tables carry the Verified column")
+
+    doc = PAGE.read_text(encoding="utf-8")
+    check("done items SEALED" in doc,
+          "the page shows how many done items are sealed")
+    check("class='ver sealed'" in doc, "and marks the sealed ones")
+
+
+def test_the_open_loops_reach_the_page():
+    """"What is verified" is only useful beside "what is not". If section 2b
+    lists open loops and the page omits them, the page is flattering."""
+    import re as _re
+
+    md = TRACKER.read_text(encoding="utf-8")
+    doc = PAGE.read_text(encoding="utf-8")
+    check("What is SEALED" in md, "the tracker has the sealed/open section")
+    # Scoped to section 2b, the way the generator scopes it. The first version
+    # of this check scanned the whole tracker and counted the ship sequence's
+    # numbered steps as open loops -- 7 listed, 2 shown, and the page was right.
+    sealed_section = md.split("## 2b", 1)[-1].split(chr(10) + "## ", 1)[0]
+    listed = _re.findall(r"^\d+\. \*\*(.+?)\*\*", sealed_section, _re.M)
+    rendered = _re.findall(r"<div class='loop'><strong>(.*?)</strong>", doc)
+    check(len(rendered) >= 1, f"the page renders the open loops ({len(rendered)})")
+    check(len(rendered) >= len(listed) or not listed,
+          f"and drops none ({len(listed)} listed, {len(rendered)} shown)")
+
+
 def test_the_markup_is_balanced():
     class Balance(html.parser.HTMLParser):
         # The full HTML void set. `col` was missing, so a perfectly valid
