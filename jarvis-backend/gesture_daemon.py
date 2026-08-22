@@ -136,6 +136,25 @@ class GestureDaemon:
     # the camera is not answering, whatever `available` says.
     GATE_STALE_S = float(os.getenv("JARVIS_GATE_STALE_S", "8"))
     ALERT_COOLDOWN_S = 60.0  # min gap between stranger Telegram alerts
+    # How recently the owner must have been RECOGNISED for a stranger alert to be
+    # suppressed. Live-gate session 4, with the phone camera finally live:
+    #
+    #   [GESTURE]         STRANGER: tried to use gesture control (alert sent, snap=…)
+    #   [PROACTIVE AGENT] F-19: intruder reading held — streak 1/2.
+    #
+    # Two doors, the same room, opposite conclusions — and the trigger-happy one
+    # is the one that messages his phone. The snapshot it sent was the OWNER.
+    #
+    # Both doors were guarded, so this is not F-19 reopening: it is the guards
+    # disagreeing. `OWNER_GRACE_S` is 3.5s, which is the right patience for
+    # deciding whether to let hands drive the cursor — you do not want a stranger
+    # inheriting an engaged session. It is the wrong patience for accusing someone
+    # of being an intruder, and both decisions were reading the same timestamp.
+    #
+    # F-19 settled the principle already: "a recognised owner 60 seconds ago is
+    # much stronger evidence than one failed resolve now". So control stays twitchy
+    # and the accusation gets patient.
+    ALERT_OWNER_GRACE_S = float(os.getenv("JARVIS_ALERT_OWNER_GRACE_S", "90"))
     DENY_TOAST_S = 8.0       # min gap between UNAUTHORIZED HUD toasts
     HUD_HEARTBEAT_S = 2.0    # re-send gesture_state even if unchanged, so the HUD can
                              # tell "state is stable" apart from "daemon is dead" (silence)
@@ -371,6 +390,18 @@ class GestureDaemon:
     def _stranger_alert(self, frame, context: str) -> None:
         now = time.monotonic()
         if now - self._last_alert_t < self.ALERT_COOLDOWN_S:
+            return
+        # Suppressed here rather than at the two call sites, so a third door added
+        # later inherits it — root cause #4 is that a class fixed one site at a
+        # time stays open. See ALERT_OWNER_GRACE_S for what this costs and why.
+        _since_owner = now - self._last_owner_t
+        if _since_owner <= self.ALERT_OWNER_GRACE_S:
+            # Logged, not silent: F-19's own lesson is that a suppressed alarm
+            # leaving no trace is indistinguishable from a resolver that never
+            # fired.
+            print(f"[GESTURE] stranger alert SUPPRESSED ({context}) — the owner was "
+                  f"recognised {_since_owner:.0f}s ago, inside the "
+                  f"{self.ALERT_OWNER_GRACE_S:.0f}s alert grace.", flush=True)
             return
         self._last_alert_t = now
         snap_path = None

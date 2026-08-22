@@ -85,6 +85,38 @@ first leg. Groq is doing the work now.
    `gpt-oss-120b` survives the desk's real payload; the cost is one shared daily
    bucket. Split them again if a small plain instruct model returns.
 
+### Later the same day: ollama up, the phone camera up for 20 minutes
+
+Four more findings, and the suite is **95/95, 3073 checks**.
+
+- **F-61** 🟠 the screen read **invents what it cannot see**. It described "a Python
+  script handling JSON" and "a Chrome window with a Google Sheets document"; the
+  screen held a markdown file and no Chrome window at all. I captured the screen and
+  checked. Two of four claims fabricated, at full confidence, with no hedge.
+- **F-64** 🔴 with `TAVILY_API_KEY` unset it **invented today's news** — three
+  specific headlines — and called **no search tool at all**. Row `23b.16` exists to
+  catch exactly this. LEFT OPEN: how a news question with no live source should
+  behave is a judgement, and it touches the freshness machinery.
+- **F-62** 🟠 FIXED. Within a minute of the camera coming up it sent **two intruder
+  alerts to his phone carrying photos of him**, while the proactive door logged
+  "F-19: intruder reading held — streak 1/2" about the same room. Both doors were
+  guarded; the guards disagreed, and the twitchy one owns the phone.
+  `ALERT_OWNER_GRACE_S = 90` now suppresses an alert when the owner was recognised
+  recently, logged not silent. **It would not have stopped today's two** — he was
+  never positively recognised, because the face gate cannot match him from his own
+  phone camera at that angle. The alert fires on a *failed match*, not on a
+  *recognised different person*, and closing that is enrollment or thresholds — his.
+- **F-63** 🟠 FIXED. `intruder_detected` stayed `True` for 30 s with
+  `people_in_view: 0` — set and cleared only inside the "someone is detected"
+  branch, so an empty room could never lower it. F-25's shape one module over.
+
+`21.1` PASSED both halves (dead address skipped, `camera_error → idle`), and `21.9`
+on its key half — the phone reported `video_connections: 1` with two publishers
+running. `23b.8` passed. `12.1`, `23b.16` and `4.3` are the failures.
+
+**RAM on this box:** 5.3 GB free of 15.9 with the desk and ollama idle. A `llava`
+call loads 4.41 GB. Vision fits; vision plus `llama3:8b` does not.
+
 ### ▶ NEXT: the hardware gate. 148 rows were skipped by design.
 
 Everything needing a microphone, a camera, hands, a phone, a TV or a second person

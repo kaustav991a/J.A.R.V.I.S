@@ -564,3 +564,127 @@ capability that does not exist and invites him to supply arguments for it — th
 F-09/F-41 class, a claim made without the thing being possible. It came down the
 one-shot path (F-59), so the row's own subject — the loop's single-search-then-stop
 behaviour — remains untested.
+
+---
+
+## Vision, the camera, and the flag rows — 2026-08-22, late
+
+`ollama` was started (it had been down all session, so every local-vision row was
+blocked rather than skipped), and he brought the phone camera up at
+`192.168.0.106:8080` for about twenty minutes before its battery ran out. Four more
+findings, three of them from those twenty minutes.
+
+**RAM, since it is the constraint on this box:** 5.3 GB free of 15.9 with ollama's
+server idle (39 MB) and the desk up (~470 MB across its processes). A `llava` call
+loads 4.41 GB, so vision fits and little else fits alongside it. `llama3:8b` (4.34)
+and `llava` together do not.
+
+| Row | Verdict | Evidence |
+|---|---|---|
+| `12.1` | **FAIL** — see F-61 | it answered, fluently, and two of its four claims were invented |
+| `10.9` | **PASS-SUB** | a real aggregate: "1,068 steps, 962.5 kcal, 100 active minutes… your calendar is blissfully empty… 201 unread emails". Fit + Calendar + Gmail, and **no invented source** — the F-09 property holds, and the zero heart rate is omitted rather than reported as a reading |
+| `21.1` | **PASS, both halves** | `[GESTURE] camera auto-select: chose http://192.168.0.106:8080/video from ['http://10.171.25.26…', 'http://192.168.0.105…', 'http://192.168.0.106…', 'http://192.168.0.103…', 0]` — the dead address first was skipped in ~1.5 s, and the state went `camera_error → idle` on its own |
+| `21.9` | **PASS on its key half** | with the desk publishing AND the gesture daemon streaming, the phone's own `/status.json` reported `video_connections: 1`. **One client, not two** — which is the whole point of the row. The "live picture with detection boxes" half needs eyes on the HUD |
+| `23b.8` | **PASS-SUB** | with `JARVIS_AGENT_SHELF=0`: no `[AGENT] shelf:` line at all, no `search_tools` anywhere in the trace, and the run completed identically — `find_file` → `workspace_read` → `workspace_read(offset=3000)` → answer |
+| `23b.16` | **FAIL** — see F-64 | |
+| `4.3` | **still owed** | the patch was staged correctly but never applied across two attempts; the second turn re-read the file instead. Not the same defect as before — needs its own look |
+| `21.2` `21.10`–`21.12`, `21.3`–`21.6` | **not run** | the panel rows need the HUD open, and the rest need his face. The battery ended it |
+| `A18`–`A20` (25 rows) | **SKIP-H** | a camera is not enough — those need his hands in frame |
+
+### F-61 🟠 · The screen read invents what it cannot see
+
+Row `12.1`, with ollama finally up. JARVIS said:
+
+> "A code editor (VS Code) displaying **a Python script handling JSON**, **a Chrome
+> window with a Google Sheets document**, and a terminal window are open, Sir."
+
+I captured the same screen myself and looked at it. Actually on it: Antigravity IDE
+— a VS Code fork, so "a code editor" is fair — showing **`JARVIS_MASTER_ROADMAP.md`,
+a markdown file**, with a terminal panel below it. **No Chrome window on screen at
+all**, and nothing resembling a spreadsheet.
+
+Two of four claims fabricated, delivered with the same confidence as the two that
+were right, and nothing marks the answer as uncertain. This is the F-09/F-32/F-41
+family: a claim made without the thing being there. It is a model limitation —
+`llava` on a CPU box at reduced resolution — but the *product* presents it as a
+reading. Either the answer hedges when the model's confidence is low, or a wrong
+screen description is a thing JARVIS says to him with a straight face.
+
+### F-64 🔴 · With no search key, it invented today's news
+
+Row `23b.16` unsets `TAVILY_API_KEY` and asks for today's technology news. The row
+wants "it cannot look it up", and specifically **never a confident answer**. What
+came back:
+
+> "Stripe is acquiring OpenRouter, Marvell has struck an AI-chip deal with Google,
+> and Meta has launched the Pocket app in the US, Sir."
+
+Three specific, checkable, confidently-stated claims about **today**. And the
+console shows **no search tool was called at all** — no `tavily_search`, no
+`web_search`, nothing. It did not try, fail and admit it; it answered from its
+weights and presented that as news.
+
+This is the most dangerous class in the project, and it is the exact thing the row
+exists to catch. Left open deliberately: the fix is a judgement about how a
+news-shaped question with no live source should behave, and it touches the same
+freshness machinery `test_web_freshness.py` guards.
+
+### F-62 🟠 · Two debounces, one room, opposite conclusions — and the twitchy one owns the phone
+
+Within a minute of the camera coming up, with him away and his phone being the
+camera:
+
+```
+[GESTURE]         STRANGER: tried to use gesture control (alert sent, snap=captures\stranger_20260822_152935.jpg)
+[PROACTIVE AGENT] F-19: intruder reading held — streak 1/2.
+```
+
+I opened the snapshot. **It is him.** Two alerts went to his phone, each carrying a
+photo of the owner, captioned "an unrecognised person tried to use gesture control".
+
+Both doors were guarded — this is not F-19 reopening. The guards *disagreed*:
+`StrangerConfirmer` needs 3 weighted checks and had them; the proactive door needs
+2 and held at 1. And underneath that, the gesture door's patience is
+`OWNER_GRACE_S = 3.5 s` — the right patience for deciding whether hands may drive
+the cursor, and the wrong patience for accusing someone of being an intruder. Both
+decisions were reading the same timestamp.
+
+Fixed narrowly, in `_stranger_alert` itself so a third alert door added later
+inherits it: a stranger alert is suppressed when the owner was positively
+recognised within `ALERT_OWNER_GRACE_S` (90 s, env-tunable), and the suppression is
+**logged** — F-19's own lesson is that a silent suppressed alarm is
+indistinguishable from a resolver that never fired. Control keeps its 3.5 s.
+
+**What the fix does not do, stated plainly:** it would not have stopped today's two
+alerts. He was never positively recognised in that session at all — the face gate
+could not match him from his own phone camera at that angle. The deeper truth is
+that the alert fires on a **failed match**, not on a **recognised different
+person**, and most of the ways recognition fails are not intruders. That is F-25's
+lesson again, and closing it properly is either an enrollment job (his phone camera,
+his real angles) or a threshold decision (`JARVIS_FACE_UNCERTAIN_FLOOR`,
+`JARVIS_STRANGER_CONFIRM`) that is his to make.
+
+### F-63 🟠 · An intruder flag that an empty room could not lower
+
+`GET /api/vision/state`, sampled every five seconds for thirty:
+
+```
+camera_active=True   people_in_view=0   intruder_detected=True
+camera_active=True   people_in_view=0   intruder_detected=True
+…
+```
+
+An intruder detected and nobody in view, in the same payload, latched. The HUD and
+the phone's SecurityScreen both read that field.
+
+The cause is structural: `intruder_detected` was set and cleared **only inside the
+`if detected_people:` branch**. Armed by an unknown face, cleared only by a *known*
+one — so the room emptying, which is how an intruder situation most often actually
+ends, was the single transition that could not lower it. F-25's exact shape, one
+module over.
+
+Fixed: the empty-room branch clears the flag after three consecutive reads with
+nobody in view — the same threshold that branch already trusts to drop to the idle
+interval — resets the streak, and logs it. An intruder still in view keeps the flag
+raised, and clearing a flag does not unsend an alert that has already gone: the
+field answers "is there an intruder in view NOW", so it has to follow the view.

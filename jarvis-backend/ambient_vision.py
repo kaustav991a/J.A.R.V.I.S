@@ -387,6 +387,35 @@ class AmbientVisionDaemon:
                 shared_optical_cache["dominant_emotion"] = "neutral"
                 self.no_person_streak += 1
 
+                # ── An empty room lowers the flag ─────────────────────────────
+                # Live-gate session 4. `intruder_detected` was set and cleared
+                # ONLY inside the `if detected_people:` branch above, so it was
+                # armed by an unknown face and cleared only by a KNOWN one. The
+                # room emptying — the most likely way an intruder situation
+                # actually ends — was the one transition that could not lower it.
+                # Measured: /api/vision/state answered
+                #
+                #   camera_active=True  people_in_view=0  intruder_detected=True
+                #
+                # for 30 seconds straight, an intruder and nobody in view in the
+                # same payload. The HUD and the phone's SecurityScreen both read
+                # that field.
+                #
+                # This is F-25's shape one module over: armed on one kind of
+                # evidence, cleared only on a different kind that may never come.
+                # Three consecutive empty reads is the same threshold this branch
+                # already trusts to drop to the idle interval, and clearing the
+                # flag does not unsend an alert that already went out — the flag
+                # answers "is there an intruder in view NOW", so it has to follow
+                # the view.
+                if (self.no_person_streak >= 3
+                        and shared_optical_cache.get("intruder_detected")):
+                    shared_optical_cache["intruder_detected"] = False
+                    self.intruder_streak = 0
+                    print(f"[AMBIENT VISION] intruder flag cleared — "
+                          f"{self.no_person_streak} consecutive reads with nobody "
+                          f"in view.", flush=True)
+
                 if self.no_person_streak >= 3:
                     self.interval = self.idle_interval
 

@@ -92,6 +92,8 @@ jarvis-backend/watchdog.log
 # watchdog's session shutdown token.
 jarvis-backend/gate-s4-*.log
 jarvis-backend/gate-session-*.log
+jarvis-backend/desk.log
+jarvis-backend/desk.err.log
 jarvis-backend/error.log
 jarvis-backend/last_boot_date.txt
 jarvis-backend/test_grid_output.jpg
