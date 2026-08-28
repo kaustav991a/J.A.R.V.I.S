@@ -14,11 +14,42 @@
 
 ---
 
+## 0 · The goals — what has to be TRUE, not what has to be built
+
+> **`tracker.html` opens on these.** A tier and a batch describe how the work is
+> *organised*; a goal describes what is different for him when it is finished. Every
+> ladder item and every gate batch belongs to exactly one goal below, and **the
+> generator refuses to build if anything belongs to none or to two.**
+>
+> That refusal is the point of the arrangement rather than a nicety. A grouped page
+> has one failure mode that matters: a row with no group vanishes from the view while
+> still counting in the total, so the percentage and the list disagree and the page
+> looks complete *because* something is missing from it. Breaking the build is the
+> same bargain the staleness check already makes.
+>
+> Members are the ladder's own ids and the gate's own batch labels, so nothing is
+> renamed to fit a grouping.
+
+| Goal | What is different for him when it holds | Members |
+|---|---|---|
+| **He never claims what he did not do** | The top severity in this project, and it is about character rather than correctness: an assistant that reports an action it did not take cannot be delegated anything. Both habit-1 guards are suite failures now; what is unproved is the same property over live information, where the temptation to answer from weights is strongest | `1.1` `1.2` `A11 information` |
+| **He is up before you are, and stays up** | Nothing else on this page means anything on a machine where a dependency died quietly — session 4 lost every vision row to an `ollama` that was down and said nothing. Five of these are sealed; the resilience batch is what is left | `0.2` `0.3` `0.4` `3.2` `A1 pre-flight` `A24 watchdog` `A17 resilience` |
+| **He reaches for the right tool the first time** | The one number that decides whether he is *dependable* rather than *impressive*. The cause was upstream of retrieval: he was handed five file tools and asked to book a dentist. Mechanism fixed and measured offline at 39/40; the live re-measure is the open loop | `2.1` `2.2` `2.3` |
+| **He acts on your behalf, with the brakes on** | The difference between a voice interface and an agent: 56 tools behind a door he opens by saying *"work through this"*, every CONFIRM read back verbatim before it fires, and a refusal that holds when the request is about someone else | `A5 workspace` `A6 OS/apps` `A7 governance` `A22 agentic` `A23 partner refusals` |
+| **He hears you, across the room** | Fourteen rows and **not one has ever been run**. Everything proved so far went through a keyboard, so the whole microphone path — wake word, barge-in, contention while he is speaking — is unknown rather than working. The spoken recovery code is here too, and it is the only done item not sealed | `0.1` `A3 voice` |
+| **He sees what you show him** | A camera, a screen read, and twenty-five gesture rows. The one vision row that has run invented two of its four claims, so this is where habit 1 and the senses meet | `A13 vision` `A21 camera` `A18–A20 gesture` |
+| **He knows it is you, and who else is there** | An assistant with this much reach has to be certain who is asking. The face must be re-enrolled on the angles actually used before any camera row after it can be believed, and two of these batches need another person in the room | `0.5` `A16 login` `Group B` `Group C` |
+| **He remembers, and it survives a restart** | What he knows has to outlive the process — and a claim that is only true for a while must not be stored as though it were permanent | `A9/A10 memory` |
+| **He reaches you when you are away from the desk** | The always-on half: the phone, the cloud gateway, a briefing that arrives without the app being open. Eleven rows, none run, all needing the phone in hand | `Group D` |
+| **He is still right after a week nobody watched** | The long pole, and the only item whose cost is elapsed time rather than work. Nothing here currently proves *sustained* reliability, and that is what "rely on it" means | `3.1` `3.3` |
+
+---
+
 ## 1 · Where JARVIS actually is — 2026-08-22
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **102 harnesses, 3497 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures |
+| Automatic suite | **105 harnesses, 3597 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -340,8 +371,19 @@ venv\Scripts\python.exe watchdog.py *> gate-session-5.log
 
 ## 8 · The dashboard
 
-`tracker.html` — open it in a browser for the same state as a page: the ladder with
-a completion bar, the gate batches, open findings and the ship gates.
+`tracker.html` — open it in a browser for the same state as a page. **It opens on
+the goals in §0**, each with its members and a completion bar, then the ladder, the
+sealed evidence, the open loops, the gate batches, open findings and the ship gates.
+
+Goals first is deliberate: a tier and a batch describe how the work is *organised*,
+which is not the question somebody opens a dashboard to ask. The generator
+**refuses to build** unless every ladder item and every gate batch belongs to
+exactly one goal — because a row belonging to none vanishes from the view while
+still counting in the totals, so the page's percentage and the page's list disagree
+and it reads as complete *because* something is missing from it. That is
+unobservable from the page, so the build is where it has to be caught. All three
+refusals — an orphan, a member in two goals, a typo'd member — are driven in
+`test_tracker_html.py` against a temp tree, not merely asserted.
 
 It is **generated from this file**, not maintained beside it:
 

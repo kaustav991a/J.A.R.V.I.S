@@ -16,6 +16,20 @@ page that quietly says less than it used to. A dashboard that under-reports is
 worse than no dashboard, because it is believed — the same rule the tracker
 itself opens with.
 
+WHAT THE PAGE OPENS ON
+----------------------
+Goals, not tiers. A tier and a batch describe how the work is *organised*; a goal
+describes what is different for him when it is finished, which is the question
+somebody opening a dashboard is actually asking. Section 0 of the tracker owns the
+goals and their membership, and `_check_membership` REFUSES TO BUILD unless every
+ladder item and every gate batch belongs to exactly one of them.
+
+That refusal is the point. A grouped page has one failure mode that matters: a row
+belonging to no goal vanishes from the view while still counting in the totals, so
+the percentage and the list disagree and the page looks complete *because*
+something is missing from it. No amount of reading the page reveals that, so the
+build is where it has to be caught.
+
 WHAT IT COUNTS
 --------------
 Status comes from the marks already in the markdown: ✅ done, ⚠️ partial,
@@ -45,6 +59,34 @@ def _classify(cell: str) -> str | None:
     if "☐" in cell or "⬜" in cell:
         return TODO
     return None
+
+
+def _gate_kind(rows_cell: str, state_cell: str) -> str:
+    """How complete a gate BATCH is — which is not what `_classify` answers.
+
+    `_classify` looks for a mark anywhere in the cell, so `✅ 10.2, 10.5, 10.7,
+    10.9` — four rows ticked out of nine — read as DONE. In the flat gate table
+    that was a wrong colour on one row. Under the goal cards it became a false
+    CLAIM: the goal owning `A11 information` rendered "3/3 held" with a full bar
+    while five of that batch's nine rows had never been run. A dashboard that
+    under-reports is worse than none because it is believed, and this is the same
+    thing pointing the other way.
+
+    So a batch counts as DONE only when its state says `all N` and `N` is the row
+    count. Anything else carrying a tick or a warning is PARTIAL — including
+    `✅ 5 via the text door`, which is right: the tracker's own standing rule is
+    that every PASS-SUB row still owes its own door.
+    """
+    base = _classify(state_cell)
+    if base is None:
+        return TODO
+    if base != DONE:
+        return base
+    want = re.search(r"\d+", rows_cell or "")
+    got = re.search(r"\ball\s+(\d+)\b", state_cell, re.I)
+    if got and want and got.group(1) == want.group(0):
+        return DONE
+    return PARTIAL
 
 
 def _rows(section: str) -> list[list[str]]:
@@ -81,6 +123,79 @@ def _strip_md(text: str) -> str:
     t = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", t)
     t = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', t)
     return t
+
+
+def _goals(md: str) -> list[dict]:
+    """The goal table from section 0, in the order it is written.
+
+    Members are the backticked tokens in the third cell — the ladder's own ids and
+    the gate's own batch labels, so a goal never renames the thing it groups.
+    """
+    out = []
+    for cells in _rows(_section(md, "The goals")):
+        if len(cells) < 3 or cells[0].lower().startswith("goal"):
+            continue
+        members = re.findall(r"`([^`]+)`", cells[2])
+        if not members:
+            raise SystemExit(
+                f"[build_tracker_html] FAILED: the goal {cells[0]!r} lists no "
+                f"members. A goal that groups nothing is a heading, and the page "
+                f"would show it as complete.")
+        out.append({"title": cells[0], "why": cells[1], "members": members})
+    if not out:
+        raise SystemExit(
+            "[build_tracker_html] FAILED: section 0 has no goal rows. The page "
+            "opens on goals; without them it would silently fall back to the "
+            "ladder, which is the view this arrangement replaced.")
+    return out
+
+
+def _check_membership(goals: list[dict], tiers: list[dict],
+                      gate: list[dict]) -> dict:
+    """Every ladder item and gate batch in EXACTLY one goal, or the build fails.
+
+    This is the whole reason the grouping is safe to trust. A grouped page has one
+    failure mode that matters: a row belonging to no goal vanishes from the view
+    while still counting in the totals, so the percentage and the list disagree and
+    the page looks complete *because* something is missing from it. There is no way
+    to notice that by reading the page — the only defence is to refuse to build.
+
+    Returns member label -> goal title.
+    """
+    ladder = [i["id"] for t in tiers for i in t["items"]]
+    batches = [g["batch"] for g in gate]
+    universe = list(dict.fromkeys(ladder + batches))
+
+    owner: dict = {}
+    twice: list[str] = []
+    for g in goals:
+        for m in g["members"]:
+            if m in owner:
+                twice.append(f"{m!r} (in {owner[m]!r} and {g['title']!r})")
+            else:
+                owner[m] = g["title"]
+
+    orphans = [m for m in universe if m not in owner]
+    unknown = [m for m in owner if m not in universe]
+
+    problems = []
+    if orphans:
+        problems.append("belong to NO goal, so a grouped page would drop them "
+                        "while still counting them:\n    " + "\n    ".join(orphans))
+    if unknown:
+        problems.append("are named by a goal but exist in neither the ladder nor "
+                        "the gate — a typo, or something renamed:\n    "
+                        + "\n    ".join(unknown))
+    if twice:
+        problems.append("belong to TWO goals, so they would be counted twice:\n    "
+                        + "\n    ".join(twice))
+    if problems:
+        raise SystemExit(
+            "[build_tracker_html] FAILED: the goal grouping in section 0 does not "
+            "cover the work.\n  These " + "\n  These ".join(problems)
+            + "\n\n  Fix section 0 of JARVIS_TRACKER.md. Every ladder id and every "
+              "gate batch label must appear under exactly one goal.")
+    return owner
 
 
 def main() -> int:
@@ -139,7 +254,10 @@ def main() -> int:
             continue
         gate.append({"batch": cells[0], "rows": cells[1],
                      "needs": cells[2], "state": cells[3],
-                     "kind": _classify(cells[3]) or TODO})
+                     # NOT _classify: see _gate_kind. A batch with four of nine
+                     # rows ticked is not done, and a goal card aggregating it
+                     # would say "held".
+                     "kind": _gate_kind(cells[1], cells[3])})
 
     # ── the two open loops, from section 2b ───────────────────
     sealed_md = _section(md, "What is SEALED")
@@ -198,13 +316,18 @@ def main() -> int:
     stamp = re.search(r"^## 1 · Where JARVIS actually is — (.+)$", md, re.M)
     asof = stamp.group(1).strip() if stamp else "see tracker"
 
+    goals = _goals(md)
+    goal_owner = _check_membership(goals, tiers, gate)
+
     doc = _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
-                  gate_stat, open_loops, sealed_rows)
+                  gate_stat, open_loops, sealed_rows, goals)
     OUT.write_text(doc, encoding="utf-8")
     print(f"[build_tracker_html] wrote {OUT.relative_to(ROOT)}  "
           f"({len(doc):,} bytes)")
     print(f"[build_tracker_html] ladder: {counts[DONE]} done, "
           f"{counts[PARTIAL]} partial, {counts[TODO]} to do  -> {pct_done}%")
+    print(f"[build_tracker_html] goals: {len(goals)}, covering "
+          f"{len(goal_owner)} ladder items and gate batches")
     return 0
 
 
@@ -216,7 +339,8 @@ def _bar(counts: dict, total: int) -> str:
 
 
 def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
-            gate_stat=None, open_loops=None, sealed_rows=()) -> str:
+            gate_stat=None, open_loops=None, sealed_rows=(),
+            goals=()) -> str:
     total = sum(counts.values()) or 1
 
     # The gate is the number that decides whether JARVIS is finished, so it sits
@@ -276,6 +400,62 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
             f"<div class='tw'><table>"
             f"<colgroup><col class='c1'><col class='c2'><col class='c3'></colgroup>"
             f"{rows}</table></div>{scores_html}</section>")
+
+    # ── the goals, which the page now opens on ─────────────────────────
+    #
+    # Percentages are deliberately NOT printed here. Two reasons, and the second
+    # is the load-bearing one: a gate batch is a bundle of rows at differing
+    # completion, so one number over mixed units would be false precision — and
+    # `test_tracker_html` reads the FIRST `>NN%<` on the page as the ladder
+    # headline, so a goal percentage above it would silently retarget that check.
+    by_id = {i["id"]: i for t in tiers for i in t["items"]}
+    by_batch = {g["batch"]: g for g in gate}
+
+    goals_html = []
+    for g in goals or ():
+        mrows, kinds = [], []
+        for m in g["members"]:
+            item = by_id.get(m)
+            if item is not None:
+                kinds.append(item["kind"])
+                mrows.append(
+                    f"<tr class='{item['kind']}'>"
+                    f"<td class='id'>{_strip_md(m)}</td>"
+                    f"<td class='gm'>{_strip_md(item['what'])}</td>"
+                    f"<td class='st'>{_strip_md(item['status'])}</td></tr>")
+                continue
+            b = by_batch.get(m)
+            if b is not None:
+                kinds.append(b["kind"])
+                mrows.append(
+                    f"<tr class='{b['kind']}'>"
+                    f"<td class='id'>{_strip_md(m)}</td>"
+                    f"<td class='gm'>{_strip_md(b['rows'])} rows — needs "
+                    f"{_strip_md(b['needs'])}</td>"
+                    f"<td class='st'>{_strip_md(b['state'])}</td></tr>")
+                continue
+            # unreachable: _check_membership refuses to build on an unknown
+            # member. Kept so a future edit that loosens that check cannot make
+            # a member disappear from the page in silence.
+            raise SystemExit(
+                f"[build_tracker_html] FAILED: goal {g['title']!r} names {m!r}, "
+                f"which is neither a ladder item nor a gate batch.")
+
+        done = sum(1 for k in kinds if k == DONE)
+        part = sum(1 for k in kinds if k == PARTIAL)
+        n = len(kinds) or 1
+        state_word = ("held" if done == len(kinds) else
+                      "started" if done or part else "not begun")
+        goals_html.append(
+            f"<section class='goal {state_word.replace(' ', '-')}'>"
+            f"<h3><span>{_strip_md(g['title'])}</span>"
+            f"<span class='tally'>{done}/{len(kinds)} {state_word}</span></h3>"
+            f"<div class='gbody'>"
+            f"<p class='why'>{_strip_md(g['why'])}</p>"
+            f"{_bar({DONE: done, PARTIAL: part, TODO: len(kinds) - done - part}, n)}"
+            f"<div class='tw'><table>"
+            f"<colgroup><col class='c1'><col class='c2'><col class='c3'></colgroup>"
+            f"{''.join(mrows)}</table></div></div></section>")
 
     gate_html = "".join(
         f"<tr class='{g['kind']}'><td>{_strip_md(g['batch'])}</td>"
@@ -388,6 +568,22 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
  .tier table col.c3 {{ width:auto }}
  .tier table {{ background:var(--panel); border:1px solid var(--line);
    border-radius:0 0 9px 9px }}
+ .goal {{ background:var(--panel); border:1px solid var(--line);
+   border-radius:10px; margin-bottom:12px; overflow:hidden }}
+ .goal h3 {{ font-size:14.5px; margin:0; padding:12px 15px; background:#1b2230;
+   border-bottom:1px solid var(--line); display:flex; gap:12px;
+   justify-content:space-between; align-items:baseline }}
+ .goal.held h3 {{ box-shadow:inset 3px 0 0 var(--done) }}
+ .goal.started h3 {{ box-shadow:inset 3px 0 0 var(--part) }}
+ .goal.not-begun h3 {{ box-shadow:inset 3px 0 0 var(--todo) }}
+ .goal .tally {{ white-space:nowrap; font-size:12px }}
+ .gbody {{ padding:13px 15px 4px }}
+ .why {{ margin:0 0 11px; color:var(--dim); font-size:13px; line-height:1.55 }}
+ .goal .bar {{ min-width:0; margin-bottom:9px }}
+ .goal table col.c1 {{ width:15ch }}
+ .goal table col.c2 {{ width:46% }}
+ .goal table col.c3 {{ width:auto }}
+ .gm {{ font-size:13px }}
  ul.ship {{ list-style:none; padding:0; margin:0 }}
  ul.ship li {{ padding:7px 0; border-bottom:1px solid var(--line) }}
  ul.ship li:last-child {{ border:0 }}
@@ -421,6 +617,9 @@ it is derived, and a second place to update is how the last set of docs drifted.
     </div>
   </div>
 </div>
+
+<h2>The goals — what has to be true</h2>
+{"".join(goals_html)}
 
 <h2>Where it actually is</h2>
 <div class="panel tw"><table>{state_html}</table></div>
