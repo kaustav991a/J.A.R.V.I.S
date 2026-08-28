@@ -2673,3 +2673,86 @@ nothing anywhere would have reported it missing.
 **When a document is retired, the branches still holding it have to be read too.**
 The conflict was the only reason this surfaced at all; had `RESUME.md` merged
 cleanly it would have been deleted in silence.
+
+---
+
+## F-69 🟠 · Row `4.3` — the patch was refused on purpose, and the refusal went nowhere he could use
+
+**Raised and closed 2026-08-29.** Row `4.3` was the one gate row the tracker
+recorded as failing *for a reason still unexplained* — "the patch was staged
+correctly but never applied across two attempts; the second turn re-read the file
+instead". Reproduced offline against the real `WorkspaceAgent`, so this is measured
+rather than reasoned.
+
+**The cause, and it is not a bug in the patch path.** Row `4.1` writes `add.py`
+from *"a simple add function"*, and what an LLM writes for that contains `add`
+**twice** — the function, and the `__main__` block that calls it. Row `4.3`'s search
+string is `add`. So `patch_file` refuses the patch as AMBIGUOUS and writes nothing,
+which is **correct and deliberate**: until 2026-08-08 the default replaced every
+match silently, and *"change timeout = 30 to timeout = 60"* rewrote all three.
+
+Measured, with the bytes on disk checked rather than the reply believed:
+
+| what was asked | on disk | said |
+|---|---|---|
+| `add` → `plus`, file with 2 matches | **nothing written** | refused, ambiguous, names the count |
+| `def add(` → `def plus(` | applied, call site untouched | 1 replacement |
+| `add` → `plus` with `replace_all` | applied everywhere | 2 replacements |
+| `add` → `plus`, file with 1 match | applied | 1 replacement |
+
+So the staging was right, the approval was right, the refusal was right, and the
+model re-reading the file was the *designed* recovery. **What was broken is that
+none of it reached him in a usable form, at three layers that had to be fixed
+together.**
+
+**1 · The spoken line dropped the only actionable part.**
+`_sanitize_for_speech`'s `workspace_patch` branch has a case for `aborted` (too many
+matches — the RARER failure) carrying real advice, and **no case at all** for the
+ambiguity refusal added later. It fell through to the generic `_unevidenced` net, so
+he heard *"The patch did not apply, Sir. The file is unchanged."* — honest, and
+stripped of the count and the two ways forward that the applier had actually
+written. He retried the identical phrasing, it failed identically, and the row was
+recorded as unexplained. Now: *"That matches 2 places in the file, Sir, so I have
+not guessed which one you meant. Give me a longer piece of the line, or tell me to
+change all of them."*
+
+**2 · One of those two ways forward did not exist.** The applier's refusal says *"or
+say explicitly that all 2 should change"* — and **neither `workspace_patch`
+description in `brain.py` mentioned the `*all*` prefix**, so the planner could not
+emit it however he phrased the request. A refusal recommending an unreachable path
+is a promise the system cannot keep, which is the top severity in this project, and
+it was being made by the guard's own error message.
+
+**3 · Teaching the planner `*all*` would have opened a consent gap, so that closed
+in the same change.** `_confirm_disclosure` strips the prefix to resolve the path
+and never said anything about scope, so `in add.py, replacing "add" with "plus"` was
+the read-back for a one-line edit **and** for rewriting every match in the file —
+two very different authorisations, one sentence. Latent only because of (2). It now
+reads `replacing every occurrence of "add" with "plus"`, and F-29's rule holds
+again.
+
+**And the row should now pass on the first turn, not merely recover.** The planner
+reaching for a bare `add` is what walked into the guard, so both descriptions now
+require a search string **long enough to be unique** and carry this row's own
+example: send `def add(`, not `add`.
+
+Harness `test_gate_row_43.py`, **29 checks** — the applier's four outcomes verified
+against the bytes on disk, the spoken line, the read-back's scope in both
+directions, and a pin that keeps halves (1) and (2) together: the speech offers
+"change all of them", and that offer is only honest while every planner description
+names the prefix. Suite 106 harnesses.
+
+**Still owed: the live re-run.** The cause is closed; the ROW is not. It needs the
+desk, a real `add.py` from row `4.1`, and a look at disk afterwards — the same rule
+that made row `4.1` fail four times: never trust a desk "it worked" without
+checking the file.
+
+### The lesson, which is not about patching
+
+**A guard's error message is a user interface, and it was never treated as one.**
+This refusal had a count, a reason, and two remedies — good text, written by someone
+thinking clearly — and every layer above it either discarded it or recommended
+something unreachable. The applier was right the whole time and looked broken for
+three weeks. When a guard refuses, ask the same question this project asks of
+sinks: *which other layer does this have to travel through, and does it survive
+the trip?*

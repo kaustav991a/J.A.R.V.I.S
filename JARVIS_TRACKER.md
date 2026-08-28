@@ -49,7 +49,7 @@
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **105 harnesses, 3597 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
+| Automatic suite | **106 harnesses, 3626 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -185,9 +185,17 @@ discovered. An item that meets all four does not get revisited.
    tool went from 4/40 to 39/40 in front of the model — but `run_evals.py --live`
    has **not** been re-run, so the 56% still stands as the last real end-to-end
    figure. It needs a run that touches his machine.
-2. **Row `4.3`.** `workspace_patch` stages its confirmation correctly and then never
-   applies the edit. Seen twice, cause not yet found. It is the one gate row that
-   failed for a reason still unexplained.
+2. **Row `4.3` — the CAUSE is closed as of 2026-08-29 (F-69); the ROW is not.**
+   It was never a bug in the patch path. `add.py` holds `add` twice — the function
+   and the line that calls it — so the applier refuses the patch as ambiguous and
+   writes nothing, correctly, since that default used to rewrite every match
+   silently. What was broken sat in the three layers above it: the spoken line
+   dropped the count and both remedies, one of those remedies (`*all*`) had never
+   been taught to the planner so the guard was recommending an unreachable path,
+   and teaching it would have made a one-line edit and a whole-file rewrite read
+   back as the same sentence. Fixed together, 29 checks, reproduced against the
+   bytes on disk rather than the reply. **What is owed is the live re-run** — the
+   desk, a real `add.py`, and a look at the file afterwards.
 
 And the standing one, which is not a defect but must not be forgotten: **every
 `PASS-SUB` row still owes its own door.** The text command line proves the brain and
@@ -204,7 +212,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 |---|---|---|---|
 | A1 pre-flight | 5 | machine | ✅ all 5 |
 | A24 watchdog | 5 | machine | ✅ 3 of 5 (`1.5` needs a real Ctrl+C) |
-| A5 workspace | 5 | machine | ✅ 4, `4.3` owed — patch stages and never applies |
+| A5 workspace | 5 | machine | ✅ 4, `4.3` owed — cause found and fixed 2026-08-29 (F-69: the refusal was right, the three layers above it were not); needs its live re-run |
 | A7 governance | 5 | machine | ✅ 5 via the text door |
 | A9/A10 memory | 6 + K | machine / **his recovery code** | ✅ 9.1, 9.2, 9.6, K1, K5b · K2–K5 need him with the code in reach |
 | A11 information | 9 | machine + live tokens | ✅ 10.2, 10.5, 10.7, 10.9 |

@@ -656,6 +656,27 @@ def _sanitize_for_speech(atype: str, result: str) -> str | None:
             return "Patch failed, Sir — that string isn't in the file."
         if "aborted" in r:
             return "Patch aborted, Sir. Too many matches — be more specific."
+        # Gate row 4.3. THE most common patch failure had no branch of its own,
+        # so it fell to the generic `_unevidenced` net and he heard "The patch
+        # did not apply, Sir. The file is unchanged." — honest, and stripped of
+        # the only part he could act on. Meanwhile the RARER case (too many
+        # matches, above) had carried actionable advice since it was written.
+        #
+        # Row 4.3 is "in add.py change the function name add to plus". The file
+        # row 4.1 wrote contains `add` twice — the function and the `__main__`
+        # block that calls it — so the applier refuses as ambiguous, correctly,
+        # and says so with a count and two ways forward. None of that reached
+        # him, he retried the identical phrasing, it failed identically, and the
+        # row was recorded as "cause not yet found" across two attempts.
+        #
+        # Both ways forward are now real: a longer search string always worked,
+        # and `*all*` became reachable when brain.py was told it exists.
+        if "refused" in r and "matches" in r:
+            _n = _re.search(r"matches (\d+) place", r)
+            _count = f"{_n.group(1)} places" if _n else "more than one place"
+            return (f"That matches {_count} in the file, Sir, so I have not "
+                    f"guessed which one you meant. Give me a longer piece of "
+                    f"the line, or tell me to change all of them.")
         if r.startswith("format:") or "no file path" in r:
             return ("I couldn't act on that, Sir — the patch instruction reached me "
                     "malformed, so the file is unchanged.")
@@ -1739,14 +1760,26 @@ def _confirm_disclosure(conf_action: str, conf_id: str | None) -> str:
             return f"writing to {path}"
 
         # "path|search|replace": all three are the decision.
+        #
+        # And so is SCOPE. `_disclosed_path` strips the `*all*` prefix to resolve
+        # the path, so the read-back said `replacing "add" with "plus"` for a
+        # one-line edit and for a rewrite of every occurrence in the file —
+        # identical sentences, two very different authorisations. It was latent
+        # only because the planner had never been told `*all*` existed; teaching
+        # it (brain.py, row 4.3) is what makes this reachable, so the two land
+        # together. F-29's rule is that the human is shown what they are
+        # approving, and "how many places" is part of what.
         if atype == "workspace_patch":
+            raw_path = (target.split("|")[0] if target else "").strip()
+            prefix = getattr(engine, "PATCH_ALL_PREFIX", "")
+            every = bool(prefix) and raw_path.startswith(prefix)
             bits = target.split("|")
-            path = _disclosed_path((bits[0] if bits else "").strip(),
-                                   atype) or "an unnamed file"
+            path = _disclosed_path(raw_path, atype) or "an unnamed file"
             if len(bits) >= 3:
-                return (f"in {path}, replacing “{bits[1].strip()}” "
+                scope = "every occurrence of " if every else ""
+                return (f"in {path}, replacing {scope}“{bits[1].strip()}” "
                         f"with “{bits[2].strip()}”")
-            return f"patching {path}"
+            return f"patching {path}" + (" in every place it matches" if every else "")
 
         verb = _CONFIRM_TARGET_LABEL.get(atype)
         summary = target if len(target) <= 160 else target[:157] + "…"
