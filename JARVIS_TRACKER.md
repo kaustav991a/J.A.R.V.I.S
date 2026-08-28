@@ -314,23 +314,41 @@ Sequence (from the roadmap's after-the-gate list, which still stands):
 
 ## 7 · Resume point — start here
 
-**Stamped 2026-08-22, evening.** Everything below is measured, not remembered.
+**Stamped 2026-08-29.** Everything below is measured, not remembered.
 
 ```powershell
 cd F:\work\JARVIS-Project
-git log --oneline -3          # head should be the agent-trigger commit
+git log --oneline -1          # 8ef0f56 — and the branch is PUSHED, not ahead
 cd jarvis-backend
-venv\Scripts\python.exe run_harnesses.py   # expect 102/102, 3497 checks, 0 failed
+venv\Scripts\python.exe run_harnesses.py   # expect 106/106, 3626 checks, 0 failed
 ```
 
 If that number is lower, read the harness name before anything else: the system
 python fakes nine failures, and a harness reporting **0 checks is broken, not
 green**.
 
+### What changed on 2026-08-29, because two of these change what you can trust
+
+* **`fix/durable-state` is merged AND DEPLOYED.** `/health` reports
+  `memory.state_durable: true`. That deploy wiped `commute` (2 departures → 0) and
+  `push_targets` (1 → 0) with nothing in Postgres to restore from, because the
+  instance holding that state predated the code that persists it. **It was the last
+  time.**
+* **Both harnesses that merge brought FAILED on first execution by a real
+  interpreter** — a fixture missing `lat`/`lon` that made three tests assert an
+  empty list was truthy and six more pass vacuously, and a summary line the runner
+  could not parse so the harness scored 0 checks while printing "all 15 passed". The
+  branch had written down this exact risk about itself. **A harness authored anywhere
+  other than this machine has not run.**
+* **Row `4.3`'s cause is closed** (F-69) and the row is still owed.
+* **`tracker.html` opens on the §0 goals now**, and the generator refuses to build
+  if any ladder item or gate batch belongs to no goal or to two.
+
 ### Where the ladder stands
 
-**8 of 13 done (62%)**, 1 partial, 4 to do. Everything a machine can finish alone
-is finished. The four that remain need Kaustav, the phone, or a week of clock.
+**8 of 13 done (62%)**, 1 partial, 4 to do — unchanged, because everything done on
+2026-08-29 was gate and gateway work rather than ladder work. Everything a machine
+can finish alone on the ladder is still finished.
 
 | Left | Needs |
 |---|---|
@@ -339,42 +357,90 @@ is finished. The four that remain need Kaustav, the phone, or a week of clock.
 | 3.1 run the 192 gate rows | him at the desk, 4–6 sessions |
 | 3.3 the 7-day soak | a week of wall-clock, and it is the long pole |
 
-### The two one-liners that are his
+### His, and none of them take long
 
-1. **`GEMINI_API_KEY`** — delete or replace it in `.env`. It is `400
-   API_KEY_INVALID`; the four keys in `GEMINI_API_KEYS` are fine. Nothing breaks
-   until he does it, and boot now names it explicitly.
-2. **Row 0.1** — say the override phrase into the microphone once. It is the only
-   done item not SEALED, and the gap is the door, not the code.
+1. **Open the app once.** The deploy wiped the schedule and the push address; the
+   phone re-uploads on cloud connect, gated on `link.status === 'open'` — a photo
+   over plain HTTP will not do it. Confirm `departures` comes back as **2**, with
+   `tz: Asia/Calcutta` and `days_on: 5`. Those were the live values before the wipe.
+2. **`GEMINI_API_KEY`** — delete or replace it in the desk's `.env`. It is `400
+   API_KEY_INVALID`; the four in `GEMINI_API_KEYS` are fine, and boot names the
+   right variable now. Nothing breaks until he does it.
+3. **F-70** — the CLOUD runs on `gemini_keys: 1`, not the desk's four, and had
+   already hit `429` on 2026-08-27. Whether copying the others to Render helps
+   depends on something only he knows: **are they four separate Google projects?**
+   The 20/day quota is one bucket per project, so four keys on one project changes
+   nothing. Do not copy them across before answering that.
+4. **F-68** — declare `LLM_PROVIDER_VISION: gemini` in `render.yaml`, or drop the
+   dashboard override and accept `groq`. Confirmed live: the service says `gemini`
+   while the Blueprint says `groq`.
+5. **Row 0.1** — say the override phrase into the microphone once. Still the only
+   done ladder item not SEALED, and the gap is the door, not the code.
 
 ### What to do first, in this order
 
-1. **3.3, the soak** — it is the only item whose cost is *elapsed time*, so
-   starting it is worth more than finishing anything else. Nothing else on the
-   ladder blocks it.
-2. **0.5 + 3.1 together** — one hardware session. Re-enroll the face first,
-   because every camera row after it depends on that.
-3. **2.1's `--live`** — it now measures something different from before: until
-   the explicit trigger landed, the live eval could only exercise file goals.
+1. **3.3, the soak** — still the only item whose cost is *elapsed time*, so starting
+   it is worth more than finishing anything else. Nothing on the ladder blocks it.
+2. **0.5 + 3.1 together** — one hardware session. Re-enroll the face first, because
+   every camera row after it depends on it. Row `4.3` belongs in this session: its
+   cause is fixed and it wants a real `add.py` and a look at the file.
+3. **2.1's `--live`** — it measures something different from before: until the
+   explicit trigger landed, the live eval could only exercise file goals.
+
+### If the next session is a CODE session, start in the other repo
+
+The desk ladder has **nothing machine-only left**. The work that does is
+`jarvis-mobile`'s `docs/brain-dependencies.md` — that laptop has no Python at all
+(`python`/`python3` are the Microsoft Store stub), so **this machine is the only
+place any of it is testable.** It was 9 queue items; **13 and 24 are now done**, so
+seven remain: `6` (the transcribe prompt overcorrects on plain English), `11`
+(notification listener, gated on 12), `12` (split `APP_TOKEN` by capability — the
+gate in front of every new sense), `14` (the situation on the persona envelope),
+`15` (delivered/read ticks), `22` (the gateway briefing repeats itself — unblocked
+now that durable state is merged), `25` (a spoken turn that outlives its socket).
+
+**Its line numbers are stale** — written from a checkout 42 commits behind. Verified
+here on 2026-08-29: item 25's transcript `emit()` is at `cloud_gateway.py:3979` and
+`deliver()`, the pattern to copy, is at `:3817`. Item 25 also has an app half in
+`src/lib/notify.ts`; `replyFromData` returns `{text, at}` and nothing else, so a new
+push field is dropped in silence and the gateway change looks like it did nothing.
+**Land both halves together.**
 
 ### For a hardware session
 
 Set the two secrets, launch with `JARVIS_AUTO_LOCK=0`, and **capture stdout to a
-file**. That one habit has opened findings in three consecutive sessions without a
+file**. That one habit has opened findings in four consecutive sessions without a
 line of code being touched.
 
 ```powershell
 venv\Scripts\python.exe watchdog.py *> gate-session-5.log
 ```
 
-### Two things that will not be obvious from the code
+**And read `/health` after every deploy.** Both of 2026-08-29's live findings came
+from one HTTP GET, and no harness can reach a deployed service:
+`test_boot_preflight.py` has 104 checks about Gemini keys and every one reads the
+DESK's environment, because that is where a harness runs.
 
-* **The agent has a door now.** Say *"work through this: …"* or *"figure out …"*
-  and the request goes through the 56-tool agent loop. Say anything else and it
-  routes exactly as it always did. Every A22 row needs that prefix.
-* **Vision has three legs**, Gemini then Groq then local llava. If a vision answer
-  takes 90 seconds, the first two failed and llava is loading under memory
-  pressure — that is the designed behaviour, not a hang.
+```powershell
+curl.exe https://jarvis-cloud-gateway.onrender.com/health
+```
+
+### Four things that will not be obvious from the code
+
+* **The agent has a door.** Say *"work through this: …"* or *"figure out …"* and the
+  request goes through the 56-tool agent loop. Anything else routes exactly as it
+  always did. **Every A22 row needs that prefix.**
+* **Vision has three legs**, Gemini then Groq then local llava. A vision answer
+  taking 90 seconds means the first two failed and llava is loading under memory
+  pressure — designed, not a hang.
+* **An ambiguous patch is refused, and that is correct.** A search string matching
+  more than once writes nothing. Prefix the path with `*all*` to change every
+  occurrence, or send a longer string — `def add(`, not `add`. The refusal now says
+  so out loud, and the CONFIRM read-back states scope before he authorises it.
+* **The cloud refuses to store a fact that is only true for a while.** "currently",
+  "today", "right now" and *"he asked about X"* are rejected at the sink when the
+  MODEL proposes them. Typing one into the Memory screen still works — that door
+  passes `source="operator"` on purpose, and the harness pins the asymmetry.
 
 ---
 
