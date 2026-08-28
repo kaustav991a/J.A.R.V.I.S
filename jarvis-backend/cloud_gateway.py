@@ -1551,16 +1551,74 @@ async def _facts() -> list[str]:
     return _facts_cache
 
 
-async def remember_fact(fact: str) -> bool:
-    """Store one fact. False when there was nowhere to put it.
+# A claim that is only true for a while, in a store that never expires.
+#
+# `Kaustav is currently in Ichapur, West Bengal, India` sat in the Memory screen for
+# days and was read back as present tense. With a route lookup failing quietly
+# beside it, the model reached for it and concluded "you have already arrived at
+# home" — while the phone's own header read Office. So the cost of one of these is
+# not a stale note; it is a confident wrong answer built on one, and it outlives
+# every other kind of mistake in this system.
+#
+# The persona already forbids them: "Only lasting things: not what he asked just
+# now, not the weather." It was not enough and could not be — an instruction is not
+# a gate. This is the gate, at the sink.
+#
+# The `where` block carries live location on every single turn, so a stored
+# "currently in" is redundant as well as wrong.
+_PERISHABLE_RE = re.compile(
+    r"\b(?:currently|right now|at the moment|at present|just now|as of now|"
+    r"for now|today|tonight|this morning|this afternoon|this evening|"
+    r"last night|yesterday|tomorrow|this week|next week|"
+    r"is at work|is on his way|is travelling|is traveling)\b", re.I)
+
+# What he ASKED is not a thing that is true about him. `Kaustav asked about Marco
+# Polo` was stored beside load-bearing records — conversation trivia, taking up a
+# slot in every system prompt for the rest of the deployment.
+_TRIVIA_RE = re.compile(
+    r"\b(?:asked|was asking|enquired|inquired|wanted to know|wondered)\b"
+    r"(?:\s+\w+){0,2}?\s+(?:about|whether|if|why|when|how|what|where)\b", re.I)
+
+
+def _perishable(fact: str) -> Optional[str]:
+    """Why this fact must not be stored permanently, or None if it may be.
+
+    Returns the REASON rather than a bool so the log line says which rule fired —
+    a refusal nobody can explain gets deleted by the next person to read the code.
+    """
+    said = " ".join((fact or "").split())
+    if _PERISHABLE_RE.search(said):
+        return "it is only true for a while"
+    if _TRIVIA_RE.search(said):
+        return "it records what he asked, not what is true about him"
+    return None
+
+
+async def remember_fact(fact: str, *, source: str = "model") -> bool:
+    """Store one fact. False when it was refused, or when there was nowhere to put it.
 
     False matters and is not swallowed: without `DATABASE_URL` a fact lives until the
     next restart, and telling someone their assistant will remember something when it
     will not is worse than admitting it cannot.
+
+    **`source` decides whether the perishability guard applies, and the asymmetry is
+    deliberate.** `source="model"` — the default, and what a `[[REMEMBER: …]]` marker
+    gets — is automatic extraction, which is where every bad fact so far came from.
+    `source="operator"` is him typing into the Memory screen behind `APP_TOKEN`; if he
+    wants to note something time-bound there, that is his call to make and not this
+    function's to overrule.
+
+    The default is the strict one on purpose: a new extraction path added later is
+    guarded unless somebody writes down that it should not be.
     """
     said = " ".join((fact or "").split())[:300]
     if not said:
         return False
+    if source != "operator":
+        why = _perishable(said)
+        if why:
+            print(f"[CLOUD] refused a fact — {why}: {said!r}", flush=True)
+            return False
     global _facts_cache
     if _facts_cache is None:
         await _facts()
@@ -2818,7 +2876,33 @@ OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
 # languages is worse than one that admits its scope: an unmatched question simply
 # reaches the brain as it always did.
 _NEAR_RE = re.compile(r"\b(?:nearest|nearby|closest|near me)\b[:,]?\s*(?P<what>[\w\s'&-]{2,40})?", re.I)
-_FAR_RE = re.compile(r"\b(?:how far|distance|how long)\b.{0,20}?\b(?:to|from|until)\s+(?P<dest>[\w\s',.&-]{2,60})", re.I)
+# "how far", "how long to", "distance" — the TRIGGER only. Which place is being
+# asked about is decided by `_far_dest` below, in code, because one regex got it
+# wrong in a way that nothing caught for weeks:
+#
+#     r"...\b(?:to|from|until)\s+(?P<dest>...)"
+#
+# put whatever followed the FIRST preposition into the destination slot. So
+# "how far is home from here" asked for a route to a place called "here", no known
+# place matched, no route fact was injected — and the model answered from its own
+# weights and a stale stored fact, with a confident number and a train. It answers
+# "how far to home" correctly, which is why every earlier check passed: the feature
+# worked on the phrasing the test script used and failed on the phrasing a person
+# used. There was no test of this at all — `_FAR_RE`, `_NEAR_RE` and
+# `_local_lookups` were named by no harness in the suite.
+_FAR_TRIGGER_RE = re.compile(r"\b(?:how far|how long|distance)\b", re.I)
+
+# Prepositions only. Every one in the tail is found, not just the first, and what
+# follows each runs to the NEXT preposition — a single greedy capture swallowed
+# "the office from here" whole.
+_FAR_PREP_RE = re.compile(r"\b(?:to|from|until)\b", re.I)
+
+# Words that fill the destination slot without naming a place. Routing to one of
+# them is routing to where he already stands, which is the question and not the
+# answer. `from here` is the exact phrasing that produced the invented distance.
+_FAR_SELF_RE = re.compile(
+    r"^(?:here|there|my location|my current location|current location|"
+    r"this location|this place|where i am|where i'm|where im)\b", re.I)
 
 
 def _places_blocking(what: str, lat: float, lon: float, limit: int = 4) -> Optional[str]:
@@ -2919,6 +3003,63 @@ def _route_blocking(dest: str, lat: float, lon: float) -> Optional[str]:
         return None
 
 
+def _far_dest(text: str, known: list) -> Optional[str]:
+    """The place a distance question is actually asking about, or None.
+
+    Four phrasings. The single regex this replaces answered only the first:
+
+        "how far to the office"            -> the office   it worked
+        "how far to the office from here"  -> the office   it said "the office from here"
+        "how far from home to the office"  -> the office   it said "home"
+        "how far is home from here"        -> home         it said "here"
+        "how far is home"                  -> home         it matched NOTHING
+
+    `from` cannot simply be dropped from the pattern, which is the obvious fix and
+    the wrong one: "how far from home to the office" needs `from` to mark the
+    ORIGIN. So every preposition is read and a `to` destination wins, because that
+    is what `to` means.
+
+    The bare-name fallback exists for the last two: one has no preposition at all,
+    the other has one holding a self-reference. Only places he has NAMED are
+    accepted there, and that limit is deliberate — a geocoder handed an arbitrary
+    noun from the middle of a sentence returns somebody else's town, and a wrong
+    route fact is worse than no route fact. The defect being repaired here IS a
+    confident answer built on a bad lookup; widening the guess would re-create it
+    by another door.
+
+    Returning None is a correct outcome. It injects no fact, and the persona's
+    standing rule against guessing is what has to hold from there.
+    """
+    trig = _FAR_TRIGGER_RE.search(text or "")
+    if not trig:
+        return None
+    tail = (text or "")[trig.end():trig.end() + 140]
+
+    marks = list(_FAR_PREP_RE.finditer(tail))
+    found = []
+    for i, m in enumerate(marks):
+        stop = marks[i + 1].start() if i + 1 < len(marks) else len(tail)
+        raw = re.split(r"[?!;,\n]", tail[m.end():stop])[0]
+        dest = " ".join(raw.split()).strip(" .'&-")
+        if 2 <= len(dest) <= 60 and not _FAR_SELF_RE.match(dest):
+            found.append((m.group(0).lower(), dest))
+
+    # `to` names a destination and `until` reads as one. `from` marks an origin and
+    # is a last resort only because "how far from the office" does mean the office.
+    for want in ("to", "until", "from"):
+        for prep, dest in found:
+            if prep == want:
+                return dest
+
+    # No usable preposition: there was none, or the only one held a self-reference.
+    # A place he named, sitting bare in the sentence, is the remaining reading.
+    for place in known or []:
+        label = str((place or {}).get("label") or "").strip()
+        if label and re.search(rf"\b{re.escape(label)}\b", tail, re.I):
+            return label
+    return None
+
+
 async def _local_lookups(where: dict, text: str) -> list:
     """Anything the question asks about *this* place, fetched rather than recalled."""
     facts = []
@@ -2928,9 +3069,8 @@ async def _local_lookups(where: dict, text: str) -> list:
             _places_blocking, near.group("what"), where["lat"], where["lon"])
         if found:
             facts.append(f"Closest matches for '{near.group('what').strip()}': {found}.")
-    far = _FAR_RE.search(text)
-    if far:
-        dest = far.group("dest")
+    dest = _far_dest(text, where.get("known") or [])
+    if dest:
         # a place he named beats a geocoder that has never heard of it
         named = _match_known(dest, where.get("known") or [])
         route = await asyncio.to_thread(
@@ -3815,7 +3955,9 @@ async def app_fact(request: Request):
         return {"forgotten": await forget_fact(drop), "facts": await _facts()}
     fact = str(body.get("fact") or "").strip()
     if fact:
-        stored = await remember_fact(fact)
+        # typed by him, behind APP_TOKEN — the perishability guard is for the
+        # model's automatic extraction, not for a note he chose to make
+        stored = await remember_fact(fact, source="operator")
         return {"stored": stored, "persistent": bool(DATABASE_URL), "facts": await _facts()}
     return {"facts": await _facts(), "persistent": bool(DATABASE_URL)}
 
