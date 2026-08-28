@@ -24,7 +24,7 @@
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
 | Rows with evidence, wrong door | ~40 (21%) | `PASS-SUB` — real code evidence, row still owed |
 | **Rows never run by anyone** | **~137 (71%)** | |
-| Open findings | **4** — F-52-open, F-56, F-57, F-59 | all four are decisions, not defects. F-60, F-61, F-62, F-63, F-66, F-67 closed |
+| Open findings | **5** — F-52-open, F-56, F-57, F-59, F-68 | all five are decisions, not defects. F-60, F-61, F-62, F-63, F-66, F-67 closed |
 | Branch | `feat/cloud-gateway`, pushed | `main` is far behind; merge is **not** a fast-forward |
 
 **The honest summary:** the harnessed parts are solid, the parts nothing drives are
@@ -192,7 +192,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 
 ---
 
-## 4 · Open findings — all four are decisions
+## 4 · Open findings — all five are decisions
 
 | ID | What | Whose |
 |---|---|---|
@@ -200,6 +200,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 | **F-56** | Row `5.7` expects a sandboxed directory listing to work; governance makes `run_terminal_command` BLOCK and refuses it. Both defensible, both cannot be true | **his** |
 | **F-57** | "text Priya" routes to `send_whatsapp_message` (BLOCK) instead of the partner allowlist, so A23's actual subject — the thing that must hold before Group C's real sends — has never been exercised | **his** |
 | **F-59** | `should_use_agent` is narrower than the §6.8 arc it gates | **his** |
+| **F-68** | `LLM_PROVIDER_VISION=gemini` lives in the Render dashboard and **not** in `render.yaml`, which declares vision as `groq`. A Blueprint re-apply flips the photo provider with no diff to explain it. Declare it, or drop the override and accept `groq` — the middle-leg measurement now supports either | **his** |
 
 Everything else raised in sessions 1–4 is fixed and harnessed. One finding, **F-64,
 was withdrawn** — I asserted "no search tool was called" from too small a grep

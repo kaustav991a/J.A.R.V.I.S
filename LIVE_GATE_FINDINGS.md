@@ -2628,3 +2628,48 @@ And fed the two ids that were actually dead, with a fake catalogue, it names the
 
 **Suite 95/95 → 96/96, 3105 → 3135 checks.** Eight new liveness tests, all with an
 injected fetch, so the suite still makes no network call.
+
+---
+
+## F-68 — a live config value that `render.yaml` does not know about, found by a merge
+
+**Raised 2026-08-29, while merging `fix/durable-state`.** Not found by running
+anything — found because the merge conflicted on `RESUME.md`, and reading what the
+side branch had written there turned up an open item that no current document
+carried.
+
+`LLM_PROVIDER_VISION=gemini` was set in the **Render dashboard** on 2026-08-20 and
+is still **undeclared in `render.yaml`** — the file has it only inside a comment
+listing the four provider switches (`render.yaml:48`). So the Blueprint's declared
+state says vision is `groq` (via `LLM_PROVIDER=groq`) while the running service says
+`gemini`. **A Blueprint re-apply flips vision providers with no diff to explain it**
+— which is precisely the trap `render.yaml`'s own comments warn about, and the same
+shape as root cause #4: one value, two places, only one of them read.
+
+**It is milder than it was when it was written, and the reason matters.** On
+2026-08-19 `GROQ_VISION_MODEL=qwen/qwen3.6-27b` was declared, so the groq leg now
+carries a live id instead of the dead `llama-4-scout` default — a silent flip to
+groq would answer rather than 404. And the cascade has since gained groq as its
+middle leg (63.4 s → 3.5 s), so groq vision is no longer the worse choice it was in
+August. The defect is the **drift**, not the destination.
+
+**Two defensible fixes, and it is his call which:**
+
+1. Declare `LLM_PROVIDER_VISION: gemini` in `render.yaml`, matching what is live.
+2. Delete the dashboard override and let vision be `groq`, which the Blueprint
+   already says and the middle-leg measurement now supports.
+
+Either closes it; leaving both is the only wrong answer. **Whose: his** — it changes
+which provider serves photos on a running production service.
+
+### The lesson, which is about documents rather than about vision
+
+`RESUME.md` was retired into `JARVIS_TRACKER.md` on 2026-08-22 (`648b048`). That
+retirement read the copy on `feat/cloud-gateway`. `fix/durable-state` had its own
+copy, 101 lines longer, and this item lived only there — so a de-duplication that
+was right in principle dropped a real open item on the floor for seven days, and
+nothing anywhere would have reported it missing.
+
+**When a document is retired, the branches still holding it have to be read too.**
+The conflict was the only reason this surfaced at all; had `RESUME.md` merged
+cleanly it would have been deleted in silence.

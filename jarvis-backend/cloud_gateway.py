@@ -1390,6 +1390,90 @@ def _db_forget_fact_blocking(fact: str) -> int:
         return cur.rowcount
 
 
+# ── Small state that must outlive a deploy ───────────────────────────────────
+#
+# The commute schedule, the push addresses and the two once-a-day markers were
+# JSON files beside this module, and Render's disk is wiped on every deploy — not
+# every restart, which is why it read as working. So a deploy silently disarmed
+# the briefing, and the only symptom was a notification that did not arrive:
+# indistinguishable from the Android bug this whole feature exists to route
+# around. It happened twice on 2026-08-20, the second time 60 minutes before the
+# first briefing was due.
+#
+# Recovery existed — the phone re-uploads on cloud connect — but it is gated on a
+# WebSocket the app does not always hold. A photo answered over plain HTTP that
+# evening while `push_targets` sat at 0, so the app looked connected and the
+# gateway was unreachable.
+#
+# One table with a key rather than four, because none of this is a schema: it is
+# four small dictionaries that need to survive, and a column per feature would be
+# a migration every time a new one appears. TEXT and `json.dumps` rather than
+# JSONB, so nothing depends on psycopg's type adaptation through a pooler.
+def _db_init_state_blocking() -> None:
+    with _db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS gateway_state (
+                   key  TEXT        PRIMARY KEY,
+                   val  TEXT        NOT NULL,
+                   at   TIMESTAMPTZ NOT NULL DEFAULT now())"""
+        )
+        conn.commit()
+
+
+def _db_state_get_blocking(key: str) -> Optional[dict]:
+    with _db_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT val FROM gateway_state WHERE key = %s", (key,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    try:
+        out = json.loads(row[0])
+    except Exception:  # noqa: BLE001
+        return None
+    return out if isinstance(out, dict) else None
+
+
+def _db_state_put_blocking(key: str, val: dict) -> None:
+    with _db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO gateway_state (key, val, at) VALUES (%s, %s, now())
+               ON CONFLICT (key) DO UPDATE SET val = EXCLUDED.val, at = now()""",
+            (key, json.dumps(val)),
+        )
+        conn.commit()
+
+
+def _persist(key: str, val: dict) -> None:
+    """Mirror one small dictionary into the database, without being waited for.
+
+    Every caller is a `_save_*` that already wrote its file and is inside an async
+    handler, so a task can be spawned here and the caller carries on. Deliberately
+    fire-and-forget: none of this is worth making the operator wait through, and a
+    failed write costs exactly what the old behaviour cost — a re-send on the next
+    connect.
+
+    Silent when there is no database or no loop. A gateway with `DATABASE_URL`
+    unset must behave exactly as it did before this existed, which is the same
+    rule the memory layer follows.
+    """
+    if not DATABASE_URL or _db_broken:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # module scope, or a worker thread: the file write already happened
+
+    async def _write() -> None:
+        try:
+            if not await _memory_ready():
+                return
+            await asyncio.to_thread(_db_state_put_blocking, key, val)
+        except Exception as e:  # noqa: BLE001
+            print(f"[CLOUD] state write failed for {key!r}: {e}", flush=True)
+
+    loop.create_task(_write())
+
+
 def _db_load_blocking(chat_id: int, limit: int) -> list[dict]:
     with _db_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -1425,6 +1509,7 @@ async def _memory_ready() -> bool:
     try:
         await asyncio.to_thread(_db_init_blocking)
         await asyncio.to_thread(_db_init_facts_blocking)
+        await asyncio.to_thread(_db_init_state_blocking)
         _db_ready = True
         print("[CLOUD] persistent memory ready", flush=True)
         return True
@@ -1919,6 +2004,8 @@ def _save_commute() -> None:
     except Exception:  # noqa: BLE001
         # an unwritable file costs a re-send on the next connect, not a feature
         pass
+    # and the copy that survives a deploy, which the file does not
+    _persist("commute", _commute)
 
 
 def _clean_commute(body: dict) -> Optional[dict]:
@@ -1991,6 +2078,10 @@ def _save_push_targets() -> None:
     except Exception:  # noqa: BLE001
         # an unwritable file costs a re-registration, not a feature
         pass
+    # The addresses matter more than the file admits. A wiped list means the
+    # gateway can reach nobody until the app next opens a SOCKET — not until it is
+    # next used, which is what made this look survivable.
+    _persist("push_targets", _push_targets)
 
 
 def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
@@ -2148,6 +2239,10 @@ def _save_briefed() -> None:
         # restart. That is the failure to prefer — a second umbrella notice is an
         # annoyance, a missed one is the whole feature.
         pass
+    # Persisted for the annoyance rather than the feature: a deploy at 7:05 PM
+    # used to clear today's marker, so the next tick would brief the same
+    # departure again.
+    _persist("briefed", _briefed)
 
 
 def _commute_zone(name: str):
@@ -2436,6 +2531,42 @@ def _save_nudge() -> None:
         # failure to prefer over the alternative — a lost marker that silenced him
         # permanently would be indistinguishable from the feature not existing.
         pass
+    # Same reasoning as `_briefed`, and the same deploy cleared both.
+    _persist("nudge", _nudge)
+
+
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday",
+            "saturday", "sunday")
+
+
+def _asserts_today(low: str, weekday: str) -> bool:
+    """Whether a fact claims something about TODAY, rather than merely mentioning it.
+
+    This replaces `weekday in low`, a bare substring test, and the replacement exists
+    because that test was wrong in the most expensive way available: on Friday
+    2026-08-21 it matched a Monday-to-Friday work pattern, the prompt below then
+    asserted the fact as true today, and the model — obeying — invented a Saturday
+    shift the operator did not have. Reported from the phone within the hour.
+
+    Two rules, and the second is the one that mattered:
+
+    1. The day has to be named as something RECURRING or as today's own business:
+       "every friday", "fridays", "on friday". A weekday appearing anywhere in a
+       sentence is not a claim about this Friday.
+    2. **A fact naming any OTHER weekday is refused outright.** "Mon-Fri" mentions
+       Friday and is not about Friday; it is about a week. Anything listing more than
+       one day is describing a pattern whose interesting part is usually the day that
+       is NOT today, which is exactly the trap that was fallen into.
+    """
+    named = [d for d in WEEKDAYS if d in low]
+    # more than one day named means a range or a list: a pattern, not today
+    if len(named) != 1 or named[0] != weekday:
+        return False
+    # and it has to read as recurring or as today's business, not incidental
+    return any(
+        p in low
+        for p in (f"every {weekday}", f"{weekday}s", f"on {weekday}", f"this {weekday}")
+    )
 
 
 def _nudge_subject(facts: list, now) -> Optional[tuple]:
@@ -2450,6 +2581,12 @@ def _nudge_subject(facts: list, now) -> Optional[tuple]:
     and ask "anything interesting?", which produces a remark every single day
     because a model asked for something will always find something. The judgement
     of WHETHER to speak is made here, in code, and only the WORDING is the model's.
+
+    **That last sentence was not true until 2026-08-21.** The judgement was a
+    substring match, and it announced a Saturday shift that did not exist. See
+    `_asserts_today`, and note that the prompt below is now told to refuse rather
+    than to invent when the fact does not actually say what it was matched for —
+    the second guard, because the first one being wrong once cost a day's trust.
     """
     today = now.strftime("%Y-%m-%d")
     weekday = now.strftime("%A").lower()
@@ -2461,18 +2598,18 @@ def _nudge_subject(facts: list, now) -> Optional[tuple]:
         # a fact naming today's date, in either order people write it
         dated = (f"{day_num} {month}" in low or f"{month} {day_num}" in low
                  or today in low)
-        # or naming today's weekday as something recurring
-        named_day = weekday in low
-        if not (dated or named_day):
+        if not (dated or _asserts_today(low, weekday)):
             continue
         return (
             str(fact)[:120],
-            "Something you were told about him is true TODAY: "
-            f"\"{fact}\". Remark on it in ONE short sentence, as though you had "
-            "just remembered it — the way someone who knows him would mention it "
-            "in passing. Do not greet him, do not list anything, do not offer "
-            "help, and do not explain that you remembered. If it does not "
-            "actually warrant saying out loud, reply with exactly: SKIP",
+            f"Today is {now.strftime('%A %d %B')}. You were once told: "
+            f"\"{fact}\". If — and ONLY if — that fact is about today, remark on it "
+            "in ONE short sentence, as though you had just remembered it, the way "
+            "someone who knows him would mention it in passing. Do not greet him, "
+            "do not list anything, do not offer help, and do not explain that you "
+            "remembered. **Never state anything the fact does not say**, and never "
+            "infer another day from it. If it is not about today, or does not "
+            "warrant saying out loud, reply with exactly: SKIP",
         )
     return None
 
@@ -2940,6 +3077,66 @@ _load_briefed()
 _load_nudge()
 
 
+async def _restore_state() -> None:
+    """Read back what a deploy took, and say plainly what was recovered.
+
+    The file loads above already ran at import, so this only OVERWRITES what the
+    database actually holds — a gateway with no `DATABASE_URL`, or one whose first
+    connect fails, keeps exactly the old behaviour.
+
+    Awaited before the loops start rather than raced with them. The commute tick is
+    every 60 seconds and would have picked this up anyway, but a briefing due in
+    the first minute of a deploy is precisely the case this is for, and "it would
+    probably catch up" is the kind of reasoning that hid the original bug.
+
+    Empty is not a failure and is not reported as one: the first deploy after this
+    lands finds an empty table, which is correct and says nothing interesting.
+    """
+    global _push_targets, _commute, _briefed, _nudge
+    if not DATABASE_URL:
+        return
+    try:
+        if not await _memory_ready():
+            return
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] state restore skipped: {e}", flush=True)
+        return
+
+    recovered = []
+    try:
+        got = await asyncio.to_thread(_db_state_get_blocking, "push_targets")
+        if got:
+            _push_targets = {str(k): str(v) for k, v in got.items()}
+            recovered.append(f"{len(_push_targets)} push target(s)")
+
+        got = await asyncio.to_thread(_db_state_get_blocking, "commute")
+        if got:
+            # through the validator, not straight in: a row written by an older
+            # build must not be trusted further than an upload from the phone is
+            clean = _clean_commute(got)
+            if clean:
+                _commute = clean
+                recovered.append(f"{len(clean['departures'])} departure(s)")
+            else:
+                print("[CLOUD] stored commute schedule REFUSED - unreadable", flush=True)
+
+        got = await asyncio.to_thread(_db_state_get_blocking, "briefed")
+        if got:
+            _briefed = got
+            recovered.append("today's briefing marker")
+
+        got = await asyncio.to_thread(_db_state_get_blocking, "nudge")
+        if got:
+            _nudge = got
+            recovered.append("today's remark marker")
+    except Exception as e:  # noqa: BLE001
+        print(f"[CLOUD] state restore failed: {e}", flush=True)
+        return
+
+    if recovered:
+        print(f"[CLOUD] state restored across the deploy: {', '.join(recovered)}.", flush=True)
+
+
 def _queue_offline_fact(ident: dict, text: str, reply: str) -> None:
     """Seal and queue a turn the desk never saw — BEFORE the reply goes out.
 
@@ -3011,6 +3208,12 @@ async def health():
                 # `_FACTS_CAP`. A turn history says what was just said; these say
                 # what is true, and they go into every prompt.
                 "facts_known": len(_facts_cache or []),
+                # Whether the small state survives a deploy, which is a different
+                # question from whether turns are stored — and one that went
+                # unanswerable for a day. Named rather than inferred: a schedule
+                # backed only by Render's disk and a schedule backed by Postgres
+                # look identical from outside right up to the next deploy.
+                "state_durable": bool(DATABASE_URL) and _db_ready,
             },
             "bridge": bool(BRIDGE_SECRET),
             # The phone refuses a gateway that does not declare this, because a
@@ -4050,6 +4253,11 @@ async def app_link(websocket: WebSocket):
 
 @app.on_event("startup")
 async def _startup():
+    # Before the loops, because a deploy is exactly when this matters: the
+    # schedule, the addresses and today's markers all live in memory, and the
+    # disk they were backed by does not survive one.
+    await _restore_state()
+
     # FIRST, and above the Telegram checks on purpose. Every return below this
     # point is about the bot — a missing BOT_TOKEN, an unset PUBLIC_URL — and the
     # briefing has nothing to do with Telegram. Started under either of those and
