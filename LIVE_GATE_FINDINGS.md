@@ -2646,6 +2646,11 @@ state says vision is `groq` (via `LLM_PROVIDER=groq`) while the running service 
 — which is precisely the trap `render.yaml`'s own comments warn about, and the same
 shape as root cause #4: one value, two places, only one of them read.
 
+**Confirmed live 2026-08-29**, so this is no longer an inference from two files.
+`GET /health` on the running gateway reports `brains.vision: "gemini"` while
+`render.yaml` declares `groq` — the dashboard override is real, active, and
+undeclared. A Blueprint re-apply genuinely flips the photo provider.
+
 **It is milder than it was when it was written, and the reason matters.** On
 2026-08-19 `GROQ_VISION_MODEL=qwen/qwen3.6-27b` was declared, so the groq leg now
 carries a live id instead of the dead `llama-4-scout` default — a silent flip to
@@ -2756,3 +2761,51 @@ something unreachable. The applier was right the whole time and looked broken fo
 three weeks. When a guard refuses, ask the same question this project asks of
 sinks: *which other layer does this have to travel through, and does it survive
 the trip?*
+
+---
+
+## F-70 🟠 · The cloud gateway runs on ONE Gemini key, and it is the brain doing the most work
+
+**Raised 2026-08-29** from `GET /health` on the live service, immediately after the
+`fix/durable-state` push. Not a code defect — a capacity fact that nothing on the
+desk could have shown, and it changes what row 0.2 means.
+
+```
+"brains": { "text": "gemini", "vision": "gemini", "audio": "gemini",
+            "gemini_keys": 1,
+            "usage": { "text": { "gemini_ok": 24, "fell_back": 2,
+                                 "last_error_was_quota": true,
+                                 "last_error_at": "2026-08-27T18:58:45+05:30" } } }
+```
+
+**Row 0.2 was about the DESK's `.env` — 5 keys, 4 valid.** Render's environment is a
+separate place entirely, and it holds **one**. All three capabilities (text, vision,
+audio) route to Gemini there, so the always-on brain — the one answering from his
+phone when the PC is off — has the smallest key budget in the system. It had already
+spent it: a real `429 You exceeded your current quota` on 2026-08-27, with two
+fall-backs recorded.
+
+**Whether adding the desk's other keys helps is HIS knowledge, not mine, and the
+distinction is the whole finding.** The quota measured in row 0.2 is `20/day` per
+Google **project**, one shared bucket. So:
+
+* if the four keys belong to four different Google projects → putting them in
+  Render's `GEMINI_API_KEYS` takes the cloud from 20/day to 80/day;
+* if they are four keys on one project → it changes nothing at all, and the honest
+  answer is that the cloud brain needs a paid tier or a non-Gemini default for text.
+
+**Do not "fix" this by copying keys across without answering that question** — it
+would look like a 4× improvement, produce no change, and the next person would spend
+a session finding out why. Row 0.2 was wrong twice for the same reason: reading a
+subset and reporting confidently.
+
+**Whose: his.** It needs the Google console, and it is a decision about spend.
+
+### Why nothing caught it
+
+`test_boot_preflight.py` has 104 checks about Gemini keys and every one of them reads
+**the desk's** environment, because that is where a harness runs. The cloud's key
+count is only observable from `/health`, and no harness can reach a deployed service.
+That is not a gap to close with a test — it is the reason the standing habit for
+these sessions is worth its cost: **read `/health` after every deploy.** This finding
+took one HTTP GET.
