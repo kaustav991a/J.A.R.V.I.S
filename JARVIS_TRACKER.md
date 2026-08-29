@@ -49,7 +49,7 @@
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **106 harnesses, 3641 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
+| Automatic suite | **107 harnesses, 3723 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -422,6 +422,40 @@ device repro that found each — not more code:
 `briefing_voice` row surviving the one after it — a cursor a deploy resets
 restarts the rotation at the same line every time, which is indistinguishable
 from never having rotated.
+
+### The security goal, taken end to end — 2026-08-29
+
+`jarvis-mobile`'s ledger groups its rows by goal, and **"a compromised token does
+not expose a life"** had four open. Three are closed in code and the fourth is
+unblocked; none of them is proved, and every one of them is a deploy away from
+being provable.
+
+| Row | What changed | What is owed |
+|---|---|---|
+| `token-split` | `POST /app-tokens` derives one short-lived token per capability from `APP_TOKEN` — `link`, `push`, `state`, `memory`, `say`. `j1.<cap>.<exp>.<mac>`, the mac keyed by the master itself, so **nothing is stored**, any instance verifies any token, and **rotating the master revokes every derived one at once**. Minting is master-only, so a leaked token cannot renew itself | a deploy and an OTA publish, then `/health.app_auth.master_calls` going quiet |
+| `token-expiry` | every derived token expires (`APP_TOKEN_TTL_DAYS`, 30, declared in `render.yaml`). `401 token_expired` is typed so the phone re-mints and retries **once**; `403 wrong_capability` is the other case, and is not retried | the same deploy |
+| `desk-key` | `has_desk_key: false` was the ordinary state, not a broken desk: the key lived on a disk every deploy throws away, and `queue_fact` DROPS what it cannot seal — eighteen turns in a week. The desk's public half and the sealed queue mirror into `gateway_state` now, injected as a hook so `fact_outbox` keeps its stdlib-only discipline. Ciphertext and one public key are all that cross | the deploy, the desk on once, then `has_desk_key` still true after the deploy AFTER that |
+| `bridge-secret` | not rotated — that is his — but the ordering problem that deferred it for weeks is gone. `BRIDGE_SECRET_OLD` is accepted for one window, every connect on it is logged and counted at `/health.bridge_rotation`, so the leaked value is deleted on evidence rather than on a guess | his four steps, written out in `CLOUD_GATEWAY.md` |
+
+**The master still opens every route, on purpose.** His installed app presents
+it, and an auth change that locks him out of his own assistant to prove a point
+about tokens would be worse than the leak it prevents. The migration is a number
+on `/health`, not a hope.
+
+**Live, 2026-08-29, on the deploy that carried it (`445c3a9`).** `/health` read
+back `app_auth` with all five capabilities, `fact_outbox.durable: true`, and
+`commute` + `push_targets` intact across the deploy for the second time running.
+The desk bridge was then connected for twelve seconds by
+`tools/bridge_handshake_check.py` — which answers no commands on purpose, since
+the cloud believes the desk is up while it is attached — and the cloud went
+`has_desk_key: false` -> `true` with the real desk's public half.
+
+**And `/health` now names the commit it is running** (`RENDER_GIT_COMMIT`,
+short-form). Every rule above is a claim about the code that is *running*, and
+until this field existed "read /health after every deploy" could confirm the
+service was up but never that it was the service you just pushed — a fix
+deployed, a symptom unchanged, and no way to tell which of the two did not
+happen.
 
 **Its line numbers are stale** — written from a checkout 42 commits behind. Verified
 here on 2026-08-29: item 25's transcript `emit()` is at `cloud_gateway.py:3979` and
