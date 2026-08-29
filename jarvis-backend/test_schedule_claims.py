@@ -318,6 +318,50 @@ def test_the_briefing_passes_news_to_the_guard():
 
 
 
+# ── F-78: the byline the lookup never gave ─────────────────────────────
+#
+# The headline is sourced; the publisher was not. Across four briefings the model
+# attached one of its own each time - TechCrunch, Reuters, Google News, Reuters
+# again - to a bare title with no publisher in it. A quotation attributed to an
+# organisation that did not publish it is a harder claim than the quotation, and
+# it is the kind a person repeats.
+
+
+def test_an_invented_byline_is_dropped():
+    said = ("Good afternoon, Sir. In today's tech brief, Reuters notes a surge "
+            "in AI hardware demand. All systems online.")
+    out = b._strip_invented_attribution(said, "techcrunch.com")
+    check("Reuters" not in out, f"the invented byline goes: {out[:70]!r}")
+    check("Good afternoon" in out and "All systems online" in out,
+          "...and the rest of the briefing survives")
+
+
+def test_the_REAL_source_may_be_named():
+    """The guard is about invention, not about attribution."""
+    said = "In today's tech brief, Reuters notes a surge in AI hardware demand."
+    check(b._strip_invented_attribution(said, "reuters.com") == said,
+          "naming the publisher that really published it is fine")
+
+
+def test_a_briefing_with_no_publisher_is_untouched():
+    said = "Good afternoon, Sir. The weather is 31 degrees with rain."
+    check(b._strip_invented_attribution(said, "") == said,
+          "an ordinary briefing is not reflowed by this guard")
+
+
+def test_the_source_domain_travels_with_the_headline():
+    src = (HERE / "brain.py").read_text(encoding="utf-8", errors="replace")
+    check("news_source" in src, "the lookup captures where the headline came from")
+    check("news_attribution" in src, "...and the prompt is told")
+    check("do not name a publisher" in src.lower(),
+          "...including when the source is unknown, which is when it invented")
+    check("return _strip_invented_attribution(" in src,
+          "and the guard is the OUTERMOST wrapper on the briefing's return, so "
+          "nothing it drops has already been spoken")
+    check("_sourced), news_source)" in src,
+          "...and it is given the real source domain to compare against")
+
+
 if __name__ == "__main__":
     import traceback
 

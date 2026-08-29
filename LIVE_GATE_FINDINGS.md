@@ -3230,3 +3230,154 @@ on passing indefinitely. Two conclusions worth writing down:
 2. **Rows whose evidence is a SENTENCE need their numbers checked against the
    source**, not just read for tone. That is the whole difference between how
    `10.8` was passed at 14:00 and how it was passed at 15:30.
+
+---
+
+## F-77 🔴 · "201 unread emails" — for a mailbox holding 66,373
+
+**Found by applying F-76's own lesson**, one hour after writing it down: *a row
+whose evidence is a sentence needs its numbers checked against the source.* Row
+`10.5` had passed twice on this sentence — today, and in the 2026-08-22 gate
+session:
+
+> "You have 201 unread emails, Sir."
+
+Every count in `gmail_agent` came from `messages().list(...).resultSizeEstimate`.
+**That is not a count.** Measured against the same account in the same minute:
+
+| call | resultSizeEstimate |
+|---|---|
+| `maxResults=1` | 201 |
+| `maxResults=5` | 201 |
+| `maxResults=100` | 201 |
+| `maxResults=500` | **501** |
+| `labels().get("INBOX").messagesUnread` | **66,373** |
+
+**It tracks the page size, not the mailbox.** Wrong by 66,172 — and the number
+would have changed if anyone had tuned a page size for an unrelated reason.
+
+**FIXED**: one `_unread_total()` reading `labels().get`, which is the counter
+Gmail itself maintains and the number its own UI shows. **All three** call sites
+moved — fixing two would have left the briefing and the widget disagreeing about
+the same mailbox. A failed lookup returns **-1, never 0**, because "you have no
+unread mail" is a claim and a failure must not be able to make it.
+
+Live now: *"You have 66,373 unread emails, Sir."*
+`test_unread_count.py`, **10 checks**.
+
+---
+
+## F-78 🟠 · The byline the lookup never gave
+
+The headline is sourced. The publisher was not. Across four briefings the model
+attached one of its own to a bare title:
+
+```
+"...from TechCrunch reads: 'AI breakthroughs accelerate...'"
+"In technology news, Reuters reports that..."
+"headline reads: 'Google News – Artificial Intelligence – Latest'"
+"In today's tech brief, Reuters notes a surge in demand for AI hardware."
+```
+
+The last of those was **after F-75 was fixed** — the lookup had genuinely
+succeeded, so the topic was sourced and the guard correctly stayed out of it. A
+quotation attributed to an organisation that did not publish it is a harder claim
+than the quotation, and it is exactly the kind a person repeats.
+
+**FIXED**, both halves: the lookup now captures the **source domain** from the
+result's `href` and the prompt carries it — *"(published by X)"*, or an explicit
+*"SOURCE UNKNOWN — do not name a publisher"*, because silence about the source is
+what let the model fill it in. And a guard, because a prompt rule is not a
+guarantee: a sentence naming a publisher that is **not** the source domain is
+dropped, while naming the real one passes untouched.
+
+---
+
+## The verifier, and why it needed the same discipline
+
+`tools/verify_a11.py` asks the desk every A11 row, reads what it actually said
+out of the log, and then goes to Gmail, Calendar and Fit **itself, in the same
+minute**, to compare the numbers. It is re-runnable, which is the point: a pass
+is a snapshot, and this turns re-taking the snapshot into one command.
+
+It found three defects **in itself** first, and each one is the same family as
+what it was built to catch:
+
+* it read the log by **byte offset in text mode** — the desk speaks UTF-8 with
+  curly quotes and em dashes, so the seek landed mid-character and two *answered*
+  rows came back as "said nothing at all";
+* it judged row `10.4` by looking for `web_browse` in the **spoken words**, where
+  an action name never appears — failing a row that had genuinely navigated;
+* it keyed the health check on `"steps"`, and the briefing had said `"step
+  count"`.
+
+And the correction that matters most: when it now fails to capture a line it
+reports **"no line captured — NOT proof of silence"**, not "said nothing at all".
+The two are different facts, and a tool built because a sentence was read for
+tone instead of truth must not make the same kind of claim itself.
+
+---
+
+## F-79 🔴 · An empty 200 ended the cascade — and the new backstop was never reached
+
+Found while trying to finish row `10.6`, with Gemini out of quota for the day and
+Groq returning `413 Request too large`. The log read, in full:
+
+```
+[ROUTER] 'groq' route failed (413 ... TPM Limit 8000, Requested 11743). Escalating to next provider…
+INFO:     127.0.0.1 - "POST /api/backdoor HTTP/1.1" 200 OK
+```
+
+**No OpenRouter attempt. No NVIDIA attempt. No `FATAL: all providers exhausted`.**
+A cloud leg had answered `200` with **empty content**, `universal_llm_call`
+counted that as a success and returned `""` — so the two remaining legs were
+never tried, including the NVIDIA one added *that same afternoon* precisely as a
+backstop for this situation.
+
+The turn reached him as *"I didn't get an answer together on that one, Sir"*,
+which is honest — and was entirely avoidable.
+
+**`_call_ollama` has raised on exactly this since G5.7** (`"ollama returned an
+empty 200 response"`). The same defect was fixed in one leg of five and left in
+the other four. Root cause #4, for the fourth time today.
+
+**FIXED**: `_reject_empty()` in the dispatch — not a fifth copy — so all four
+cloud legs escalate on an empty answer, plus a first-chunk check on the two
+streaming HTTP legs, mirroring what ollama already did.
+
+`test_cloud_breaker.py` 16 → **24 checks**, negative-tested (4 fail without it).
+
+**And the harness fixture had the same blind spot**: `_with_providers` predated
+the NVIDIA leg and left the **real** one installed, so a test asking for an
+all-empty cascade reached the live provider and got a genuine answer back
+(*"Hello! How can I help you today?"*). Incidental proof the backstop works, and
+a fixture that was quietly measuring the internet.
+
+---
+
+## Row 10.6, closed end to end — the send, not just the prompt
+
+The row had been passing on *"Authorisation required… confirm or cancel"*, which
+is the compose flow working and says nothing about whether a send **actually
+happens** or whether the claim about it is true. With his go-ahead, both paths
+were driven:
+
+* **cancel** → *"Action cancelled, Sir. Standing by."* No send, no claim of one.
+* **confirm** → governance consumed the confirmation, `gmail_send` executed, and
+  a new message appeared in the Gmail **Sent** folder: id `1a04d73847fbc56e`,
+  `To: kaustav.wlh@gmail.com`, `Subject: JARVIS gate check 10.6`. The desk then
+  said: *"Email sent to kaustav.wlh@gmail.com with subject 'JARVIS gate check
+  10.6', Sir."*
+
+**The claim and the mailbox agree.** For a goal about never claiming what he did
+not do, that is the row's strongest possible evidence, and it could not have been
+obtained by reading the prompt alone.
+
+**A note on how nearly this was mis-recorded.** The spoken line did not appear
+for several minutes — `speak_text` prints inside the speech lock, so a
+confirmation queues behind whatever is still being spoken. Read too early, the
+log says an email was sent and nothing was said about it, which looks exactly
+like the silence class this session has been fixing. It was not. **Twice today a
+row was misjudged by reading the log before the desk had finished speaking**,
+which is why `verify_a11.py` waits for the log to settle and reports *"no line
+captured — NOT proof of silence"* rather than "said nothing".

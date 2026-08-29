@@ -2909,6 +2909,12 @@ async def backdoor_command(req: BackdoorRequest):
 
                     elif atype == "web_search_image":
                         if isinstance(result, dict) and result.get("success"):
+                            # Logged so the row is verifiable without a browser:
+                            # "Visual data retrieved" is a claim about a picture
+                            # nobody outside the HUD can see, and a claim that
+                            # cannot be checked is the shape this goal forbids.
+                            print(f"[ACTION ENGINE] image url: {result['url']}",
+                                  flush=True)
                             await safe_send_all({"status": "search_result_image", "url": result["url"], "title": result["title"]})
                             asyncio.create_task(speaker.speak_text("Visual data retrieved."))
                         else:

@@ -121,3 +121,6 @@ jarvis-backend/app_nudge.json
 jarvis-backend/app_nudge.test.json
 jarvis-backend/app_voice.json
 jarvis-backend/app_voice.test.json
+
+# the vite dev server log, when the HUD is run for a gate session
+jarvis-backend/hud-dev.log

@@ -86,6 +86,11 @@ def _with_providers(behaviour: dict, chain=("gemini", "groq", "openrouter")):
         "gemini": r._call_gemini,
         "groq": r._call_groq,
         "openrouter": r._call_openrouter,
+        # F-79: this fixture predated the NVIDIA leg, so it left the REAL one
+        # installed - a test asking for an all-empty cascade reached the live
+        # provider and got a genuine answer back. Incidental proof the backstop
+        # works, and a fixture that measured the internet.
+        "nvidia": r._call_nvidia,
         "ollama": r._call_ollama,
         "order": r._route_order,
     }
@@ -102,6 +107,7 @@ def _with_providers(behaviour: dict, chain=("gemini", "groq", "openrouter")):
     r._call_gemini = _make("gemini")
     r._call_groq = _make("groq")
     r._call_openrouter = _make("openrouter")
+    r._call_nvidia = _make("nvidia")
     r._call_ollama = _make("ollama")
     r._route_order = lambda *_a, **_k: list(chain)
 
@@ -109,6 +115,7 @@ def _with_providers(behaviour: dict, chain=("gemini", "groq", "openrouter")):
         r._call_gemini = real["gemini"]
         r._call_groq = real["groq"]
         r._call_openrouter = real["openrouter"]
+        r._call_nvidia = real["nvidia"]
         r._call_ollama = real["ollama"]
         r._route_order = real["order"]
 
@@ -227,6 +234,65 @@ def test_the_cooldown_is_configurable_without_an_edit():
     check("JARVIS_CLOUD_COOLDOWN" in
           (HERE / "modules" / "llm_router.py").read_text(encoding="utf-8"),
           "the cooldown is env-driven, like every other routing knob here")
+
+
+# ── F-79: an empty 200 ended the cascade ───────────────────────────────
+#
+# Measured 2026-08-29 with Gemini out of quota and Groq returning 413. The log
+# read "Escalating to next provider..." and then NOTHING - no OpenRouter attempt,
+# no NVIDIA attempt, no FATAL line, just a 200. A cloud leg had answered 200 with
+# empty content, the router counted it as success, and the two remaining legs -
+# including the NVIDIA backstop added that same afternoon - were never tried.
+#
+# `_call_ollama` has raised on exactly this since G5.7. Fixed in one leg of five.
+
+
+def test_an_empty_answer_escalates_instead_of_ending_the_cascade():
+    _reset_world()
+    called, restore = _with_providers({"gemini": "", "groq": "   "})
+    try:
+        said = _ask()
+    finally:
+        restore()
+    check(called == ["gemini", "groq", "openrouter"],
+          f"an empty 200 escalates to the NEXT leg: {called}")
+    check(said == "openrouter answered",
+          f"...and the turn is answered by a leg that had something: {said!r}")
+
+
+def test_the_nvidia_backstop_is_actually_reachable():
+    """The leg added as a backstop must be reached when everything above it
+    returns nothing - which was the whole point of adding it."""
+    _reset_world()
+    called, restore = _with_providers(
+        {"gemini": "", "groq": "", "openrouter": ""},
+        chain=("gemini", "groq", "openrouter", "nvidia"))
+    try:
+        said = _ask()
+    finally:
+        restore()
+    check("nvidia" in called, f"the fourth leg is reached: {called}")
+    check(said == "nvidia answered", f"...and answers: {said!r}")
+
+
+def test_a_real_answer_is_not_mistaken_for_an_empty_one():
+    _reset_world()
+    called, restore = _with_providers({})
+    try:
+        said = _ask()
+    finally:
+        restore()
+    check(called == ["gemini"], f"a good first leg still short-circuits: {called}")
+    check(said == "gemini answered", "and its answer is returned untouched")
+
+
+def test_the_guard_is_in_the_dispatch_not_a_fifth_copy():
+    src = (HERE / "modules" / "llm_router.py").read_text(encoding="utf-8")
+    check(src.count("_reject_empty(name,") == 4,
+          f"all four cloud legs go through one guard "
+          f"({src.count('_reject_empty(name,')})")
+    check("empty 200 stream" in src,
+          "...and the streaming legs check their first chunk, as ollama does")
 
 
 if __name__ == "__main__":

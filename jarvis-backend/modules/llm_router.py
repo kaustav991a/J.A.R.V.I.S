@@ -153,6 +153,38 @@ def _trip_cloud_breaker(name: str, err: Exception) -> None:
           f"whole key rotation again.", flush=True)
 
 
+def _reject_empty(name: str, out, stream: bool):
+    """An empty 200 is a FAILURE, and must escalate rather than end the cascade.
+
+    F-79, measured on the desk 2026-08-29. With Gemini out of quota and Groq
+    returning 413, the log read:
+
+        [ROUTER] 'groq' route failed (413 ...). Escalating to next provider...
+        <nothing>
+        INFO: "POST /api/backdoor HTTP/1.1" 200 OK
+
+    No OpenRouter attempt, no NVIDIA attempt, no `FATAL: all providers
+    exhausted`. A cloud leg had answered 200 with EMPTY content, the router
+    counted that as success and returned "" - so the two remaining legs,
+    including the NVIDIA one added that same afternoon precisely as a backstop,
+    were never tried. The turn reached him as "I didn't get an answer together on
+    that one", which is honest and was nevertheless avoidable.
+
+    **`_call_ollama` has raised on this since G5.7.** The same defect was fixed in
+    one leg of five and left in the other four - root cause #4, which is why this
+    lives in the dispatch rather than becoming a fifth copy.
+
+    Streams are checked by their FIRST CHUNK, which the HTTP legs already pull
+    eagerly to surface auth errors; a generator that yields nothing at all is the
+    same empty answer arriving more slowly.
+    """
+    if stream:
+        return out
+    if not str(out or "").strip():
+        raise RuntimeError(f"{name} returned an empty 200 response")
+    return out
+
+
 def _reset_cloud_breaker(name: str) -> None:
     if _cloud_down_until.pop(name, None):
         print(f"[ROUTER] ✅ '{name}' recovered — breaker closed.", flush=True)
@@ -302,19 +334,27 @@ def universal_llm_call(
                 _reset_ollama_breaker()  # local answered — keep using it
                 return result
             elif name == "gemini":
-                out = _call_gemini(messages, temperature, max_tokens, stream, json_mode, timeout)
+                out = _reject_empty(name, _call_gemini(
+                    messages, temperature, max_tokens, stream, json_mode,
+                    timeout), stream)
                 _reset_cloud_breaker(name)
                 return out
             elif name == "openrouter":
-                out = _call_openrouter(messages, temperature, max_tokens, stream, json_mode, timeout)
+                out = _reject_empty(name, _call_openrouter(
+                    messages, temperature, max_tokens, stream, json_mode,
+                    timeout), stream)
                 _reset_cloud_breaker(name)
                 return out
             elif name == "nvidia":
-                out = _call_nvidia(messages, temperature, max_tokens, stream, json_mode, timeout)
+                out = _reject_empty(name, _call_nvidia(
+                    messages, temperature, max_tokens, stream, json_mode,
+                    timeout), stream)
                 _reset_cloud_breaker(name)
                 return out
             else:  # groq
-                out = _call_groq(messages, temperature, max_tokens, stream, json_mode, timeout)
+                out = _reject_empty(name, _call_groq(
+                    messages, temperature, max_tokens, stream, json_mode,
+                    timeout), stream)
                 _reset_cloud_breaker(name)
                 return out
         except Exception as e:
@@ -772,6 +812,10 @@ def _call_openrouter_model(model, messages, temperature, max_tokens, stream, jso
 
     g = _gen()
     first = next(g, "")  # triggers the request; raises on auth/limit errors → escalate
+    if not first.strip():
+        # F-79: an empty stream is an empty answer arriving slowly. Ollama has
+        # raised here since G5.7; this leg returned nothing and ended the cascade.
+        raise RuntimeError("openrouter returned an empty 200 stream")
 
     def _safe():
         if first:
@@ -944,6 +988,8 @@ def _call_nvidia_model(model, messages, temperature, max_tokens, stream,
 
     g = _gen()
     first = next(g, "")  # triggers the request; raises on auth/limit errors
+    if not first.strip():
+        raise RuntimeError("nvidia returned an empty 200 stream")  # F-79
 
     def _safe():
         if first:

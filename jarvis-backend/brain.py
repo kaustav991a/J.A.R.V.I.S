@@ -2692,6 +2692,48 @@ def _sourced_topics(email_context: str, calendar_context: str,
     return got
 
 
+# Publishers the model has actually reached for, unprompted, in this briefing.
+# Not a general list of news organisations - a list of what it invented, which is
+# the only kind of list that can be justified.
+_PUBLISHERS = ("reuters", "techcrunch", "bloomberg", "the verge", "wired",
+               "google news", "associated press", "bbc", "cnbc", "the guardian",
+               "new york times", "wall street journal")
+
+
+def _strip_invented_attribution(text: str, source: str = "") -> str:
+    """Drop a sentence that names a publisher the lookup did not give.
+
+    F-78. The headline itself is sourced; the byline was not. "Reuters notes a
+    surge in demand for AI-accelerated hardware" is a quotation attributed to an
+    organisation that never published it, and it is the kind of claim a person
+    would repeat.
+
+    `source` is the domain the headline really came from, so naming THAT one is
+    fine — the guard is about invention, not about attribution.
+    """
+    if not text:
+        return text
+    low_source = (source or "").lower()
+    kept, dropped = [], []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        low = sentence.lower()
+        named = [pub for pub in _PUBLISHERS if pub in low]
+        # naming the real source is not an invention
+        named = [pub for pub in named if pub.replace(" ", "") not in
+                 low_source.replace(".", "").replace("-", "")]
+        if named:
+            dropped.append((sentence, named[0]))
+        else:
+            kept.append(sentence)
+    if dropped:
+        for sentence, pub in dropped:
+            print(f"[BRAIN] briefing: dropped an invented byline ({pub!r} is not "
+                  f"{low_source or 'the source'}): {sentence[:80]}", flush=True)
+    cleaned = " ".join(kept).strip()
+    return cleaned or text if not dropped else (cleaned or
+                                                "All primary systems are online, Sir.")
+
+
 def _strip_unsourced_state_claims(text: str, sourced: set) -> str:
     """Remove sentences describing state the briefing never read.
 
@@ -3292,18 +3334,39 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
     # returning zero results without raising, so the `except` never fired,
     # nothing was logged, and the fallback string went into the prompt as though
     # it were a headline. The marker below is what the guard matches on.
+    # F-75: an EMPTY result list is the case that bit. DuckDuckGo started
+    # returning zero results without raising, so the `except` never fired,
+    # nothing was logged, and the fallback string went into the prompt as though
+    # it were a headline. The marker below is what the guard matches on.
+    #
+    # F-78: and the SOURCE travels with it. Given a bare title, the model kept
+    # attaching a publisher of its own — TechCrunch, then Reuters, then Google
+    # News, then Reuters again, across four briefings. A headline is a quotation,
+    # and a quotation attributed to an organisation that did not publish it is a
+    # harder claim than the headline itself.
     news_headline = _NO_DATA["news"]
+    news_source = ""
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(
                 "latest technology OR artificial intelligence news", max_results=1))
             if results and str(results[0].get("title") or "").strip():
                 news_headline = results[0]["title"]
+                href = str(results[0].get("href") or "")
+                if "//" in href:
+                    news_source = href.split("//", 1)[1].split("/", 1)[0]
+                    news_source = news_source.removeprefix("www.")
             else:
                 print("[BRAIN] news lookup returned no results — the briefing "
                       "will not mention a headline.", flush=True)
     except Exception as e:
         print(f"[BRAIN] News retrieval failed: {e}", flush=True)
+
+    # What the prompt is allowed to say about where it came from. Named when the
+    # lookup gave a domain, and explicitly forbidden when it did not — silence
+    # about the source is what let the model fill it in.
+    news_attribution = (f' (published by {news_source})' if news_source
+                        else " (SOURCE UNKNOWN — do not name a publisher)")
     
     # 2. Format the weather
     if weather_data:
@@ -3380,7 +3443,7 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
     2. Channel the EXACT witty, dry, polite British tone from the Iron Man films (Paul Bettany). Refined, extremely polite AI butler — never informal slang ("mate", "chap", "cheers", "reckon" are forbidden). Address the user exactly per the persona instructions above.
     3. {_horizon} If there are events, summarise them (e.g. "Your first meeting is at 10, and you've three items on the calendar"). If the calendar is empty, say so plainly.
     4. Briefly note unread email count and any notable vitals if present — one line each, do not list every item.
-    5. Weave in the weather ({weather_str}) and optionally one tech headline ("{news_headline}") if it flows naturally.
+    5. Weave in the weather ({weather_str}) and optionally one tech headline ("{news_headline}"{news_attribution}) if it flows naturally. NEVER name a publisher that is not given here.
     6. Confirm SYSTEM READINESS explicitly — that all primary systems are online and you are fully at the user's service.
     7. End by inviting the user to proceed.
 
@@ -3394,7 +3457,7 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
     3. ABSOLUTE RULE: NEVER use informal British slang (e.g., "mate", "old chap", "guvnor", "reckon", "bloke", "cheers"). This is completely out of character. Address the user exactly as instructed in your persona instructions above.
     4. Review the recent events. If there is a highly relevant recent event (like returning from the office late, or smoking cigarettes), base your greeting around that with a witty or caring remark.
     5. OFFICE PROTOCOL: If it's Evening, Night, or Late Night, and the user likely returned from the office, ACT EXTREMELY HUMAN. Ask him conversational questions like "How was the office today?", "How were the roads?", or "Did you face any problems?".
-    6. You may weave in the current time ({current_time}), weather ({weather_str}), or a tech headline ("{news_headline}") ONLY IF it flows naturally. If you have a witty contextual greeting (especially about the office), skip the boilerplate weather/news entirely!
+    6. You may weave in the current time ({current_time}), weather ({weather_str}), or a tech headline ("{news_headline}"{news_attribution}) ONLY IF it flows naturally — and NEVER name a publisher that is not given here. If you have a witty contextual greeting (especially about the office), skip the boilerplate weather/news entirely!
     7. If there are unread emails, upcoming calendar events, or notable health metrics, mention them BRIEFLY (e.g., "You have 3 unread emails", "Your standup is at 10", or "Your heart rate is resting nicely at 72"). Do NOT list every item.
     8. End by asking how he would like to proceed or by letting him answer your questions.
 
@@ -3447,7 +3510,8 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
         # and F-13 is the standing lesson that a rule a model can ignore is not a
         # guarantee — the briefing had these instructions and narrated four
         # sources it never read anyway.
-        return _strip_unsourced_state_claims(_strip_unfounded_action_claims(
+        return _strip_invented_attribution(
+            _strip_unsourced_state_claims(_strip_unfounded_action_claims(
             universal_llm_call(
                 messages=[{"role": "system", "content": prompt}],
                 temperature=_temperature,
@@ -3455,6 +3519,6 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
                 stream=False,
                 json_mode=False,
                 timeout=30.0,
-            )), _sourced)
+            )), _sourced), news_source)
     except Exception as e:
         return f"Systems online, sir. The time is {current_time}. I am experiencing a slight network anomaly, but I am standing by for your commands."

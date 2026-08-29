@@ -85,6 +85,36 @@ def _build_service():
         return None
 
 
+def _unread_total(service) -> int:
+    """How many unread messages are REALLY in the inbox, or -1.
+
+    F-77, measured 2026-08-29. Every count in this module came from
+    `messages().list(...).resultSizeEstimate`, which is **not a count**. Measured
+    against the same account in the same minute:
+
+        maxResults=1    -> resultSizeEstimate 201
+        maxResults=5    -> resultSizeEstimate 201
+        maxResults=100  -> resultSizeEstimate 201
+        maxResults=500  -> resultSizeEstimate 501
+        labels().get("INBOX").messagesUnread -> 66373
+
+    It tracks the PAGE SIZE, not the mailbox. So the desk had been saying "You
+    have 201 unread emails, Sir" - in every briefing, and in the 2026-08-22 gate
+    session that passed row 10.5 on it - while the real figure was 66,373. Wrong
+    by 66,172, and it would have changed if anyone had tuned a page size.
+
+    `labels().get` returns the counter Gmail itself maintains for the label. It
+    is one call, it does not paginate, and it is the number the Gmail UI shows.
+    """
+    try:
+        label = service.users().labels().get(userId="me", id="INBOX").execute()
+        total = label.get("messagesUnread")
+        return int(total) if total is not None else -1
+    except Exception as exc:  # noqa: BLE001
+        print(f"[GMAIL AGENT] unread count unavailable: {exc}", flush=True)
+        return -1
+
+
 def _decode_part_data(data: str) -> str:
     """Base64url-decode a Gmail payload data field to a UTF-8 string."""
     try:
@@ -380,8 +410,11 @@ class GmailAgent:
                 maxResults=limit,
             ).execute()
 
-            messages     = results.get("messages", [])
-            total_unread = results.get("resultSizeEstimate", 0)
+            messages = results.get("messages", [])
+            # F-77: NOT `resultSizeEstimate` - that tracks the page size, not the
+            # mailbox, and it is how "201 unread" was said for a 66,373-message
+            # backlog.
+            total_unread = _unread_total(service)
 
             if not messages:
                 return "Your inbox is spotless, Sir. No unread messages."
@@ -585,7 +618,7 @@ class GmailAgent:
                 userId="me", q=query, maxResults=max_results
             ).execute()
             messages = results.get("messages", [])
-            total    = results.get("resultSizeEstimate", 0)
+            total    = _unread_total(service)          # F-77, see _unread_total
 
             if not messages:
                 return f"No emails found matching '{query}', Sir."
@@ -715,13 +748,7 @@ class GmailAgent:
         service = _build_service()
         if not service:
             return -1
-        try:
-            results = service.users().messages().list(
-                userId="me", labelIds=["INBOX", "UNREAD"], maxResults=1
-            ).execute()
-            return results.get("resultSizeEstimate", 0)
-        except Exception:
-            return -1
+        return _unread_total(service)
 
     def get_inbox_preview(self, max_results: int = 5) -> list:
         """Return structured preview list for the frontend widget."""
