@@ -52,23 +52,33 @@ is 100%.**
 
 That is a scope decision rather than a technical one, and it is written here
 rather than in a commit message because it governs every session until he lifts
-it. **`F:\work\JARVIS-Mobile` is frozen.** So is the OTA publish that would put
-today's app-side work on the phone.
+it.
 
-**What is frozen with it, stated plainly rather than discovered later.** Three
-things are written, tested and *unprovable* while this holds, and none of them is
-a defect — they are finished code waiting on a publish:
+**The line is the REPOSITORY, and he drew it there deliberately.**
+`F:\work\JARVIS-Mobile` is frozen, and so is the OTA publish that would put
+today's app-side work on the phone. **Gateway work in THIS repo continues** —
+including the brain-queue items whose code lives here, even though the phone is
+what eventually consumes them. A gateway change is desk work: it is written,
+harnessed and deployed on this side, and it is provable from `/health` without a
+phone in the room.
+
+**What the freeze actually stops, named rather than discovered later.** Two
+commits are finished, tested and *unprovable* while this holds, and neither is a
+defect — they are finished code waiting on a publish:
 
 * the app half of the capability tokens (`38a05cb`), so the phone keeps
   presenting the master and `/health.app_auth.master_calls` keeps counting;
 * the app half of queue item 25 (`6d8be2d`), so a spoken turn that outlives its
-  socket still arrives with no question above it — **the gateway half is live**,
-  and it carries the transcript on the push that the phone does not yet read;
-* the five remaining brain-queue items (`6`, `11`, `12`'s app half, `14`, `15`).
-  Several are gateway-side code, but the phone is their only consumer, so they
-  are parked behind the same decision.
+  socket still arrives with no question above it — **the gateway half is live**
+  and puts the transcript on the push that the phone does not yet read. Until it
+  publishes this will look exactly like the original defect and is not.
 
-Item 22's rotation is NOT in that list: it is gateway-only, deployed, and proves
+Of the four remaining brain-queue items, **three are gateway work and stay
+open**: `6` (the transcribe prompt overcorrects on plain English), `14` (the
+situation on the persona envelope), and `15`'s gateway half (a per-message id, and
+`delivered`/`read` are things only the gateway can say). Only `11` — the
+notification listener — is app-side and parked, along with `15`'s app half and
+`12`'s. Item 22 was never in the list: gateway-only, deployed, and it proves
 itself over two mornings of ordinary briefings with nothing published.
 
 ### What "the desk is 100%" means, measured
@@ -435,18 +445,22 @@ can finish alone on the ladder is still finished.
 
 ### If the next session is a CODE session — NOT the other repo, as of 2026-08-29
 
-**Read §0.5 first: the app is frozen until the desk is 100%.** What follows is
-kept as the record of where that work stood when it stopped, not as a queue to
-pick up.
+**Read §0.5 first: the app REPO is frozen, gateway work is not.**
 
 The desk ladder has **nothing machine-only left**, which is why sessions had been
 going to `jarvis-mobile`'s `docs/brain-dependencies.md` — that laptop has no
 Python at all (`python`/`python3` are the Microsoft Store stub), so this machine
 is the only place any of it is testable. It was 9 queue items; **13, 24, 25, 22
-and 12's gateway half are now written**, so four remain and all four are parked:
-`6` (the transcribe prompt overcorrects on plain English), `11` (notification
-listener, gated on 12), `14` (the situation on the persona envelope), `15`
-(delivered/read ticks).
+and 12's gateway half are now written.** Four remain:
+
+* **still open, gateway work** — `6` (the transcribe prompt overcorrects on plain
+  English), `14` (the situation on the persona envelope), `15`'s gateway half (a
+  per-message id; `delivered` and `read` are things only the gateway can say);
+* **parked with the app repo** — `11` (the notification listener), plus the app
+  halves of `15` and `12`.
+
+The gate rows below outrank all of it: the goals in §0 are what "100%" is measured
+against, and every one of them is a desk row.
 
 **25 and 22 landed on 2026-08-29 and NEITHER IS LIVE.** Both are gateway commits
 on a branch Render has not taken, and 25's other half is an app commit that has
