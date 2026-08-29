@@ -30,6 +30,7 @@ import base64
 import json
 import os
 import sys
+import time
 
 # Set BEFORE the import so the module-level config picks these up. `.env` wins
 # over os.environ (the gateway calls load_dotenv(override=True)), so this is a
@@ -858,6 +859,168 @@ def test_expo_blocking_returns_a_decoded_reply_not_a_truncated_string():
     assert "[:400]" not in src.split("_unparsed")[0], \
         "the success path must not truncate Expo's reply"
     assert "json.loads" in src
+
+
+# ── a spoken turn that outlives its socket ──────────────────────────────────
+#
+# Queue item 25 from `jarvis-mobile`'s brain handoff, reported from the device on
+# 2026-08-27. A voice turn is TWO frames: the transcript, attributed to him, and
+# the answer. `deliver()` has always known the answer can outlive the socket — it
+# reads `emit()`'s result and pushes instead. The transcript did not: its result
+# was discarded, so a turn started and then pocketed reached the phone as an
+# answer with NOTHING above it, which reads as J.A.R.V.I.S. volunteering
+# something rather than as a reply.
+#
+# Sending the transcript as its own push is closed off, and for the reason the
+# frame type exists at all: the tray would file it as the machine speaking. It
+# rides on the reply's payload instead and the app writes his turn from there —
+# which is why the app half (`replyFromData`, `src/lib/notify.ts`) had to land in
+# the same change. An unknown field on a push is dropped in silence, so the
+# gateway half alone would have looked like it did nothing.
+
+
+def _fail_send_when(match):
+    """Make matching frames die in the socket, the way a pocketed phone does.
+
+    Not an artificial failure mode: Android takes the WebSocket with the screen,
+    and `send_json` on a socket the peer has abandoned is exactly where it
+    surfaces. Patched on the CLASS and restored in a `finally`, because the desk
+    link is the same type.
+    """
+    from starlette.websockets import WebSocket
+    original = WebSocket.send_json
+
+    async def _send(self, data, mode="text"):
+        if match(data):
+            raise RuntimeError("socket gone with the screen")
+        return await original(self, data, mode)
+
+    WebSocket.send_json = _send
+
+    def restore():
+        WebSocket.send_json = original
+
+    return restore
+
+
+def _push_spy():
+    """Collect what would have been pushed, and hand back a restore."""
+    seen: list = []
+    original = cg._push_all
+
+    async def _spy(title, body, data=None, kind="general", force=False):
+        seen.append({"title": title, "body": body, "data": data or {},
+                     "kind": kind, "force": force})
+
+    cg._push_all = _spy
+
+    def restore():
+        cg._push_all = original
+
+    return seen, restore
+
+
+def _wait_for(seen, limit=5.0):
+    """The handler runs on the TestClient's own loop; give it a moment to finish."""
+    deadline = time.monotonic() + limit
+    while not seen and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return seen
+
+
+def test_a_spoken_turn_that_outlives_its_socket_carries_its_own_question():
+    cg._desk_ws = None
+    cg._groq_transcribe = lambda audio, filename="voice.ogg": "how far is home"
+    pushes, unspy = _push_spy()
+    unfail = _fail_send_when(
+        lambda f: isinstance(f, dict) and f.get("type") == "transcript")
+    try:
+        cg._push_targets["ExponentPushToken[x]"] = "android"
+        with _open() as ws:
+            ws.receive_json()          # the greeting, before anything is broken
+            ws.send_bytes(b"clip")
+            _wait_for(pushes)
+    finally:
+        unfail()
+        unspy()
+    assert len(pushes) == 1, f"expected one push, got {pushes}"
+    assert pushes[0]["body"] == CLOUD_SAID
+    assert pushes[0]["data"]["kind"] == "reply"
+    # 🛑 THE REPORTED DEFECT: this key was not there, so the phone showed an
+    # answer with no question above it
+    assert pushes[0]["data"].get("transcript") == "how far is home"
+    # and it is forced past the quiet gap, like every other answer to something
+    # he asked a moment ago
+    assert pushes[0]["force"] is True
+
+
+def test_a_transcript_that_reached_the_phone_is_not_pushed_a_second_time():
+    """The ordinary pocketing: the question arrived, the answer did not.
+
+    Only the answer needs the push here — sending the transcript again would put
+    his question in the log twice, once from the socket and once from the tray.
+    """
+    cg._desk_ws = None
+    cg._groq_transcribe = lambda audio, filename="voice.ogg": "how far is home"
+    pushes, unspy = _push_spy()
+    unfail = _fail_send_when(
+        lambda f: isinstance(f, dict) and f.get("status") == "speaking")
+    try:
+        cg._push_targets["ExponentPushToken[x]"] = "android"
+        with _open() as ws:
+            ws.receive_json()
+            ws.send_bytes(b"clip")
+            hit, _ = _drain(ws, want=lambda f: f.get("type") == "transcript")
+            assert hit is not None and hit["text"] == "how far is home"
+            _wait_for(pushes)
+    finally:
+        unfail()
+        unspy()
+    assert len(pushes) == 1, f"expected one push, got {pushes}"
+    assert pushes[0]["body"] == CLOUD_SAID
+    assert "transcript" not in pushes[0]["data"]
+
+
+def test_a_typed_turn_that_outlives_its_socket_pushes_no_transcript():
+    """He can see what he typed; the app logged it locally when he sent it.
+
+    A transcript on this push would be his own words handed back to him as
+    though he had spoken them, one line under the copy already there.
+    """
+    cg._desk_ws = None
+    pushes, unspy = _push_spy()
+    unfail = _fail_send_when(
+        lambda f: isinstance(f, dict) and f.get("status") == "speaking")
+    try:
+        cg._push_targets["ExponentPushToken[x]"] = "android"
+        with _open() as ws:
+            ws.receive_json()
+            ws.send_text("lock the pc")
+            _wait_for(pushes)
+    finally:
+        unfail()
+        unspy()
+    assert len(pushes) == 1, f"expected one push, got {pushes}"
+    assert "transcript" not in pushes[0]["data"]
+
+
+def test_the_transcript_result_is_read_rather_than_discarded():
+    """The shape of the fix, pinned where a refactor would quietly undo it.
+
+    `await emit(...)` with the result thrown away is precisely the defect: it
+    compiles, it looks deliberate, and the frame it dropped is invisible from
+    this side. The push path above proves the behaviour; this pins that nobody
+    restores the discarded call while leaving the tests passing on some other
+    route.
+    """
+    import inspect
+    src = inspect.getsource(cg.app_link)
+    # the STATEMENT form is the defect — the same call inside an `if not` is the
+    # fix, so this reads the start of the line rather than searching the file
+    discarded = [ln for ln in src.splitlines()
+                 if ln.strip().startswith('await emit({"type": "transcript"')]
+    assert not discarded,         f"the transcript emit must read its result, not discard it: {discarded}"
+    assert "pending_transcript" in src
 
 
 if __name__ == "__main__":

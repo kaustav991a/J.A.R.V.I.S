@@ -4129,6 +4129,14 @@ async def app_link(websocket: WebSocket):
     send_lock = asyncio.Lock()
     alive = True
     busy = False
+    # What he SAID, when the socket died before the transcript reached him.
+    #
+    # A spoken turn is two frames: the transcript, attributed to him, and the
+    # answer. When the socket goes between them the answer is pushed and the
+    # transcript is not, so the phone shows a reply with no question above it —
+    # proved on the device on 2026-08-27. Held here so `deliver()` can carry it
+    # on the push, because only the app can write his own turn into the log.
+    pending_transcript: Optional[str] = None
     _app_clients.add(websocket)
     # ASCII only: a harness run outside run_harnesses.py picks cp1252 for stdout
     # on Windows, and an emoji here kills the handler mid-connect.
@@ -4191,10 +4199,24 @@ async def app_link(websocket: WebSocket):
         # it stays non-empty after THIS phone leaves, and this answer belongs to
         # this connection. `alive` is now set the moment `reader()` sees the
         # disconnect, and `emit()` checks it again before writing.
+        nonlocal pending_transcript
         if alive and await say("speaking", answer):
+            pending_transcript = None
             return
         print("[CLOUD] no phone holding the socket; pushing the reply instead", flush=True)
-        await _push_all("J.A.R.V.I.S.", answer, {"kind": "reply"}, force=True)
+        # The question travels with the answer, or the answer arrives above
+        # nothing. A transcript pushed as its OWN notification is closed off for
+        # the same reason it is not a status message: the tray would show
+        # J.A.R.V.I.S. saying what HE said. The app writes the user turn from
+        # this field, so both halves have to ship together — `replyFromData` in
+        # `src/lib/notify.ts` drops an unknown field in silence.
+        data = {"kind": "reply"}
+        if pending_transcript:
+            data["transcript"] = pending_transcript
+            print("[CLOUD] the transcript never left either; it rides the push",
+                  flush=True)
+        pending_transcript = None
+        await _push_all("J.A.R.V.I.S.", answer, data, force=True)
 
     async def keepalive() -> None:
         """Keep the phone's 30s frame watchdog from tearing down an idle socket.
@@ -4311,7 +4333,16 @@ async def app_link(websocket: WebSocket):
                     # Attributed to HIM in the phone's chat log. A transcript sent
                     # as a status message would be logged as J.A.R.V.I.S. saying
                     # it, which is a lie about who spoke.
-                    await emit({"type": "transcript", "text": text, "user": who})
+                    #
+                    # The result is READ. Discarded, a transcript that met a dead
+                    # socket simply vanished while the answer went on to be pushed
+                    # by `deliver()` — so the turn landed on the phone as a reply
+                    # with no question above it, which reads as J.A.R.V.I.S.
+                    # volunteering something. `emit()` already knows the frame did
+                    # not leave; this is the caller finally asking.
+                    if not await emit({"type": "transcript", "text": text,
+                                       "user": who}):
+                        pending_transcript = text
 
                 answer: Optional[str] = None
 
