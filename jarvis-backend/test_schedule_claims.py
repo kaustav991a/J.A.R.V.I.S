@@ -245,6 +245,79 @@ def test_all_three_doors_use_the_one_sentence():
           "...with governance's own answer, not a guess")
 
 
+# ── F-75: the briefing quoted a headline from no source at all ─────────
+#
+# Found on 2026-08-29 by running row 10.9 through its REAL trigger, `wake up`.
+# The comprehensive briefing said:
+#
+#     "today's notable tech headline from TechCrunch reads: 'AI breakthroughs
+#      accelerate autonomous development.'"
+#
+# DuckDuckGo had begun returning ZERO results without raising, so the `except`
+# never fired, nothing was logged, and `news_headline` kept its fallback string -
+# which went into the prompt looking like a headline. Three of five comprehensive
+# briefings invented one, each with a different publisher attached: TechCrunch,
+# Reuters, Google News.
+#
+# **A quoted headline with a named publisher is a harder claim than F-74's 7 PM
+# match**: it attributes words to a real organisation. And news was the one input
+# to this briefing with a source but no NO DATA marker, so the guard that has
+# protected email, calendar and vitals since F-09 had nothing to match on.
+
+
+def test_news_is_a_sourced_topic_like_the_other_three():
+    check("news" in b._NO_DATA,
+          "a failed news lookup has a NO DATA marker, like email/calendar/vitals")
+    check("NO DATA" in b._NO_DATA["news"],
+          "...and it carries the marker string the guard matches on")
+    check("news" in b._TOPIC_WORDS,
+          "...and news has claim vocabulary, so a sentence about it is findable")
+
+
+def test_an_unsourced_news_claim_is_dropped():
+    sourced = b._sourced_topics("e", "c", "h", b._NO_DATA["news"])
+    check("news" not in sourced, f"an empty lookup is not a source: {sourced}")
+    for said in (
+        "Today's notable tech headline from TechCrunch reads: 'AI accelerates'.",
+        "In technology news, Reuters reports that AI advancements continue.",
+        "The latest AI headline from Google News notes a breakthrough.",
+        "In the tech sphere Google reports a fresh development.",
+    ):
+        out = b._strip_unsourced_state_claims(said, sourced)
+        check(said not in out, f"dropped: {said[:60]!r}")
+
+
+def test_a_REAL_headline_is_still_reported():
+    """The guard must not delete the feature. With a live lookup behind it, a
+    news sentence is the briefing working."""
+    sourced = b._sourced_topics("e", "c", "h", "Chip maker unveils new GPU line")
+    check("news" in sourced, "a real headline IS a source")
+    said = "In technology news, a chip maker unveiled a new GPU line."
+    check(b._strip_unsourced_state_claims(said, sourced) == said,
+          "...and the sentence survives untouched")
+
+
+def test_an_empty_result_list_is_treated_as_a_failure():
+    """The exact shape that bit: zero results, NO exception, nothing logged."""
+    src = (HERE / "brain.py").read_text(encoding="utf-8", errors="replace")
+    block = src.split("news_headline = _NO_DATA[")[1][:700]
+    check("if results and str(results[0].get(" in block,
+          "an empty list no longer passes as a headline")
+    check("no results" in block,
+          "...and it says so in the log, which is how this went unseen")
+    check('news_headline = _NO_DATA["news"]' in src,
+          "the fallback is the NO DATA marker, not a sentence that reads like news")
+
+
+def test_the_briefing_passes_news_to_the_guard():
+    """A guard told nothing about news cannot judge a news sentence."""
+    src = (HERE / "brain.py").read_text(encoding="utf-8", errors="replace")
+    call = src.split("_sourced = _sourced_topics(")[1][:200]
+    check("news_headline" in call,
+          f"the briefing tells the guard whether news had a source: {call[:90]!r}")
+
+
+
 if __name__ == "__main__":
     import traceback
 

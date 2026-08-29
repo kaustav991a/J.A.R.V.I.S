@@ -3110,3 +3110,58 @@ which recontextualises **F-57**. That row recorded a refusal "via
 `send_whatsapp_message` being BLOCK-tier"; it is not BLOCK-tier, it is absent
 from the ruleset entirely, so the partner allowlist remains as unexercised as
 F-57 said, for a slightly different reason than F-57 gave.
+
+---
+
+## F-75 🔴 · The briefing quoted a headline, from no source at all
+
+Found on 2026-08-29 by running row `10.9` through its **real** trigger. "good
+morning" is a greeting; the row's criterion is a *Fit + Calendar + Gmail
+aggregate*, and that is what `wake up` produces. It produced this:
+
+> "…today's notable tech headline from **TechCrunch** reads: *'AI breakthroughs
+> accelerate autonomous development.'*"
+
+**There was no headline.** DuckDuckGo had begun returning **zero results without
+raising** — so the `except` never fired, nothing was logged, and `news_headline`
+kept its fallback string, which went into the prompt reading like prose rather
+than like an absence.
+
+Reproduced by forcing the lookup to return nothing. **Three of five** comprehensive
+briefings invented a headline, each with a different publisher attached:
+
+```
+"today's notable tech headline from TechCrunch reads: 'AI breakthroughs…'"
+"In technology news, Reuters reports that artificial-intelligence advancements…"
+"headline reads: 'Google News – Artificial Intelligence – Latest'"
+```
+
+**This is a harder claim than F-74's 7 PM match**: it attributes words to a real
+organisation. And it is the same structural gap — **news was the one input to
+this briefing that had a source but no `NO DATA` marker**, so the guard that has
+protected email, calendar and vitals since F-09 had nothing to match on.
+
+**FIXED**, three parts:
+
+* the fallback is now `_NO_DATA["news"]` — a marker, not a sentence that reads
+  like news;
+* **an empty result list is treated as a failure.** That is the exact shape that
+  bit: zero results, no exception, no log line. It says so in the log now;
+* `news` joins `_TOPIC_WORDS` and `_sourced_topics`, so an unsourced news
+  sentence is dropped by the guard that already existed. The vocabulary was
+  widened once, by watching the same defect walk around the first list — it said
+  "Google reports **a** breakthrough", which does not contain "reports that".
+
+**Proved deterministically:** with the lookup forced to return nothing, **3 of 3**
+briefings came back with no news claim at all. A real headline still passes
+through untouched — the guard must not delete the feature.
+
+`test_schedule_claims.py` 44 → **58 checks**, negative-tested.
+
+### A residual, stated rather than left to be found
+
+When the lookup DOES return a title, the briefing paraphrases it freely — a real
+result of *"Latest News: Today's big news headlines"* was rendered as *"Google
+News highlights a fresh breakthrough"*. The topic is genuinely sourced, so this
+guard correctly stays out of it, and it is a **paraphrase** rather than a
+fabrication. Worth knowing, not worth a guard that would flatten the persona.

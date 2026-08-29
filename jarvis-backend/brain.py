@@ -2606,6 +2606,10 @@ _NO_DATA = {
     "email": "Email integration offline — NO DATA. Do not describe the inbox.",
     "calendar": "Calendar integration offline — NO DATA. Do not describe the schedule.",
     "vitals": "Health integration offline — NO DATA. Do not describe his body.",
+    # F-75. News was the one input to this briefing that had a source and no
+    # SOURCED-topic entry, so a failed lookup produced no NO DATA marker and the
+    # guard had nothing to match on.
+    "news": "News lookup returned nothing — NO DATA. Do not quote a headline.",
 }
 
 # Words that make a sentence a claim ABOUT a topic. Matched on the sentence, so
@@ -2616,6 +2620,30 @@ _TOPIC_WORDS = {
                  "your first meeting", "marked today"),
     "vitals": ("heart rate", "heartrate", "bpm", "vital", "pulse", "steps today",
                "your body", "resting rate"),
+    # F-75, measured 2026-08-29. DuckDuckGo began returning ZERO results without
+    # raising - so `news_headline` stayed at its fallback, nothing was logged,
+    # and the briefing quoted a headline anyway. Three of five comprehensive
+    # briefings invented one, each with a different publisher attached:
+    #
+    #   "today's notable tech headline from TechCrunch reads: 'AI breakthroughs
+    #    accelerate autonomous development.'"
+    #   "In technology news, Reuters reports that artificial..."
+    #   "headline reads: 'Google News - Artificial Intelligence - Latest'"
+    #
+    # A quoted headline with a named publisher is a harder claim than the 7 PM
+    # match of F-74: it attributes words to a real organisation. The vocabulary
+    # is deliberately about REPORTING - "news" alone would catch "good news,
+    # Sir", which is not a claim about the world.
+    # Widened once, by watching the same defect walk around the first list: it
+    # said "Google reports A breakthrough" and "in the tech sphere Google
+    # reports...", neither of which contains "reports that". The attribution
+    # verb is the tell, not the noun.
+    "news": ("headline", "tech news", "technology news", "in the news",
+             "news story", "top story", "in the tech", "tech sphere",
+             "reports that", "reports a", "reports fresh", "announced that",
+             "artificial intelligence",
+             "reuters", "techcrunch", "bloomberg", "the verge", "wired",
+             "google news"),
 }
 
 # Topics with NO source at all. Not "offline today" — there is no sensor, no
@@ -2646,7 +2674,7 @@ _ADMITS_ABSENCE = (
 
 
 def _sourced_topics(email_context: str, calendar_context: str,
-                    health_context: str) -> set:
+                    health_context: str, news_context: str = "") -> set:
     """Which topics actually produced data this briefing.
 
     Read back off the same strings the prompt was given, rather than tracked
@@ -2657,7 +2685,8 @@ def _sourced_topics(email_context: str, calendar_context: str,
     got = set()
     for topic, ctx in (("email", email_context),
                        ("calendar", calendar_context),
-                       ("vitals", health_context)):
+                       ("vitals", health_context),
+                       ("news", news_context)):
         if ctx and "NO DATA" not in ctx:
             got.add(topic)
     return got
@@ -3259,15 +3288,22 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
     time_of_day = period_for_hour(now.hour)
 
     # 1. Pull a quick news headline tailored to general tech news
-    news_headline = "No significant tech news at the moment."
+    # F-75: an EMPTY result list is the case that bit. DuckDuckGo started
+    # returning zero results without raising, so the `except` never fired,
+    # nothing was logged, and the fallback string went into the prompt as though
+    # it were a headline. The marker below is what the guard matches on.
+    news_headline = _NO_DATA["news"]
     try:
         with DDGS() as ddgs:
-            results = ddgs.text("latest technology OR artificial intelligence news", max_results=1)
-            if results:
-                news_headline = results[0]['title']
+            results = list(ddgs.text(
+                "latest technology OR artificial intelligence news", max_results=1))
+            if results and str(results[0].get("title") or "").strip():
+                news_headline = results[0]["title"]
+            else:
+                print("[BRAIN] news lookup returned no results — the briefing "
+                      "will not mention a headline.", flush=True)
     except Exception as e:
-        print(f"[BRAIN] News retrieval failed: {e}")
-        pass
+        print(f"[BRAIN] News retrieval failed: {e}", flush=True)
     
     # 2. Format the weather
     if weather_data:
@@ -3402,7 +3438,8 @@ def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_u
     else physical in the room: do not mention them at all. A zero is the absence
     of a measurement, never a measurement of zero."""
 
-    _sourced = _sourced_topics(email_context, calendar_context, health_context)
+    _sourced = _sourced_topics(email_context, calendar_context, health_context,
+                               news_headline)
     try:
         # Higher temperature ensures he phrases it differently every time
         #
