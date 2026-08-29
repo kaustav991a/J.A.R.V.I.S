@@ -86,6 +86,24 @@ services:
       # will fall back to the cloud.
       - key: APP_TOKEN
         sync: false
+      # The secret being REPLACED, during a rotation and never otherwise. Set it
+      # to the outgoing value, deploy, move the desk's .env whenever that machine
+      # is next on, then delete this. Both are accepted meanwhile, so neither end
+      # can lock the other out - which is the ordering problem that kept a known-
+      # leaked BRIDGE_SECRET live for weeks. /health.bridge_rotation counts every
+      # connect still arriving on the old one, so this can be removed on evidence.
+      - key: BRIDGE_SECRET_OLD
+        sync: false
+      # How long a CAPABILITY token minted from APP_TOKEN stays valid. The master
+      # above still opens every route - his installed app presents it - but the
+      # phone exchanges it at /app-tokens for one short-lived token per door, so
+      # a leaked push credential buys the push route and nothing else, and only
+      # until this many days are up. Declared here rather than left to the
+      # dashboard on purpose: an undeclared variable is one the Blueprint cannot
+      # be read for, which is exactly how LLM_PROVIDER_VISION came to say one
+      # thing here and another in the live service (F-68).
+      - key: APP_TOKEN_TTL_DAYS
+        value: "30"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_USER_ID

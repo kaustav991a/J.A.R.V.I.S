@@ -31,6 +31,24 @@ bonus for a process restart inside a live container — not the durability story
 The durability story is that the desk drains fast and often. What the spill DOES
 guarantee is that nothing readable is ever written: only sealed envelopes go to
 disk, which is the reason sealing happens before queueing rather than after.
+
+**And "the desk drains fast and often" was not true of the desk key itself.**
+Measured on the live gateway, 2026-08-29: `has_desk_key: false` with the desk
+off, which is the ordinary state of this system — the PC is off, which is *why*
+facts are being queued. The key lives in memory and in a file on a disk a deploy
+throws away, so every deploy and every free-tier spin-down returned this module
+to the one state in which `queue_fact` cannot seal anything and drops the turn
+instead. Eighteen turns went that way in a week, and the row that tracked it read
+"sealed-and-dropped is the correct failure, and it is still a failure".
+
+So there is a durable mirror now, injected rather than imported: `set_change_hook`
+takes a callback, `cloud_gateway` points it at the same Postgres `gateway_state`
+table its schedule and its briefing marker already use, and `restore()` takes it
+back at boot. Injected, because the import discipline above is the reason this
+module can run on Render at all — it must not learn what a database is. **What
+crosses that boundary is ciphertext and one PUBLIC key**, which is the whole
+point of sealing before queueing: the mirror can be read by whoever can read the
+database and still says nothing.
 """
 
 from __future__ import annotations
@@ -93,6 +111,78 @@ _dead_lettered = 0
 
 # ── persistence (best effort; never fatal) ──────────────────────────────────
 
+# Set by `cloud_gateway` at startup. Called with a snapshot every time the queue
+# or the key changes, and never awaited: a mirror that made him wait would be a
+# worse trade than the loss it prevents.
+_on_change: Optional[Callable[[dict], None]] = None
+
+
+def set_change_hook(hook: Optional[Callable[[dict], None]]) -> None:
+    """Install the durable mirror. `None` removes it, which is the old behaviour.
+
+    A callback rather than an import: this module runs on Render under a strict
+    import discipline (stdlib + fact_seal), and a database driver in here would
+    be the end of that. The gateway owns the connection; this owns the state.
+    """
+    global _on_change
+    _on_change = hook
+
+
+def snapshot() -> dict:
+    """Everything worth surviving a deploy: the desk's PUBLIC half, and the
+    sealed queue. No plaintext exists here to leak - that is what sealing before
+    queueing bought."""
+    _load()
+    return {
+        "desk_public": _desk_public,
+        "records": [{"envelope": i["envelope"], "attempts": int(i["attempts"])}
+                    for i in _outbox],
+    }
+
+
+def restore(state: Optional[dict]) -> dict:
+    """Take back what a deploy took. Returns what was actually recovered.
+
+    **Additive, never a replacement.** A restore that overwrote would race the
+    container's own disk spill and any fact queued in the seconds before the
+    database answered - and this module's whole promise is that a record leaves
+    exactly one way, which is an ack. Records already present by id are skipped,
+    so restoring twice costs nothing.
+
+    The key is taken only when there is none. A desk that has already handshaken
+    with THIS instance has handed over the current half; a stored one can only be
+    older.
+    """
+    out = {"key": False, "records": 0}
+    if not isinstance(state, dict):
+        return out
+    _load()
+    global _desk_public
+    stored_key = state.get("desk_public")
+    if _desk_public is None and isinstance(stored_key, str) and stored_key:
+        if set_desk_public(stored_key):
+            out["key"] = True
+    known = {i["envelope"].get("id") for i in _outbox}
+    for item in state.get("records") or []:
+        if not isinstance(item, dict) or not isinstance(item.get("envelope"), dict):
+            continue
+        ident = item["envelope"].get("id")
+        if ident in known:
+            continue
+        if len(_outbox) >= MAX_OUTBOX:
+            print(f"[OUTBOX] restore stopped at the {MAX_OUTBOX} cap; the rest "
+                  f"stay in the mirror until the desk drains what is here.",
+                  flush=True)
+            break
+        _outbox.append({"envelope": item["envelope"],
+                        "attempts": int(item.get("attempts") or 0)})
+        known.add(ident)
+        out["records"] += 1
+    if out["records"]:
+        _touch()
+    return out
+
+
 def _load() -> None:
     global _loaded, _desk_public
     if _loaded:
@@ -130,6 +220,24 @@ def _persist() -> None:
         print(f"[OUTBOX] spill write failed (queue is still in memory): {exc}", flush=True)
 
 
+def _touch() -> None:
+    """Write both mirrors. Called wherever the queue or the key moves.
+
+    The disk spill first, because it is synchronous and cannot fail the caller;
+    the durable hook second, and its exceptions are swallowed here rather than at
+    the hook, since every caller of this is on the path that is about to answer
+    him.
+    """
+    _persist()
+    if _on_change is None:
+        return
+    try:
+        _on_change(snapshot())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[OUTBOX] durable mirror write failed (the queue is still here): "
+              f"{exc}", flush=True)
+
+
 # ── the desk's public half ──────────────────────────────────────────────────
 
 def set_desk_public(public_b64: str) -> bool:
@@ -153,6 +261,15 @@ def set_desk_public(public_b64: str) -> bool:
         DESK_KEY_FILE.write_text(json.dumps({"public": public_b64}), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         print(f"[OUTBOX] desk key cache write failed: {exc}", flush=True)
+    # ...and into the durable mirror, which is the half that survives a deploy.
+    # Without it this key is gone at the next spin-down and every PC-off turn
+    # until the desk next connects is DROPPED rather than queued.
+    if _on_change is not None:
+        try:
+            _on_change(snapshot())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[OUTBOX] durable mirror write failed for the desk key: {exc}",
+                  flush=True)
     print("[OUTBOX] ✅ desk public half accepted — PC-off turns will be sealed to it.",
           flush=True)
     return True
@@ -204,7 +321,7 @@ def queue_fact(user_text: str, who: str = "KAUSTAV", tier=None,
               f"{fact_seal.QUARANTINE_DIR.name}/).", flush=True)
 
     _outbox.append({"envelope": envelope, "attempts": 0})
-    _persist()
+    _touch()
     return envelope
 
 
@@ -236,7 +353,7 @@ def ack(ids) -> int:
     _outbox.extend(kept)
     removed = before - len(_outbox)
     if removed:
-        _persist()
+        _touch()
     return removed
 
 
@@ -281,7 +398,7 @@ def _drop(items) -> None:
     kept = [i for i in _outbox if id(i) not in doomed]
     _outbox.clear()
     _outbox.extend(kept)
-    _persist()
+    _touch()
 
 
 # ── delivery ────────────────────────────────────────────────────────────────
@@ -336,7 +453,7 @@ async def flush(send: Callable[[dict], Awaitable[None]], batch: int = BATCH) -> 
             item["attempts"] += 1
         sent += len(chunk)
     if sent:
-        _persist()
+        _touch()
         print(f"[OUTBOX] handed {sent} sealed fact(s) to the desk; "
               f"{len(_outbox)} awaiting ack.", flush=True)
     return sent
@@ -370,6 +487,10 @@ def stats() -> dict:
     return {
         "depth": len(_outbox),
         "has_desk_key": _desk_public is not None,
+        # Whether the two above survive a deploy at all. `has_desk_key: true`
+        # with `durable: false` is the state that read as working for a week: it
+        # was true until the next spin-down, and nothing said otherwise.
+        "durable": _on_change is not None,
         "dropped_no_key": _dropped_no_key,
         "dropped_overflow": _dropped_overflow,
         "dead_lettered": _dead_lettered,
@@ -381,9 +502,11 @@ def stats() -> dict:
 
 
 def reset_state() -> None:
-    """Test-only: forget everything, including the loaded flag."""
+    """Test-only: forget everything, including the loaded flag and the mirror."""
     global _loaded, _desk_public, _dropped_no_key, _dropped_overflow, _dead_lettered
+    global _on_change
     _outbox.clear()
     _desk_public = None
     _loaded = False
     _dropped_no_key = _dropped_overflow = _dead_lettered = 0
+    _on_change = None

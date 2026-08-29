@@ -178,6 +178,41 @@ if not WEBHOOK_SECRET_TOKEN and BOT_TOKEN:
 # both sides, so the desk-link endpoint can't be opened by accident.
 BRIDGE_SECRET = (os.getenv("BRIDGE_SECRET") or "").strip()
 
+# The secret being replaced, accepted only until the desk has moved.
+#
+# Rotation was blocked by an ordering problem rather than by work: the gateway
+# and the desk read the same value out of two different places, so whichever one
+# changed first locked the other out — and the desk is a machine that may be off
+# when the change is made. The known-leaked value therefore stayed live for
+# weeks, which is the row that says its cost grows while deferred.
+#
+# Two accepted secrets closes that. Set BRIDGE_SECRET to the new value and
+# BRIDGE_SECRET_OLD to the leaked one, deploy, move the desk's `.env` whenever it
+# is next on, and then delete the old one. `/health` counts every connect that
+# still uses it, so "has the desk moved yet" is a number rather than a guess, and
+# there is no window in which the desk cannot reach the cloud.
+BRIDGE_SECRET_OLD = (os.getenv("BRIDGE_SECRET_OLD") or "").strip()
+
+# connects that arrived on the OLD secret, so the rotation can be finished with
+# evidence rather than optimism
+_legacy_bridge_use = 0
+
+
+def bridge_secret_ok(presented: str) -> str:
+    """`current`, `old`, or `no` — which of the two secrets this connect used.
+
+    A string rather than a bool for the same reason the app gate returns one: an
+    old-but-valid secret is a rotation in progress and must be visible, not
+    silently as good as the new one.
+    """
+    if not presented or not BRIDGE_SECRET:
+        return "no"
+    if hmac.compare_digest(presented, BRIDGE_SECRET):
+        return "current"
+    if BRIDGE_SECRET_OLD and hmac.compare_digest(presented, BRIDGE_SECRET_OLD):
+        return "old"
+    return "no"
+
 # Mobile app front door — the pairing token the phone presents on /app-link.
 # React Native's WebSocket cannot set handshake headers, so this one travels as
 # a query parameter rather than a header like the bridge secret does. Defaults to
@@ -186,6 +221,120 @@ BRIDGE_SECRET = (os.getenv("BRIDGE_SECRET") or "").strip()
 # empty on both means /app-link refuses every connection — a socket that reaches
 # a brain able to answer as you is never opened ungated.
 APP_TOKEN = (os.getenv("APP_TOKEN") or BRIDGE_SECRET or "").strip()
+
+# ── capability tokens ─────────────────────────────────────────────────
+#
+# One string gated the socket, the push address, the schedule, the fact store and
+# the say-something route alike, and nothing expired. **A token that can register
+# a push address and a token that can read your day must not be the same secret**
+# — the first is handed to a notification service, the second reads a life.
+#
+# Derived, not stored. A capability token is `j1.<cap>.<exp>.<mac>`, where the mac
+# is HMAC-SHA256 over the first three fields keyed by `APP_TOKEN` itself. Three
+# properties fall out of that and none of them needed a table:
+#
+#   * **verification is stateless** — any instance can check any token, which
+#     matters on a platform that replaces the container without warning;
+#   * **rotation is revocation** — change `APP_TOKEN` and every derived token
+#     stops verifying in the same instant, with nothing to clean up;
+#   * **a capability token cannot mint another.** Minting requires the master, so
+#     a leaked `push` token buys exactly the push route until it expires.
+#
+# The master keeps working everywhere. That is deliberate and it is not laziness:
+# the installed app on his phone presents it, and an auth change that locks him
+# out of his own assistant to prove a point about tokens is a worse outcome than
+# the thing being fixed. `/health` counts every master use per route, so the
+# migration is a number rather than a hope.
+APP_TOKEN_TTL_DAYS = float(os.getenv("APP_TOKEN_TTL_DAYS", "30"))
+
+# One per gate, named for what it opens rather than for the route that happens to
+# implement it today.
+APP_CAPABILITIES = ("link", "push", "state", "memory", "say")
+
+# route -> how many times the master was presented instead of a capability token.
+# In memory on purpose: this is a migration signal, not a record.
+_legacy_master_use: dict = {}
+
+
+def _cap_mac(cap: str, exp: int) -> str:
+    body = f"j1.{cap}.{exp}".encode("utf-8")
+    digest = hmac.new(APP_TOKEN.encode("utf-8"), body, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def mint_app_token(cap: str, ttl_days: Optional[float] = None,
+                   now: Optional[float] = None) -> str:
+    """One capability token. Requires nothing but the master and a clock."""
+    if cap not in APP_CAPABILITIES:
+        raise ValueError(f"unknown capability {cap!r}")
+    ttl = APP_TOKEN_TTL_DAYS if ttl_days is None else ttl_days
+    exp = int((time.time() if now is None else now) + ttl * 86400)
+    return f"j1.{cap}.{exp}.{_cap_mac(cap, exp)}"
+
+
+def read_app_token(presented: str, want: str,
+                   now: Optional[float] = None) -> str:
+    """What this credential is allowed to do here.
+
+    Returns one of `master`, `capability`, `expired`, `wrong-capability`, `bad`.
+    A string rather than a bool because three of those want different words in
+    the log and two of them want a different status code — an expired token is a
+    client that needs to refresh, and a forged one is an attacker.
+    """
+    if not APP_TOKEN or not presented:
+        return "bad"
+    if hmac.compare_digest(presented, APP_TOKEN):
+        return "master"
+    parts = presented.split(".")
+    if len(parts) != 4 or parts[0] != "j1":
+        return "bad"
+    _, cap, raw_exp, mac = parts
+    try:
+        exp = int(raw_exp)
+    except ValueError:
+        return "bad"
+    if cap not in APP_CAPABILITIES:
+        return "bad"
+    # The signature is checked BEFORE the capability and the clock, so a forged
+    # token cannot learn which of the three it got wrong by watching the reply.
+    if not hmac.compare_digest(mac, _cap_mac(cap, exp)):
+        return "bad"
+    if exp <= (time.time() if now is None else now):
+        return "expired"
+    if cap != want:
+        return "wrong-capability"
+    return "capability"
+
+
+def app_auth(presented: str, want: str, route: str,
+             peer: str = "?") -> Optional[Response]:
+    """The one gate. `None` means allowed; anything else is the reply to send.
+
+    Every app route used to spell out its own comparison, which is how five gates
+    came to share one secret without anyone deciding they should.
+    """
+    if not APP_TOKEN:
+        return Response(status_code=503)
+    verdict = read_app_token(presented, want)
+    if verdict == "master":
+        _legacy_master_use[route] = _legacy_master_use.get(route, 0) + 1
+        return None
+    if verdict == "capability":
+        return None
+    if verdict == "expired":
+        # 401 with a body the app can act on, rather than a bare refusal it can
+        # only report. Expiry is the ordinary end of a token's life, not an
+        # incident, and the client's move is to mint a new one.
+        print(f"[CLOUD] EXPIRED {want} token on {route} from {peer}", flush=True)
+        return JSONResponse({"error": "token_expired", "capability": want},
+                            status_code=401)
+    if verdict == "wrong-capability":
+        print(f"[CLOUD] REFUSED {route} from {peer} - token is for another "
+              f"capability, not {want}", flush=True)
+        return JSONResponse({"error": "wrong_capability", "capability": want},
+                            status_code=403)
+    print(f"[CLOUD] REFUSED {route} from {peer}", flush=True)
+    return Response(status_code=401)
 
 # The chat id stamped on commands the PHONE sends through a linked desk. The desk
 # keys its per-conversation working memory off this, so the phone gets a session
@@ -1958,6 +2107,7 @@ for _log_name in ("uvicorn.access", "uvicorn.error", "uvicorn"):
     logging.getLogger(_log_name).addFilter(_RedactQuerySecrets())
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
 
 app = FastAPI()
 _bot = None
@@ -3471,6 +3621,18 @@ async def _restore_state() -> None:
             _nudge = got
             recovered.append("today's remark marker")
 
+        if fact_outbox is not None:
+            got = await asyncio.to_thread(_db_state_get_blocking, "fact_outbox")
+            if got:
+                # The desk's PUBLIC half and the sealed queue. Without this the
+                # key died at every spin-down, and `queue_fact` DROPS a turn it
+                # cannot seal - eighteen of them in the week this was measured.
+                back = fact_outbox.restore(got)
+                if back["key"]:
+                    recovered.append("the desk's public half")
+                if back["records"]:
+                    recovered.append(f"{back['records']} sealed fact(s)")
+
         got = await asyncio.to_thread(_db_state_get_blocking, "briefing_voice")
         if got:
             # A cursor a deploy resets restarts the rotation at the same line every
@@ -3523,6 +3685,13 @@ async def health():
     roster = ", ".join(f"{i['who']} [{i['tier']}]" for i in _IDENTITIES.values()) or "none"
     # Diagnostics only — no secret VALUES exposed, just which features are wired.
     return {"status": "ok", "service": "jarvis-cloud-gateway",
+            # WHICH BUILD IS ANSWERING. Render sets this on every deploy, and
+            # without it "read /health after every deploy" could confirm the
+            # service was up but never that it was the service you just pushed -
+            # which is a whole class of afternoon: a fix deployed, a symptom
+            # unchanged, and no way to tell whether the deploy or the fix was the
+            # thing that did not happen. Empty off Render, where it means nothing.
+            "commit": (os.getenv("RENDER_GIT_COMMIT") or "")[:7],
             "mode": MODE, "identities": roster,
             "search": "tavily" if _TAVILY_KEY else "duckduckgo",
             # Which brain is actually answering, per capability. Reported because
@@ -3568,9 +3737,24 @@ async def health():
             # The phone refuses a gateway that does not declare this, because a
             # bare 200 would flip it to CLOUD and strand it on a dead socket —
             # worse than staying dark. So it is a claim about the ROUTE being
+            # Which credential the phone is actually presenting. `master_calls`
+            # empty is the migration finished; a route still counting means the
+            # installed app has not moved off the one secret yet, and the split
+            # is a design rather than a fact for that route.
+            "app_auth": {
+                "capabilities": list(APP_CAPABILITIES),
+                "ttl_days": APP_TOKEN_TTL_DAYS,
+                "master_calls": dict(_legacy_master_use),
+            },
             # usable, not about the process being up: false when no APP_TOKEN is
             # configured, since every connection would then be refused.
             "app_link": bool(APP_TOKEN),
+            # A rotation in progress, and how to know when it is finished: zero
+            # here after the desk has reconnected means the old secret can be
+            # deleted. Absent when no rotation is under way.
+            "bridge_rotation": ({"old_accepted": True,
+                                 "connects_on_old": _legacy_bridge_use}
+                                if BRIDGE_SECRET_OLD else None),
             "desk_linked": _desk_connected(),
             "apps_linked": len(_app_clients),
             # how many phones can be reached while holding no socket
@@ -3701,11 +3885,21 @@ async def desk_link(websocket: WebSocket):
         await websocket.close(code=1008)
         return
     presented = websocket.headers.get("x-bridge-secret", "")
-    if not hmac.compare_digest(presented, BRIDGE_SECRET):
+    verdict = bridge_secret_ok(presented)
+    if verdict == "no":
         peer = websocket.client.host if websocket.client else "?"
         print(f"[CLOUD] ⛔ desk-link secret mismatch from {peer}", flush=True)
         await websocket.close(code=1008)
         return
+    if verdict == "old":
+        global _legacy_bridge_use
+        _legacy_bridge_use += 1
+        # Loud on every connect, not once: this is a secret known to have reached
+        # a log, and the whole point of accepting it is to reach the moment it
+        # can be deleted.
+        print(f"[CLOUD] ⚠ desk connected on the OLD bridge secret "
+              f"({_legacy_bridge_use} so far). Move the desk's .env and remove "
+              f"BRIDGE_SECRET_OLD.", flush=True)
 
     await websocket.accept()
     # Last-writer-wins: a reconnecting desk replaces any stale socket.
@@ -4129,6 +4323,51 @@ async def _deliver_unprompted(message: str, title: str = "J.A.R.V.I.S.") -> dict
     return {"delivered": True, "sockets": len(_app_clients), "pushed": pushed}
 
 
+@app.post("/app-tokens")
+async def app_tokens(request: Request):
+    """Exchange the master credential for one short-lived token per capability.
+
+    The master is the pairing secret in the phone's SecureStore, and it stays
+    there: what leaves this route is five derived tokens, each of which opens one
+    door and stops working on its own. A `push` token handed to a notification
+    service cannot read his facts, and none of them can come back here for more —
+    minting is master-only, checked below, which is what keeps a leaked
+    capability token from renewing itself forever.
+
+        {"tokens": {"link": "j1.link....", ...}, "expires_at": 1234567890}
+
+    `ttl_days` may be shortened by the caller but never lengthened: a client is
+    trusted to want less time, not more.
+    """
+    auth = request.headers.get("authorization", "")
+    presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    peer = request.client.host if request.client else "?"
+    if not APP_TOKEN:
+        return Response(status_code=503)
+    # NOT `app_auth`: this route takes the master and nothing else. A capability
+    # token that could mint would make expiry decorative.
+    if not hmac.compare_digest(presented, APP_TOKEN):
+        print(f"[CLOUD] REFUSED app-tokens from {peer}", flush=True)
+        return Response(status_code=401)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    try:
+        asked = float(body.get("ttl_days") or APP_TOKEN_TTL_DAYS)
+    except (TypeError, ValueError):
+        asked = APP_TOKEN_TTL_DAYS
+    ttl = max(0.0, min(asked, APP_TOKEN_TTL_DAYS))
+    tokens = {cap: mint_app_token(cap, ttl) for cap in APP_CAPABILITIES}
+    print(f"[CLOUD] minted {len(tokens)} capability token(s) for {peer}, "
+          f"{ttl:g} day(s)", flush=True)
+    return {"tokens": tokens,
+            "expires_at": int(time.time() + ttl * 86400),
+            "ttl_days": ttl,
+            "capabilities": list(APP_CAPABILITIES)}
+
+
 @app.post("/app-fact")
 async def app_fact(request: Request):
     """Add, remove or list what J.A.R.V.I.S. knows about him.
@@ -4145,14 +4384,12 @@ async def app_fact(request: Request):
     next restart. Reported rather than hidden: telling someone their assistant will
     remember something when it will not is worse than saying it cannot.
     """
-    if not APP_TOKEN:
-        return Response(status_code=503)
     auth = request.headers.get("authorization", "")
     presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
-    if not hmac.compare_digest(presented, APP_TOKEN):
-        peer = request.client.host if request.client else "?"
-        print(f"[CLOUD] REFUSED app-fact from {peer}", flush=True)
-        return Response(status_code=401)
+    refusal = app_auth(presented, "memory", "app-fact",
+                       request.client.host if request.client else "?")
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -4185,14 +4422,12 @@ async def app_say(request: Request):
     answer. Keeping the two apart means a scheduled reminder cannot cost an LLM call
     and cannot fail because a free tier ran out.
     """
-    if not APP_TOKEN:
-        return Response(status_code=503)
     auth = request.headers.get("authorization", "")
     presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
-    if not hmac.compare_digest(presented, APP_TOKEN):
-        peer = request.client.host if request.client else "?"
-        print(f"[CLOUD] REFUSED app-say from {peer}", flush=True)
-        return Response(status_code=401)
+    refusal = app_auth(presented, "say", "app-say",
+                       request.client.host if request.client else "?")
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -4213,14 +4448,12 @@ async def app_push_register(request: Request):
     Presented as a bearer header rather than a query parameter — REST can set
     headers, and only the WebSocket handshake could not.
     """
-    if not APP_TOKEN:
-        return Response(status_code=503)
     auth = request.headers.get("authorization", "")
     presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
-    if not hmac.compare_digest(presented, APP_TOKEN):
-        peer = request.client.host if request.client else "?"
-        print(f"[CLOUD] REFUSED push register from {peer}", flush=True)
-        return Response(status_code=401)
+    refusal = app_auth(presented, "push", "push register",
+                       request.client.host if request.client else "?")
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -4285,14 +4518,12 @@ async def app_commute(request: Request):
     operator had already turned off, which is the worst thing this feature could
     do to its own credibility.
     """
-    if not APP_TOKEN:
-        return Response(status_code=503)
     auth = request.headers.get("authorization", "")
     presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
-    if not hmac.compare_digest(presented, APP_TOKEN):
-        peer = request.client.host if request.client else "?"
-        print(f"[CLOUD] REFUSED commute sync from {peer}", flush=True)
-        return Response(status_code=401)
+    refusal = app_auth(presented, "state", "commute sync",
+                       request.client.host if request.client else "?")
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -4326,9 +4557,16 @@ async def app_link(websocket: WebSocket):
         await websocket.close(code=1008)
         return
     presented = websocket.query_params.get("token", "")
-    if not hmac.compare_digest(presented, APP_TOKEN):
-        peer = websocket.client.host if websocket.client else "?"
-        print(f"[CLOUD] REFUSED app-link token mismatch from {peer}", flush=True)
+    peer = websocket.client.host if websocket.client else "?"
+    # A socket cannot carry a JSON body with its refusal, so the verdict is read
+    # directly here rather than through `app_auth`: 1008 is all a WebSocket has,
+    # and an expired token has to be distinguishable in the LOG at least, or a
+    # phone that simply needs to refresh looks identical to an intruder.
+    verdict = read_app_token(presented, "link")
+    if verdict == "master":
+        _legacy_master_use["app-link"] = _legacy_master_use.get("app-link", 0) + 1
+    elif verdict != "capability":
+        print(f"[CLOUD] REFUSED app-link ({verdict}) from {peer}", flush=True)
         await websocket.close(code=1008)
         return
 
@@ -4635,6 +4873,14 @@ async def app_link(websocket: WebSocket):
 
 @app.on_event("startup")
 async def _startup():
+    # Armed BEFORE the restore below, and before anything can answer him: the
+    # outbox mirrors itself through this hook, and a fact queued in the seconds
+    # between boot and the first write would otherwise live only on a disk the
+    # next deploy throws away. `_persist` is fire-and-forget and silent without a
+    # database, so this costs nothing on a gateway that has none.
+    if fact_outbox is not None:
+        fact_outbox.set_change_hook(lambda state: _persist("fact_outbox", state))
+
     # Before the loops, because a deploy is exactly when this matters: the
     # schedule, the addresses and today's markers all live in memory, and the
     # disk they were backed by does not survive one.

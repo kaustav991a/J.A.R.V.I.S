@@ -110,6 +110,19 @@ def _reset(sink=_memory_sink):
     fd.set_sink(sink)
 
 
+def _redeploy() -> None:
+    """A DEPLOY, not a restart: the container's memory and its disk both go.
+
+    `reset_state` alone is a process restart - the spill file and the key cache
+    survive it, which is what `test_the_outbox_survives_a_process_restart` above
+    covers and says is not the durability story. This is the other one.
+    """
+    fo.reset_state()
+    for p in (fo.OUTBOX_FILE, fo.DESK_KEY_FILE):
+        if p.exists():
+            p.unlink()
+
+
 def _memory_rows() -> int:
     conn = sqlite3.connect(str(_DB))
     try:
@@ -278,6 +291,234 @@ def test_the_spill_file_holds_nothing_readable():
     spilled = fo.OUTBOX_FILE.read_text(encoding="utf-8")
     for secret in ("combination", "41-19-6", "KAUSTAV", "Committed"):
         assert secret not in spilled, f"{secret!r} hit Render's disk in the clear"
+
+
+# ── 1b. the durable mirror: what a DEPLOY takes, and what it no longer does ──
+#
+# Measured on the live gateway on 2026-08-29, with the desk off - which is the
+# ORDINARY state of this system, because the PC being off is exactly why a fact
+# is being queued at all:
+#
+#     "fact_outbox": {"depth": 0, "has_desk_key": false, "dropped_no_key": 0, ...}
+#
+# `has_desk_key: false` is not a desk that never handshook. It is a desk that
+# handshook, into a process that has since been redeployed - the key lived in
+# memory and in a file on a disk Render throws away. And `queue_fact` DROPS a
+# turn it cannot seal, because plaintext at rest is not on the table. Eighteen
+# turns went that way in the week the row was written.
+#
+# The spill-file test above says in its own docstring that it is "not the
+# durability story". These are.
+
+
+class FakeMirror:
+    """Stands in for `gateway_state` in Postgres: one row, written by a hook."""
+
+    def __init__(self):
+        self.row = None
+        self.writes = 0
+
+    def write(self, state):
+        self.writes += 1
+        # through JSON, because that is what the real column holds - a mirror
+        # that only works for objects that never left the process is not a mirror
+        self.row = json.loads(json.dumps(state))
+
+
+def test_the_desk_key_reaches_the_mirror_the_moment_it_is_accepted():
+    _reset()
+    mirror = FakeMirror()
+    fo.set_change_hook(mirror.write)
+    asyncio.run(_connect(FakeLink()))
+    assert mirror.row is not None, "the handshake never reached the mirror"
+    assert mirror.row["desk_public"] == fo.desk_public()
+
+
+def test_every_queued_fact_reaches_the_mirror():
+    _reset()
+    mirror = FakeMirror()
+    fo.set_change_hook(mirror.write)
+    link = FakeLink()
+    asyncio.run(_connect(link))
+    link.up = False
+    _queue(3, "mirrored")
+    assert len(mirror.row["records"]) == 3
+
+
+def test_an_ack_reaches_the_mirror_too_or_a_deploy_would_redeliver():
+    _reset()
+    mirror = FakeMirror()
+    fo.set_change_hook(mirror.write)
+    link = FakeLink()
+    asyncio.run(_connect(link))
+    link.up = False
+    envelope = fo.queue_fact("acked and gone")
+    fo.ack([envelope["id"]])
+    assert mirror.row["records"] == [], "the mirror still holds an acked record"
+
+
+def test_a_deploy_no_longer_takes_the_desk_key_with_it():
+    """The row this whole section exists for.
+
+    A deploy is not a process restart: the disk goes too, so the spill file and
+    the key cache are both gone. What comes back is whatever the database held.
+    """
+    _reset()
+    mirror = FakeMirror()
+    fo.set_change_hook(mirror.write)
+    asyncio.run(_connect(FakeLink()))
+    key_before = fo.desk_public()
+
+    _redeploy()                       # container gone: memory AND disk
+    assert fo.desk_public() is None, "the fixture did not actually wipe the disk"
+    assert fo.queue_fact("dropped, the way it used to be") is None
+
+    fo.set_change_hook(mirror.write)
+    back = fo.restore(mirror.row)
+    assert back["key"] is True
+    assert fo.desk_public() == key_before
+    # ...and the next PC-off turn is SEALED rather than dropped, which is the
+    # only thing the operator ever sees of this
+    assert fo.queue_fact("sealed on a fresh container") is not None
+    assert fo.stats()["has_desk_key"] is True
+
+
+def test_a_deploy_no_longer_takes_the_sealed_QUEUE_with_it():
+    _reset()
+    mirror = FakeMirror()
+    fo.set_change_hook(mirror.write)
+    link = FakeLink()
+    asyncio.run(_connect(link))
+    link.up = False
+    _queue(4, "queued before the deploy")
+    ids_before = [e.get("id") for e in fo.pending()]
+
+    _redeploy()
+    assert fo.depth() == 0
+    fo.set_change_hook(mirror.write)
+    back = fo.restore(mirror.row)
+
+    assert back["records"] == 4
+    assert [e.get("id") for e in fo.pending()] == ids_before, \
+        "order was not preserved, so a mid-batch drop is no longer resumable"
+
+
+def test_a_restore_adds_rather_than_replaces():
+    """A restore that overwrote would race the container's own disk and anything
+    queued in the seconds before the database answered."""
+    _reset()
+    mirror = FakeMirror()
+    fo.set_change_hook(mirror.write)
+    link = FakeLink()
+    asyncio.run(_connect(link))
+    link.up = False
+    _queue(2, "from the mirror")
+    stored = mirror.row
+
+    _redeploy()
+    fo.set_change_hook(mirror.write)
+    fo.restore({"desk_public": stored["desk_public"], "records": []})
+    fresh = fo.queue_fact("queued on the new container, before the database answered")
+    assert fresh is not None
+
+    fo.restore(stored)
+    assert fo.depth() == 3, "the restore replaced the queue instead of adding to it"
+    assert fresh["id"] in [e.get("id") for e in fo.pending()]
+
+
+def test_restoring_the_same_row_twice_is_free():
+    _reset()
+    mirror = FakeMirror()
+    fo.set_change_hook(mirror.write)
+    link = FakeLink()
+    asyncio.run(_connect(link))
+    link.up = False
+    _queue(2, "restored twice")
+    stored = mirror.row
+
+    _redeploy()
+    fo.set_change_hook(mirror.write)
+    fo.restore(stored)
+    fo.restore(stored)
+    assert fo.depth() == 2, "a second restore duplicated the backlog"
+
+
+def test_a_restore_never_downgrades_a_key_the_desk_just_handed_over():
+    """The desk rotates its keypair by simply connecting with a new one, and the
+    handshake happens long before a database answers on a cold start. A stored
+    key can therefore only be older than one this process already has.
+    """
+    _reset()
+    mirror = FakeMirror()
+    fo.set_change_hook(mirror.write)
+    asyncio.run(_connect(FakeLink()))
+    stale = mirror.row
+
+    _redeploy()
+    fo.set_change_hook(mirror.write)
+    # the desk rotates by simply connecting with a new keypair - the handshake
+    # is idempotent on this side, which is why rotation needs no coordination
+    for path in (mc.DPAPI_KEY_FILE, mc.RECOVERY_KEY_FILE, mc.X25519_KEY_FILE,
+                 mc.CANARY_FILE):
+        if path.exists():
+            path.unlink()
+    mc.clear_cache()
+    mc.initialise_keys()
+    asyncio.run(_connect(FakeLink()))
+    current = fo.desk_public()
+    assert current != stale["desk_public"], "the fixture did not rotate the key"
+
+    fo.restore(stale)
+    assert fo.desk_public() == current, "the mirror overwrote a fresher key"
+
+
+def test_the_mirror_holds_nothing_readable():
+    """Same rule as the spill file, and it matters more: this one leaves the
+    machine. What crosses is ciphertext and one PUBLIC key."""
+    _reset()
+    mirror = FakeMirror()
+    fo.set_change_hook(mirror.write)
+    link = FakeLink()
+    asyncio.run(_connect(link))
+    link.up = False
+    fo.queue_fact("the safe combination is 41-19-6", who="KAUSTAV",
+                  reply="Committed to memory, Sir.")
+    written = json.dumps(mirror.row)
+    for secret in ("combination", "41-19-6", "KAUSTAV", "Committed"):
+        assert secret not in written, f"{secret!r} would reach the database in the clear"
+
+
+def test_a_mirror_that_throws_never_costs_a_fact():
+    """The hook runs on the path that is about to answer him."""
+    _reset()
+
+    def _explode(_state):
+        raise RuntimeError("the database is down")
+
+    asyncio.run(_connect(FakeLink()))
+    fo.set_change_hook(_explode)
+    assert fo.queue_fact("queued through a broken mirror") is not None
+    assert fo.depth() == 1
+
+
+def test_health_says_whether_the_mirror_is_armed_at_all():
+    """`has_desk_key: true` with no mirror is the state that read as working for
+    a week: true until the next spin-down, and nothing said otherwise."""
+    _reset()
+    assert fo.stats()["durable"] is False
+    fo.set_change_hook(FakeMirror().write)
+    assert fo.stats()["durable"] is True
+
+
+def test_the_gateway_arms_the_mirror_and_reads_it_back():
+    assert "fact_outbox.set_change_hook(" in _GATEWAY_SRC, \
+        "nothing installs the durable mirror, so the hook is dead code"
+    startup = _GATEWAY_SRC.split("async def _startup(")[1].split("\n@")[0]
+    assert startup.index("set_change_hook") < startup.index("_restore_state"), \
+        "the mirror is armed after the restore, so a boot-time write is lost"
+    restore = _GATEWAY_SRC.split("async def _restore_state(")[1].split("\n\ndef ")[0]
+    assert '"fact_outbox"' in restore and "fact_outbox.restore(" in restore, \
+        "the gateway never reads the mirror back"
 
 
 # ── 2. dedup: the real content_hash index, not a stand-in ───────────────────
