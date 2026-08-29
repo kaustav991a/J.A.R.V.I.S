@@ -156,8 +156,16 @@ def test_gemini_is_the_default_primary():
     try:
         check(llm_router._cloud_chain()[0] == "gemini",
               "Gemini must be the default primary cloud provider")
-        check(llm_router._cloud_chain() == ["gemini", "groq", "openrouter"],
-              "the default chain is gemini -> groq -> openrouter")
+        # NVIDIA NIM was appended on 2026-08-29 and this assertion caught it,
+        # which is the assertion doing its job. Appended rather than inserted:
+        # `_route_order` drops it unless NVIDIA_API_KEY is set, so a machine
+        # without the key routes exactly as it did before - pinned next door in
+        # `test_nvidia_provider.py`. The ORDER is what matters here, and the
+        # three measured legs still come first.
+        check(llm_router._cloud_chain() == ["gemini", "groq", "openrouter", "nvidia"],
+              "the default chain is gemini -> groq -> openrouter -> nvidia")
+        check(llm_router._cloud_chain()[:3] == ["gemini", "groq", "openrouter"],
+              "...and the three measured legs are still ahead of the new one")
     finally:
         restore()
 

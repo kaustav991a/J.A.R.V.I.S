@@ -161,6 +161,7 @@ _CATALOGUE_URLS = {
     "openrouter": "https://openrouter.ai/api/v1/models",
     "ollama": "http://localhost:11434/api/tags",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/models",
+    "nvidia": "https://integrate.api.nvidia.com/v1/models",
 }
 
 
@@ -203,6 +204,28 @@ def configured_models(env=None) -> list:
             if m and m not in seen:
                 seen.add(m)
                 out.append(("openrouter", m, why))
+
+    # The NVIDIA legs, read from the ROUTER for the same reason as OpenRouter's:
+    # the env var is normally unset and the router walks its own default list, so
+    # checking only the env var would find nothing to check. Skipped entirely
+    # when no key is configured - the router drops the provider then, and
+    # reporting ids for a leg that cannot run would be noise at every boot.
+    if (env.get("NVIDIA_API_KEY") or "").strip():
+        nv_lists = []
+        try:
+            from modules import llm_router as _lr
+            nv_lists = [(getattr(_lr, "NVIDIA_MODELS", []), "NVIDIA chat fallback"),
+                        (getattr(_lr, "NVIDIA_TOOL_MODELS", []), "NVIDIA tool fallback")]
+        except Exception:                               # noqa: BLE001
+            raw_nv = (env.get("NVIDIA_MODELS") or "").strip()
+            if raw_nv:
+                nv_lists = [([x.strip() for x in raw_nv.split(",") if x.strip()],
+                             "NVIDIA fallback")]
+        for models, why in nv_lists:
+            for m in models:
+                if m and m not in seen:
+                    seen.add(m)
+                    out.append(("nvidia", m, why))
     return out
 
 
@@ -227,6 +250,8 @@ def _default_fetch(url: str, env=None) -> list:
         return [str(m.id) for m in Groq(api_key=first).models.list().data]
     if "openrouter.ai" in url:
         headers["Authorization"] = "Bearer " + (env.get("OPENROUTER_API_KEY") or "").strip()
+    elif "integrate.api.nvidia.com" in url:
+        headers["Authorization"] = "Bearer " + (env.get("NVIDIA_API_KEY") or "").strip()
     elif "generativelanguage" in url:
         keys = (env.get("GEMINI_API_KEYS") or env.get("GEMINI_API_KEY") or "")
         first = next((k.strip() for k in keys.split(",") if k.strip()), "")

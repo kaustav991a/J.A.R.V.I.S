@@ -29,7 +29,9 @@ from typing import Any
 
 # Providers that can be asked for tools, in preference order. Groq first for
 # latency, Gemini next (separate quota), OpenRouter as the aggregator tail.
-TOOL_PROVIDERS = ("groq", "gemini", "openrouter")
+# NVIDIA NIM appended, not inserted: it enters behind every leg that has been
+# measured, so a machine without NVIDIA_API_KEY set behaves exactly as before.
+TOOL_PROVIDERS = ("groq", "gemini", "openrouter", "nvidia")
 
 
 @dataclass

@@ -285,14 +285,25 @@ class _EnvGuard:
 
 
 def test_route_order_is_tool_capable_only():
-    """Ollama must never appear: a hallucinated tool call is worse than slow."""
-    with _EnvGuard(GEMINI_API_KEYS="k1", GEMINI_API_KEY="", OPENROUTER_API_KEY="k2"):
+    """Ollama must never appear: a hallucinated tool call is worse than slow.
+
+    NVIDIA NIM joined the list on 2026-08-29 and these two assertions caught it,
+    which is them working. Its key is cleared here alongside the others so this
+    test still measures ORDER rather than whatever happens to be in `.env`.
+    """
+    with _EnvGuard(GEMINI_API_KEYS="k1", GEMINI_API_KEY="", OPENROUTER_API_KEY="k2",
+                   NVIDIA_API_KEY=""):
         assert lr._tool_route_order() == ["groq", "gemini", "openrouter"]
+    with _EnvGuard(GEMINI_API_KEYS="k1", GEMINI_API_KEY="", OPENROUTER_API_KEY="k2",
+                   NVIDIA_API_KEY="k3"):
+        # appended, never inserted: the three measured legs keep their places
+        assert lr._tool_route_order() == ["groq", "gemini", "openrouter", "nvidia"]
     assert "ollama" not in lr._tool_route_order()
 
 
 def test_route_order_drops_unconfigured_providers():
-    with _EnvGuard(GEMINI_API_KEYS="", GEMINI_API_KEY="", OPENROUTER_API_KEY=""):
+    with _EnvGuard(GEMINI_API_KEYS="", GEMINI_API_KEY="", OPENROUTER_API_KEY="",
+                   NVIDIA_API_KEY=""):
         assert lr._tool_route_order() == ["groq"]
 
 
@@ -351,7 +362,10 @@ def test_all_providers_down_fails_honestly():
     orig = lr._tool_call_groq
     lr._tool_call_groq = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
     try:
-        with _EnvGuard(GEMINI_API_KEYS="", GEMINI_API_KEY="", OPENROUTER_API_KEY=""):
+        # NVIDIA cleared too: "all providers down" has to mean ALL of them, or
+        # this test quietly measures a cascade that still had a leg left
+        with _EnvGuard(GEMINI_API_KEYS="", GEMINI_API_KEY="", OPENROUTER_API_KEY="",
+                       NVIDIA_API_KEY=""):
             turn = lr.universal_tool_call([{"role": "user", "content": "x"}], TOOLS)
     finally:
         lr._tool_call_groq = orig

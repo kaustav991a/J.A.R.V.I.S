@@ -2888,3 +2888,116 @@ where capturing stdout to a file is what produced a finding** — and the first
 where the log alone was not enough. `py-spy dump --pid` on a live desk belongs in
 the same habit: a process that is idle and unresponsive has already told you it
 is blocked on something synchronous, and the stack names it in one line.
+
+---
+
+## F-72 🟠 · A slow provider cost every turn, not one
+
+Found in the same session as F-71, and by the same means: watching the desk log
+while trying to run a gate row.
+
+Gemini was **slow, not down** — a direct probe from this machine returned one word
+in **34.2 s** on one key and timed out on the next. The router's answer to that
+was to rotate all four keys, on **every leg of every turn**:
+
+```
+[ROUTER] Gemini key #1/5 failed (DeadlineExceeded) — rotating.
+[ROUTER] Gemini key #2/5 failed (DeadlineExceeded) — rotating.
+[ROUTER] Gemini key #3/5 failed (DeadlineExceeded) — rotating.
+[ROUTER] Gemini key #4/5 failed (DeadlineExceeded) — rotating.
+[ROUTER] 'gemini' route failed … Escalating to next provider…
+```
+
+A turn has two or three legs — classify, act, compose — so **"what's on my
+calendar today?" took 409 seconds**, with Groq behind it answering in about two.
+The A11 batch was abandoned after ten minutes on its first row.
+
+**The local route has had a circuit breaker since a cold Ollama made every command
+wait out its timeout.** The cloud legs had none, and the same idea was sitting
+twenty lines above the code that needed it — root cause #4 wearing a different
+hat.
+
+### FIXED
+
+`_cloud_breaker_open` / `_trip_cloud_breaker` / `_reset_cloud_breaker`, mirroring
+the local one, with `JARVIS_CLOUD_COOLDOWN` (default 180 s):
+
+* it trips only on failures that describe **the provider** — deadline, timeout,
+  504, 503, 429/quota. **A 400 does not trip it**: a malformed request is ours,
+  and blacklisting a healthy provider for three minutes would be the fix causing
+  the outage;
+* a success closes it, so a recovered provider comes straight back;
+* **the chain is never emptied.** With every provider tripped the router still
+  tries the first — a slow answer beats the sentinel, and a provider that
+  recovered inside its cooldown is only discovered by asking.
+
+Harness `test_cloud_breaker.py`, **16 checks**, offline: the router's own call
+functions are replaced with fakes that fail the way a slow provider fails, and
+the assertions read WHO was called rather than what was said. Negative-tested —
+removing the trip fails four of them.
+
+**Slow is the hardest failure to route around**, because every individual call
+still looks like it might succeed. That is what a breaker is for, and why the
+measurement above is in this entry: without it, the fix reads like a preference.
+
+---
+
+## F-73 🔵 · A model id assumed to transfer between providers, caught in a minute
+
+Not a failure in the product — a failure in the change adding NVIDIA NIM, caught
+by the machinery ladder item 0.3 built for exactly this, within a minute of the
+key being set. Recorded because the *catch* is the finding.
+
+The new provider's default model list was written from the OpenRouter list:
+
+```python
+"nvidia/nemotron-3-ultra-550b-a55b,"
+"nvidia/nemotron-nano-9b-v2",          # <- an OpenRouter id
+```
+
+`nvidia/nemotron-nano-9b-v2` **does not exist on NIM.** It exists on OpenRouter,
+as `nvidia/nemotron-nano-9b-v2:free`, and the vendor prefix made it look like the
+same model on the vendor's own endpoint. It is not: NIM's nano is
+`nvidia/nemotron-3-nano-30b-a3b`. One catalogue read said so — 83 models, one
+hit, one miss.
+
+**This is the 2026-08-15 rot in a new coat.** Three of four OpenRouter `:free`
+ids had been withdrawn while the paid base ids survived, so a casual look said
+fine. Same shape here: a plausible id, a real vendor, a list nobody had asked the
+provider about.
+
+**FIXED**, and both halves matter:
+
+* the list is corrected to ids confirmed present in the live catalogue;
+* **the preflight was extended to cover the new provider in the same change**
+  (`_CATALOGUE_URLS["nvidia"]`, authenticated, ids read from the router rather
+  than from an env var that is normally unset). A provider added without that is
+  a leg whose ids nobody checks — which is how the first rot went unseen for
+  months. Pinned by `test_nvidia_provider.py`.
+
+### And what the measurement said, since it decided the configuration
+
+Real requests from this machine, a six-tool shelf with close neighbours, the same
+method the OpenRouter tool list was ordered by:
+
+| model | tools | latency |
+|---|---|---|
+| `nemotron-3-ultra-550b-a55b` | **4/4** | 1.1 s – 15 s, highly variable |
+| `nemotron-3-nano-30b-a3b` | 3/4 | median 0.6 s |
+
+Ultra passed `"VS Code"` through **verbatim** — the OpenRouter lightning model
+invented `"code"` for that same sentence — and called **nothing at all** for
+"tell me a joke". Nano is seven times faster and searched the web for the joke.
+So Ultra leads and nano is the tail, which is the same trade already recorded
+above it: **ordered by correctness, not speed**, because this leg is only reached
+once Groq and Gemini have both failed.
+
+**The free tier returns intermittent HTTP 500s** — one in three on a repeated
+identical request, correct on the retries. That is what the model walk is for.
+
+**And the claim that prompted the work does not survive contact.** "5x faster
+than Claude and ChatGPT" is an Instagram post; NVIDIA's page makes no latency
+claim at all. A plain chat turn measured **1.1 s**, which is genuinely quick —
+and **15 s** on an identical request a moment later. The real argument for this
+provider was never speed: it is a fourth **independent** free quota, next to
+OpenRouter's shared cap and Gemini's 20-per-day (F-70).

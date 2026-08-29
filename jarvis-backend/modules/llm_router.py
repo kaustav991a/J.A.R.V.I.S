@@ -100,6 +100,65 @@ def _reset_ollama_breaker() -> None:
 
 
 # ===========================================================================
+# The same breaker, for the CLOUD legs
+# ===========================================================================
+# The local route has had one since the day a cold Ollama made every command wait
+# out a 30-second timeout. A cloud provider can be in exactly that state and was
+# not covered — **measured on the desk on 2026-08-29**, during the A11 gate rows:
+#
+#   [ROUTER] Gemini key #1/5 failed (DeadlineExceeded) — rotating.
+#   [ROUTER] Gemini key #2/5 failed (DeadlineExceeded) — rotating.
+#   [ROUTER] Gemini key #3/5 failed (DeadlineExceeded) — rotating.
+#   [ROUTER] Gemini key #4/5 failed (DeadlineExceeded) — rotating.
+#   [ROUTER] 'gemini' route failed — Escalating to next provider…
+#
+# ...on EVERY leg of EVERY turn. A turn has two or three legs (classify, act,
+# compose), so "what's on my calendar today?" took **409 seconds** while Groq
+# behind it was answering in two. The provider was not down and not out of quota:
+# a direct probe from the same machine returned one word in 34.2s on one key and
+# timed out on the next. Slow is the hardest failure to route around, because
+# every individual call looks like it might still succeed.
+#
+# So: rotate the keys once, and if the whole rotation fails in a way that says
+# THE PROVIDER rather than THIS REQUEST, skip that provider for a cooldown. One
+# turn pays the cost instead of all of them.
+CLOUD_COOLDOWN = float(os.getenv("JARVIS_CLOUD_COOLDOWN", "180"))
+
+# provider name -> monotonic deadline; >now means the breaker is OPEN
+_cloud_down_until: dict = {}
+
+# What trips it. Deliberately narrow: a 400 is a malformed request of ours and
+# says nothing about the provider's health, so retrying it elsewhere is right but
+# blacklisting the provider for three minutes is not.
+_BREAKER_SIGNS = ("deadlineexceeded", "timeout", "timed out", "504",
+                  "resource_exhausted", "429", "quota", "503",
+                  "service unavailable")
+
+
+def _cloud_breaker_open(name: str) -> bool:
+    return time.monotonic() < _cloud_down_until.get(name, 0.0)
+
+
+def _should_trip(err: Exception) -> bool:
+    text = f"{type(err).__name__} {err}".lower()
+    return any(sign in text for sign in _BREAKER_SIGNS)
+
+
+def _trip_cloud_breaker(name: str, err: Exception) -> None:
+    if not _should_trip(err):
+        return
+    _cloud_down_until[name] = time.monotonic() + CLOUD_COOLDOWN
+    print(f"[ROUTER] ⚡ '{name}' circuit breaker OPEN for {CLOUD_COOLDOWN:.0f}s "
+          f"({type(err).__name__}). Later calls skip it instead of paying the "
+          f"whole key rotation again.", flush=True)
+
+
+def _reset_cloud_breaker(name: str) -> None:
+    if _cloud_down_until.pop(name, None):
+        print(f"[ROUTER] ✅ '{name}' recovered — breaker closed.", flush=True)
+
+
+# ===========================================================================
 # Routing decision
 # ===========================================================================
 def _gemini_keys() -> list[str]:
@@ -124,6 +183,10 @@ def _openrouter_configured() -> bool:
     return bool(os.getenv("OPENROUTER_API_KEY", "").strip())
 
 
+def _nvidia_configured() -> bool:
+    return bool(os.getenv("NVIDIA_API_KEY", "").strip())
+
+
 # Cloud providers, most-preferred first. Env-driven rather than hardcoded so a
 # provider switch is a config change instead of an edit — the same discipline the
 # cloud gateway's LLM_PROVIDER_* switches follow.
@@ -135,8 +198,13 @@ def _openrouter_configured() -> bool:
 # matters more often than a slow one. The cost is real and worth stating: Groq's
 # latency is unbeatable for real-time voice, so the spoken path pays for this.
 # Put groq back in front here to undo it — no code change, no deploy.
-_CLOUD_CHAIN_DEFAULT = "gemini,groq,openrouter"
-_KNOWN_CLOUD = ("gemini", "groq", "openrouter")
+# NVIDIA's own NIM endpoint is appended rather than inserted, and that is the
+# whole of the risk assessment: it enters the cascade behind every leg that is
+# already measured, so a gateway that has never seen it behaves exactly as it did
+# before. Move it up with JARVIS_CLOUD_ORDER once it has been benchmarked the way
+# the OpenRouter tool list was - correctness first, on real desk-shaped turns.
+_CLOUD_CHAIN_DEFAULT = "gemini,groq,openrouter,nvidia"
+_KNOWN_CLOUD = ("gemini", "groq", "openrouter", "nvidia")
 
 
 def _cloud_chain() -> list[str]:
@@ -184,6 +252,8 @@ def _route_order(complexity: str, model: str | None) -> list[str]:
         order = [p for p in order if p != "gemini"]
     if not _openrouter_configured():
         order = [p for p in order if p != "openrouter"]
+    if not _nvidia_configured():
+        order = [p for p in order if p != "nvidia"]
     if _ollama_breaker_open():
         order = [p for p in order if p != "ollama"] or ["groq"]
     return order
@@ -208,6 +278,17 @@ def universal_llm_call(
     every provider fails so callers never crash.
     """
     providers = _route_order(complexity, model)
+
+    # Skip cloud providers whose breaker is open — but NEVER return an empty
+    # chain. If every provider is tripped, the least-bad move is to try the first
+    # one anyway: a slow answer beats the sentinel, and a provider that recovered
+    # inside its cooldown is only discovered by asking.
+    usable = [n for n in providers if n == "ollama" or not _cloud_breaker_open(n)]
+    if usable and usable != providers:
+        skipped = [n for n in providers if n not in usable]
+        print(f"[ROUTER] skipping {', '.join(skipped)} — breaker open.", flush=True)
+    providers = usable or providers
+
     last_err: Exception | None = None
 
     for name in providers:
@@ -221,16 +302,28 @@ def universal_llm_call(
                 _reset_ollama_breaker()  # local answered — keep using it
                 return result
             elif name == "gemini":
-                return _call_gemini(messages, temperature, max_tokens, stream, json_mode, timeout)
+                out = _call_gemini(messages, temperature, max_tokens, stream, json_mode, timeout)
+                _reset_cloud_breaker(name)
+                return out
             elif name == "openrouter":
-                return _call_openrouter(messages, temperature, max_tokens, stream, json_mode, timeout)
+                out = _call_openrouter(messages, temperature, max_tokens, stream, json_mode, timeout)
+                _reset_cloud_breaker(name)
+                return out
+            elif name == "nvidia":
+                out = _call_nvidia(messages, temperature, max_tokens, stream, json_mode, timeout)
+                _reset_cloud_breaker(name)
+                return out
             else:  # groq
-                return _call_groq(messages, temperature, max_tokens, stream, json_mode, timeout)
+                out = _call_groq(messages, temperature, max_tokens, stream, json_mode, timeout)
+                _reset_cloud_breaker(name)
+                return out
         except Exception as e:
             last_err = e
             if name == "ollama":
                 # Open the breaker so the NEXT calls skip the slow/dead local route.
                 _trip_ollama_breaker(e)
+            else:
+                _trip_cloud_breaker(name, e)
             print(
                 f"[ROUTER] '{name}' route failed ({type(e).__name__}: {e}). "
                 f"{'Escalating to next provider…' if providers[-1] != name else 'No providers left.'}",
@@ -688,6 +781,178 @@ def _call_openrouter_model(model, messages, temperature, max_tokens, stream, jso
 
 
 # ===========================================================================
+# NVIDIA NIM (build.nvidia.com) — added 2026-08-29
+# ===========================================================================
+# OpenAI-compatible, so this is the OpenRouter shape with a different URL, key
+# and model id. Three things about it are NOT the same, and each one is a defect
+# this project has already paid for once:
+#
+# **1. It thinks by default.** NVIDIA's own sample passes
+# `chat_template_kwargs={"enable_thinking": True}` and reads a `reasoning_content`
+# stream. F-48 and F-49 are what that costs here: reasoning shares the output
+# budget with the answer, so the desk spoke prefixes ("It is", "System load is"),
+# and one leg read a model's private monologue out loud in the room. So thinking
+# is **off** by default and `JARVIS_NVIDIA_THINKING=1` turns it back on for
+# someone who wants it deliberately.
+#
+# **2. It is a free tier with its own quota**, which is the actual argument for
+# adding it: OpenRouter's free cap is shared across every `:free` id, and Gemini's
+# is 20 requests a DAY per project (F-70). A fourth independent bucket is worth
+# more here than a faster model on a bucket that is already empty.
+#
+# **3. MEASURED on 2026-08-29, the same way the OpenRouter tool list was** -
+# real requests, a six-tool shelf with close neighbours, from this machine:
+#
+#   nemotron-3-ultra-550b-a55b   4/4   1.1-15s, highly variable
+#   nemotron-3-nano-30b-a3b      3/4   median 0.6s
+#
+# Ultra got every case right, including the two that matter most: it passed
+# "VS Code" through VERBATIM (the OpenRouter lightning model invented "code" for
+# the same sentence) and it called **nothing at all** for "tell me a joke". Nano
+# is seven times faster and searched the web for the joke - the invent-an-action
+# failure, which is why both lists here are ordered by CORRECTNESS, NOT SPEED.
+#
+# **The free tier returns intermittent HTTP 500s** - one in three on a repeated
+# identical request, answering correctly on the retries. That is what the model
+# walk below is for, and it is worth knowing before this leg is trusted with
+# anything time-critical.
+#
+# **The "5x faster than Claude and ChatGPT" figure that prompted this is an
+# Instagram post** and appears nowhere on NVIDIA's page, which makes no latency
+# claim at all. A plain chat turn measured 1.1s here, which is genuinely quick -
+# and 15s on another call of the identical request.
+NVIDIA_URL = os.getenv(
+    "NVIDIA_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
+
+# Walked in order, like OPENROUTER_MODELS. Ultra first because it is the one the
+# catalogue calls agentic; nano is a small, quick tail for when Ultra is busy.
+# Both ids were CHECKED against the live catalogue on 2026-08-29, and the first
+# draft of this list was wrong: `nvidia/nemotron-nano-9b-v2` is an OpenRouter id
+# and does not exist on NIM at all. An id assumed to transfer between providers
+# is precisely the rot ladder item 0.3 exists to catch, and the boot preflight
+# caught it within a minute of the key being set.
+NVIDIA_MODELS = [m.strip() for m in os.getenv(
+    "NVIDIA_MODELS",
+    "nvidia/nemotron-3-ultra-550b-a55b,"       # 561B MoE, 1M context, 4/4 tools
+    "nvidia/nemotron-3-nano-30b-a3b",          # 30B MoE, ~0.6s, quick tail
+).split(",") if m.strip()]
+
+# Off by default. See point 1 above - this is F-49's guard at the request, before
+# a monologue is ever generated, rather than a strip after it arrives.
+NVIDIA_THINKING = os.getenv("JARVIS_NVIDIA_THINKING", "0").strip() == "1"
+
+# Tool-capable NIM ids, kept SEPARATE from the chat list for the same reason the
+# OpenRouter pair are separate: plenty of good chat models reject `tools`
+# outright, and discovering that inside an agent loop is a failure halfway
+# through a task rather than at the door.
+# Ultra FIRST despite being the slower of the two, and that is the same trade the
+# OpenRouter list already records: this leg only ever runs once Groq and Gemini
+# have both failed, so it is reached in a degraded state where a wrong action
+# costs more than a slow one. Nano is kept as a tail rather than dropped - the
+# free tier 500s intermittently, and one model with no fallback is not a cascade.
+NVIDIA_TOOL_MODELS = [m.strip() for m in os.getenv(
+    "NVIDIA_TOOL_MODELS",
+    "nvidia/nemotron-3-ultra-550b-a55b,"       # 4/4 - verbatim args, and called
+                                               # nothing when nothing fitted
+    "nvidia/nemotron-3-nano-30b-a3b",          # 3/4 - searched the web for
+                                               # "tell me a joke"; fast last resort
+).split(",") if m.strip()]
+
+
+def _nvidia_payload(model, messages, temperature, max_tokens, stream, json_mode):
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": stream,
+        # NVIDIA's own knob. Sent explicitly either way rather than omitted: the
+        # server-side default is ON, and relying on a default we do not control
+        # is how the budget findings happened in the first place.
+        "chat_template_kwargs": {"enable_thinking": NVIDIA_THINKING},
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    return payload
+
+
+def _call_nvidia(messages, temperature, max_tokens, stream, json_mode, timeout):
+    """Try each configured NIM model until one answers."""
+    last_err: Exception | None = None
+    for m in NVIDIA_MODELS:
+        try:
+            return _call_nvidia_model(m, messages, temperature, max_tokens,
+                                      stream, json_mode, timeout)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print(f"[ROUTER] NVIDIA model '{m}' failed "
+                  f"({type(e).__name__}) — trying next.", flush=True)
+    raise last_err or RuntimeError("no NVIDIA models configured")
+
+
+def _call_nvidia_model(model, messages, temperature, max_tokens, stream,
+                       json_mode, timeout):
+    key = os.getenv("NVIDIA_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("NVIDIA_API_KEY not set")
+
+    msgs = messages
+    if json_mode and msgs and msgs[-1].get("role") == "user":
+        # Same belt-and-braces as OpenRouter: `response_format` is honoured
+        # unevenly across NIM models, and a JSON caller that gets prose parses to
+        # "zero actions", which is narrated as success.
+        msgs = msgs[:-1] + [{
+            "role": "user",
+            "content": msgs[-1].get("content", "") + "\n\nRespond ONLY with valid JSON. No other text.",
+        }]
+
+    payload = _nvidia_payload(model, msgs, temperature, max_tokens, stream, json_mode)
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+    if not stream:
+        resp = requests.post(NVIDIA_URL, json=payload, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        if "error" in data:
+            raise RuntimeError(f"NVIDIA error: {data['error']}")
+        return (data["choices"][0]["message"]["content"] or "").strip()
+
+    def _gen():
+        with requests.post(NVIDIA_URL, json=payload, headers=headers,
+                           stream=True, timeout=timeout) as r:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                text = line.decode("utf-8", errors="replace")
+                if not text.startswith("data: "):
+                    continue
+                chunk = text[6:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(chunk)["choices"][0]["delta"]
+                except Exception:
+                    continue
+                # `reasoning_content` is read and DISCARDED on purpose. With
+                # thinking off it should never arrive; if a model ignores the
+                # flag, the monologue still must not reach `content` and be
+                # spoken. F-49 is why this is explicit rather than incidental.
+                piece = delta.get("content") or ""
+                if piece:
+                    yield piece
+
+    g = _gen()
+    first = next(g, "")  # triggers the request; raises on auth/limit errors
+
+    def _safe():
+        if first:
+            yield first
+        yield from g
+    return _safe()
+
+
+# ===========================================================================
 # TOOL CALLING (agentic core, phase 1) — roadmap §5 Tier C #12
 # ===========================================================================
 # `universal_llm_call` is text-only: `_call_groq` posts `messages` with no
@@ -749,6 +1014,8 @@ def _tool_route_order() -> list[str]:
         order = [p for p in order if p != "gemini"]
     if not _openrouter_configured():
         order = [p for p in order if p != "openrouter"]
+    if not _nvidia_configured():
+        order = [p for p in order if p != "nvidia"]
     return order
 
 
@@ -798,6 +1065,9 @@ def universal_tool_call(
             elif name == "openrouter":
                 turn = _tool_call_openrouter(messages, tools, tool_choice,
                                              temperature, max_tokens, timeout)
+            elif name == "nvidia":
+                turn = _tool_call_nvidia(messages, tools, tool_choice,
+                                         temperature, max_tokens, timeout)
             else:
                 last_err = f"'{name}' cannot serve tool calls"
                 print(f"[ROUTER] {last_err}.", flush=True)
@@ -876,6 +1146,32 @@ def _tool_call_openrouter(messages, tools, tool_choice, temperature, max_tokens,
         print(f"[ROUTER] OpenRouter tool model '{m}' unusable "
               f"({type(last).__name__}) — trying next.", flush=True)
     raise last or RuntimeError("no OpenRouter tool models configured")
+
+
+def _tool_call_nvidia(messages, tools, tool_choice, temperature, max_tokens, timeout):
+    """Walk the configured NIM models until one answers with a usable turn.
+
+    `_openai_tool_http` already carries the shape - NIM is OpenAI-compatible, and
+    that shared helper is why adding this provider is a URL, a key and a model id
+    rather than a fourth copy of the same request.
+    """
+    key = os.getenv("NVIDIA_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("NVIDIA_API_KEY not set")
+    last: Exception | None = None
+    for m in NVIDIA_TOOL_MODELS:
+        try:
+            turn = _openai_tool_http(NVIDIA_URL, key, m, messages, tools,
+                                     tool_choice, temperature, max_tokens, timeout,
+                                     provider="nvidia")
+            if turn.ok:
+                return turn
+            last = RuntimeError(turn.error or "empty turn")
+        except Exception as e:  # noqa: BLE001
+            last = e
+        print(f"[ROUTER] NVIDIA tool model '{m}' unusable "
+              f"({type(last).__name__}) — trying next.", flush=True)
+    raise last or RuntimeError("no NVIDIA tool models configured")
 
 
 def _openai_tool_http(url, key, model, messages, tools, tool_choice,
