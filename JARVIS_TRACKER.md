@@ -458,78 +458,91 @@ Sequence (from the roadmap's after-the-gate list, which still stands):
 
 ## 7 · Resume point — start here
 
-**Stamped 2026-08-29.** Everything below is measured, not remembered.
+**Stamped 2026-08-29, evening. Everything below is measured, not remembered.**
 
 ```powershell
 cd F:\work\JARVIS-Project
-git log --oneline -1          # 8ef0f56 — and the branch is PUSHED, not ahead
+git log --oneline -1        # 67e829d - PUSHED, and deployed
 cd jarvis-backend
-venv\Scripts\python.exe run_harnesses.py   # expect 106/106, 3626 checks, 0 failed
+venv\Scripts\python.exe run_harnesses.py   # expect 114/114, 3970 checks, 0 failed
 ```
 
-If that number is lower, read the harness name before anything else: the system
-python fakes nine failures, and a harness reporting **0 checks is broken, not
-green**.
+A harness reporting **0 checks is broken, not green** — the runner parses
+`<n>/<n> passed`, so a summary line reading "55/55 checks passed" scores zero.
+And the system python fakes failures; use the venv.
 
-### What changed on 2026-08-29, because two of these change what you can trust
+### Goal 1 is CLOSED. That is the headline, and §4.5 is how
 
-* **`fix/durable-state` is merged AND DEPLOYED.** `/health` reports
-  `memory.state_durable: true`. That deploy wiped `commute` (2 departures → 0) and
-  `push_targets` (1 → 0) with nothing in Postgres to restore from, because the
-  instance holding that state predated the code that persists it. **It was the last
-  time.**
-* **Both harnesses that merge brought FAILED on first execution by a real
-  interpreter** — a fixture missing `lat`/`lon` that made three tests assert an
-  empty list was truthy and six more pass vacuously, and a summary line the runner
-  could not parse so the harness scored 0 checks while printing "all 15 passed". The
-  branch had written down this exact risk about itself. **A harness authored anywhere
-  other than this machine has not run.**
-* **Row `4.3`'s cause is closed** (F-69) and the row is still owed.
-* **`tracker.html` opens on the §0 goals now**, and the generator refuses to build
-  if any ladder item or gate batch belongs to no goal or to two.
+**"He never claims what he did not do"** — `1.1` and `1.2` sealed, and all nine
+`A11` rows verified **against their sources**, three consecutive clean runs:
 
-### Where the ladder stands
+```powershell
+venv\Scripts\python.exe tools\verify_a11.py   # 9 verified, 0 need a person, 0 FAILED
+```
 
-**8 of 13 done (62%)**, 1 partial, 4 to do — unchanged, because everything done on
-2026-08-29 was gate and gateway work rather than ladder work. Everything a machine
-can finish alone on the ladder is still finished.
+**That command is the durable part of today.** It drives every A11 row, reads
+what the desk actually SAID out of the log, then asks Gmail, Calendar and Fit
+itself, in the same minute, and compares the figures. Re-run it monthly, or after
+any provider or API change. It replaces a session of reading with fifteen
+unattended minutes.
 
-| Left | Needs |
+**Eight findings came out of running those nine rows** — F-71, F-72, F-74, F-74b,
+F-75, F-76, F-77, F-78, F-79. **Five are one shape:** a source that fails,
+under-reports or returns nothing *quietly*, and a layer above it describing the
+result anyway. Two of them (F-76's vitals, F-77's unread count) were sentences
+that read perfectly and were produced by broken arithmetic; both had already
+passed their rows.
+
+### What is live right now
+
+`/health` on `67e829d`, read after the deploy:
+
+| | |
 |---|---|
-| 0.5 re-enroll the face | him + the phone camera, 10 minutes |
-| 2.1 the `--live` re-measure | his go-ahead — it drives real actions on his desk |
-| 3.1 run the 192 gate rows | him at the desk, 4–6 sessions |
-| 3.3 the 7-day soak | a week of wall-clock, and it is the long pole |
+| `commit` | **67e829d** — the field exists now; before it, "read /health after every deploy" could confirm the service was up but never that it was the build you pushed |
+| `fact_outbox` | `has_desk_key: true`, `durable: true` — **survived a third deploy**, which is F-76's sibling proved again |
+| `commute` / `push_targets` | 2 departures, `days_on: 5`, 1 target — intact across the deploy |
+| `app_auth.master_calls` | `{}` — the phone has not yet presented a capability token, because **the app half is unpublished** (frozen, §0.5) |
+| `memory` | `state_durable: true`, 17 facts |
+
+**A fourth cloud leg exists now: NVIDIA NIM**, behind `NVIDIA_API_KEY` (set), last
+in the chain, measured before it was trusted — Ultra 4/4 on tools, nano-30b 3/4
+and seven times faster, so Ultra leads. Its free tier returns intermittent 500s.
+
+### Quotas, because they will shape the next session
+
+Today's testing spent both daily allowances: **Gemini's quota is out**, and
+**Groq hit 198,705 of its 200,000 tokens/day**. The desk kept answering on the
+OpenRouter and NVIDIA legs — that is the cascade working, and it is why late
+turns were slow or admitted they had nothing. Both reset on their own; if a
+session starts slow, check `/health` and the log before assuming a defect.
+
+### What to do next, in order
+
+1. **The bounded re-audit** (§4.5 has the table). Not "re-run everything" — the
+   risk is in rows whose pass depends on an external source that can fail
+   quietly. Point `verify_a11.py`-style checking at the `A9/A10` memory rows
+   first: a quiet store failure reads as *"you never told me that"*, which the
+   gate marks 🛑 at `K3`.
+2. **Pick the next goal from §0** and close it the way goal 1 was closed — build
+   the check first, run the rows, fix what it finds. Reading the answers is what
+   made goal 1 take three attempts.
+3. **3.3, the soak** — still the only item whose cost is elapsed time. Nothing
+   blocks starting it.
+4. **0.5 + 3.1 together** — one hardware session, face first.
 
 ### His, and none of them take long
 
-1. **Open the app once.** The deploy wiped the schedule and the push address; the
-   phone re-uploads on cloud connect, gated on `link.status === 'open'` — a photo
-   over plain HTTP will not do it. Confirm `departures` comes back as **2**, with
-   `tz: Asia/Calcutta` and `days_on: 5`. Those were the live values before the wipe.
-2. **`GEMINI_API_KEY`** — delete or replace it in the desk's `.env`. It is `400
-   API_KEY_INVALID`; the four in `GEMINI_API_KEYS` are fine, and boot names the
-   right variable now. Nothing breaks until he does it.
-3. **F-70** — the CLOUD runs on `gemini_keys: 1`, not the desk's four, and had
-   already hit `429` on 2026-08-27. Whether copying the others to Render helps
-   depends on something only he knows: **are they four separate Google projects?**
-   The 20/day quota is one bucket per project, so four keys on one project changes
-   nothing. Do not copy them across before answering that.
-4. **F-68** — declare `LLM_PROVIDER_VISION: gemini` in `render.yaml`, or drop the
-   dashboard override and accept `groq`. Confirmed live: the service says `gemini`
-   while the Blueprint says `groq`.
-5. **Row 0.1** — say the override phrase into the microphone once. Still the only
+1. **`GEMINI_API_KEY`** — delete or replace the legacy singular one in `.env`; it
+   is `400 API_KEY_INVALID` and boot names the right variable.
+2. **F-70** — are the four Gemini keys four separate Google **projects**? The
+   20/day quota is one bucket per project, so copying them to Render changes
+   nothing if they share one.
+3. **F-68** — declare `LLM_PROVIDER_VISION` in `render.yaml`, or drop the
+   dashboard override.
+4. **Row 0.1** — say the override phrase into the microphone once. Still the only
    done ladder item not SEALED, and the gap is the door, not the code.
 
-### What to do first, in this order
-
-1. **3.3, the soak** — still the only item whose cost is *elapsed time*, so starting
-   it is worth more than finishing anything else. Nothing on the ladder blocks it.
-2. **0.5 + 3.1 together** — one hardware session. Re-enroll the face first, because
-   every camera row after it depends on it. Row `4.3` belongs in this session: its
-   cause is fixed and it wants a real `add.py` and a look at the file.
-3. **2.1's `--live`** — it measures something different from before: until the
-   explicit trigger landed, the live eval could only exercise file goals.
 
 ### If the next session is a CODE session — NOT the other repo, as of 2026-08-29
 
