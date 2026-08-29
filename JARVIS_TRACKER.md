@@ -339,10 +339,15 @@ returns nothing *quietly*, and a layer above it that describes the result anyway
 
 ### What is honestly still outstanding
 
-* **The F-74 schedule guard has never been observed firing live.** Harness-proven
-  and negative-tested; the fabrication has not recurred in ~30 turns since. That
-  is *the defect not recurring*, which is not the same claim. F-75's, F-77's and
-  F-79's fixes **were** each proved live or deterministically.
+* **Three of the eight fixes have never been watched FIRING live** — F-74 (the
+  schedule guard), F-74b (the unknown-action refusal wording) and F-78 (the
+  invented byline). All three are harness-proven and negative-tested, and none of
+  the three defects has recurred. **That is the defect not recurring, which is
+  not the same claim as the guard catching it** — and each needs the model to do
+  a specific thing on demand, which cannot be forced. The other five were each
+  proved live or deterministically: F-71 (the desk answers), F-72 (`breaker OPEN`
+  observed), F-76 (`64 steps and 277.1 kcal`), F-77 (`66,373`), F-79 (an empty
+  cascade escalating, exercised in a forced run).
 * **All nine rows went through the TEXT door.** The microphone has never been
   used by any row in this batch — that is `A3 voice`, under a different goal.
 * **A pass is a snapshot.** Row `10.9` genuinely passed on 2026-08-22 and failed
