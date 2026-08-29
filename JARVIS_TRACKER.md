@@ -45,6 +45,52 @@
 
 ---
 
+## 0.5 · The standing decision — the desk first, and the app not at all
+
+**Taken by Kaustav on 2026-08-29: no further work on the phone app until the desk
+is 100%.**
+
+That is a scope decision rather than a technical one, and it is written here
+rather than in a commit message because it governs every session until he lifts
+it. **`F:\work\JARVIS-Mobile` is frozen.** So is the OTA publish that would put
+today's app-side work on the phone.
+
+**What is frozen with it, stated plainly rather than discovered later.** Three
+things are written, tested and *unprovable* while this holds, and none of them is
+a defect — they are finished code waiting on a publish:
+
+* the app half of the capability tokens (`38a05cb`), so the phone keeps
+  presenting the master and `/health.app_auth.master_calls` keeps counting;
+* the app half of queue item 25 (`6d8be2d`), so a spoken turn that outlives its
+  socket still arrives with no question above it — **the gateway half is live**,
+  and it carries the transcript on the push that the phone does not yet read;
+* the five remaining brain-queue items (`6`, `11`, `12`'s app half, `14`, `15`).
+  Several are gateway-side code, but the phone is their only consumer, so they
+  are parked behind the same decision.
+
+Item 22's rotation is NOT in that list: it is gateway-only, deployed, and proves
+itself over two mornings of ordinary briefings with nothing published.
+
+### What "the desk is 100%" means, measured
+
+Four ladder items and one gate. Nothing here is code this machine can finish
+alone — which is the honest shape of the remaining work, and the reason the
+decision costs nothing in throughput:
+
+| | Item | Needs |
+|---|---|---|
+| `0.5` | re-enroll the face on the phone-camera angles actually used | him + the phone camera, 10 minutes |
+| `2.1` | the `--live` tool-selection re-measure | his go-ahead — it drives real actions on his desk |
+| `3.1` | the **192 hardware gate rows**, ~137 of which nobody has ever run | him at the desk, 4–6 sessions |
+| `3.3` | the 7-day unattended soak | a week of wall-clock; the long pole, and it can start today |
+| — | zero open findings | six are open, and all six are decisions rather than defects |
+
+**A code session between now and then does desk work**: whatever the gate rows
+turn up, the findings queue, and the soak's own instrumentation. Not the queue in
+the other repo.
+
+---
+
 ## 1 · Where JARVIS actually is — 2026-08-22
 
 | | Measured | How it was measured |
@@ -387,16 +433,20 @@ can finish alone on the ladder is still finished.
 3. **2.1's `--live`** — it measures something different from before: until the
    explicit trigger landed, the live eval could only exercise file goals.
 
-### If the next session is a CODE session, start in the other repo
+### If the next session is a CODE session — NOT the other repo, as of 2026-08-29
 
-The desk ladder has **nothing machine-only left**. The work that does is
-`jarvis-mobile`'s `docs/brain-dependencies.md` — that laptop has no Python at all
-(`python`/`python3` are the Microsoft Store stub), so **this machine is the only
-place any of it is testable.** It was 9 queue items; **13, 24, 25 and 22 are now
-written**, so five remain: `6` (the transcribe prompt overcorrects on plain
-English), `11` (notification listener, gated on 12), `12` (split `APP_TOKEN` by
-capability — the gate in front of every new sense), `14` (the situation on the
-persona envelope), `15` (delivered/read ticks).
+**Read §0.5 first: the app is frozen until the desk is 100%.** What follows is
+kept as the record of where that work stood when it stopped, not as a queue to
+pick up.
+
+The desk ladder has **nothing machine-only left**, which is why sessions had been
+going to `jarvis-mobile`'s `docs/brain-dependencies.md` — that laptop has no
+Python at all (`python`/`python3` are the Microsoft Store stub), so this machine
+is the only place any of it is testable. It was 9 queue items; **13, 24, 25, 22
+and 12's gateway half are now written**, so four remain and all four are parked:
+`6` (the transcribe prompt overcorrects on plain English), `11` (notification
+listener, gated on 12), `14` (the situation on the persona envelope), `15`
+(delivered/read ticks).
 
 **25 and 22 landed on 2026-08-29 and NEITHER IS LIVE.** Both are gateway commits
 on a branch Render has not taken, and 25's other half is an app commit that has
