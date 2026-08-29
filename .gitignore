@@ -119,3 +119,5 @@ jarvis-backend/app_briefed.json
 jarvis-backend/app_briefed.test.json
 jarvis-backend/app_nudge.json
 jarvis-backend/app_nudge.test.json
+jarvis-backend/app_voice.json
+jarvis-backend/app_voice.test.json

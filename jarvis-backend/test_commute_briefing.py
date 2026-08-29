@@ -61,6 +61,12 @@ SCHED = {"tz": "Asia/Kolkata", "days": WEEKDAYS, "departures": [HOME, OFFICE]}
 def setup_function(_):
     # the once-a-day marks are module state; a test must not inherit another's
     cg._briefed.clear()
+    # ...and so is the rotation's place in its pools. Both files are pointed at
+    # harness copies for the same reason the four in `test_app_link.py` are: a
+    # test run must never write into state the live gateway would read back.
+    cg._voice.clear()
+    cg._BRIEFED_FILE = str(HERE / "app_briefed.test.json")
+    cg._VOICE_FILE = str(HERE / "app_voice.test.json")
 
 
 # 2026-08-19 was a Wednesday, 2026-08-23 a Sunday. Both used below.
@@ -256,6 +262,205 @@ def test_the_window_names_both_ends_with_their_meridiem():
 
 # `setup_function` is a pytest hook and this suite has no pytest -- it was
 # retired deliberately. It is called explicitly per test here, because the
+# ── the voice, and what it is allowed to vary ───────────────────────────
+#
+# Queue item 22 from jarvis-mobile's brain handoff. The phone rotates its briefing
+# wording as of 2026-08-26; this sender did not, and on a cloud-linked phone the
+# gateway IS the sender - so the original complaint ("the same eleven words, twice
+# a day, until I stopped reading them") survived wherever the cloud was armed.
+#
+# The rotation is ported from `src/lib/briefingVoice.ts` rather than reinvented,
+# so these checks are what keep the second copy honest - the same job the
+# threshold checks above do for the first.
+
+def test_the_same_slot_says_something_different_the_next_morning():
+    v = cg._Voice()
+    assert v.remark("rain") != v.remark("rain")
+
+
+def test_the_pool_is_spent_before_a_line_comes_round_again():
+    """Rotation, not randomness.
+
+    Random repeats: on a pool of six it shows the same line twice running about
+    one morning in six, which is the complaint this answers rather than a
+    hypothetical one. A cursor is also deterministic, so this asserts the
+    sequence instead of sampling it.
+    """
+    for slot, pool in cg._BRIEFING_REMARKS.items():
+        v = cg._Voice()
+        drawn = [v.remark(slot) for _ in range(len(pool))]
+        assert drawn == list(pool), f"{slot} did not draw its pool in order"
+        assert len(set(drawn)) == len(pool), f"{slot} repeated inside one cycle"
+        # and only then does the first line come round again
+        assert v.remark(slot) == pool[0]
+
+
+def test_the_cursors_are_per_slot_so_rain_does_not_spend_the_jacket():
+    v = cg._Voice()
+    v.remark("rain")
+    v.remark("rain")
+    assert v.remark("cold") == cg._BRIEFING_REMARKS["cold"][0]
+
+
+def test_the_figures_never_vary_while_the_remark_does():
+    """A measurement rephrased for novelty cannot be compared with yesterday's."""
+    data = forecast(
+        [19, 20, 21],
+        temperature_2m=[27, 26, 26],
+        precipitation_probability=[80, 60, 40],
+        precipitation=[1.2, 0.4, 0.0],
+        weather_code=[61, 61, 3],
+        wind_speed_10m=[12, 10, 8],
+    )
+    v = cg._Voice()
+    first = cg._briefing_text(data, OFFICE, "2026-08-19", v)[1]
+    second = cg._briefing_text(data, OFFICE, "2026-08-19", v)[1]
+    assert first != second, "the wording did not move"
+    for figure in ("A 80% chance of rain", "around 1.6 mm", "(7 PM"):
+        assert figure in first and figure in second, figure
+
+
+def test_every_variant_keeps_the_word_he_has_to_act_on():
+    """Android truncates a body in the shade.
+
+    A rotation that dropped the instruction from one variant in six would be a
+    briefing that failed one morning in six - worse than the repetition it
+    replaces, and invisible until the morning it mattered.
+    """
+    must = {"storm": "wait it out", "rain": "umbrella", "hot": "Water",
+            "cold": "jacket", "wind": "hair"}
+    for slot, word in must.items():
+        for line in cg._BRIEFING_REMARKS[slot]:
+            assert word.lower() in line.lower(), f"{slot}: {line!r} drops {word!r}"
+
+
+def test_no_remark_shouts_or_spends_the_one_sir():
+    """Two voice rules, asserted over the whole table rather than trusted.
+
+    `sir` is spent once per message and the TITLE spends it; a remark carrying a
+    second one is the difference between a butler and a parody of one.
+    """
+    for slot, pool in cg._BRIEFING_REMARKS.items():
+        for line in pool:
+            assert "!" not in line, f"{slot}: {line!r}"
+            assert "sir" not in line.lower(), f"{slot}: {line!r}"
+
+
+def test_every_title_names_the_place_and_spends_the_sir():
+    """Two briefings arrive in a day, and the title is the only part that says
+    which door each one is about."""
+    for kind, pool in cg._BRIEFING_TITLES.items():
+        v = cg._Voice()
+        for _ in pool:
+            line = v.title(kind, "Office")
+            assert "Office" in line, f"{kind}: {line!r} does not name the place"
+            assert line.endswith("sir"), f"{kind}: {line!r}"
+            assert "!" not in line, f"{kind}: {line!r}"
+
+
+def test_a_briefing_drawn_with_no_voice_reads_exactly_as_it_did_before():
+    """The default is the old wording, not a random line.
+
+    `_briefing_text` is called with no cursor by anything that has none to spend.
+    Drawing at random there would make one forecast produce a different sentence
+    on every call, which is not a rotation - it is noise.
+    """
+    data = forecast(
+        [19, 20, 21],
+        temperature_2m=[27, 26, 26],
+        precipitation_probability=[80, 60, 40],
+        precipitation=[1.2, 0.4, 0.0],
+        weather_code=[61, 61, 3],
+        wind_speed_10m=[12, 10, 8],
+    )
+    title, body = cg._briefing_text(data, OFFICE, "2026-08-19")
+    assert title == "Before you leave Office, sir"
+    assert "An umbrella, unless you've grown fond of arriving wet." in body
+
+
+def test_a_corrupt_cursor_starts_its_slot_over_rather_than_failing_the_morning():
+    # a crash inside a briefing costs the whole morning, so an unusable cursor
+    # rotates from the top instead of raising or indexing nothing
+    for bad in ("3", -1, None, 1.5, True, {}):
+        v = cg._Voice({"rain": bad})
+        assert v.remark("rain") == cg._BRIEFING_REMARKS["rain"][0], bad
+
+
+def test_a_cursor_past_the_end_of_a_shortened_pool_still_indexes_a_line():
+    # a pool can lose a line in a later edit while a stored cursor points past it
+    v = cg._Voice({"cold": 99})
+    assert v.remark("cold") in cg._BRIEFING_REMARKS["cold"]
+
+
+def test_the_cursor_is_spent_only_when_the_briefing_actually_went_out():
+    """A run that reached nobody must not spend the pool.
+
+    The half of this item that reaches past the tables. A push that arrived and a
+    push that reached nobody were indistinguishable to the caller, so a failed
+    briefing would rotate a line past him in silence - and the day it consumed
+    would take the retry with it.
+    """
+    import asyncio
+
+    zone = cg._commute_zone(SCHED["tz"])
+    now = dt.datetime.now(zone)
+    today = now.strftime("%Y-%m-%d")
+    dep = dict(OFFICE, hour=now.hour, minute=now.minute)
+    data = {"hourly": {
+        "time": [f"{today}T{(now.hour + n) % 24:02d}:00" for n in (0, 1, 2)],
+        "temperature_2m": [27, 26, 26],
+        "precipitation_probability": [80, 60, 40],
+        "precipitation": [1.2, 0.4, 0.0],
+        "weather_code": [61, 61, 3],
+        "wind_speed_10m": [12, 10, 8],
+    }}
+
+    sent: list = []
+    delivered = [False]
+
+    async def _push(title, body, data=None, kind="general", force=False):
+        sent.append((title, body))
+        return delivered[0]
+
+    async def _said(_text):
+        return None
+
+    real = (cg._push_all, cg._remember_said, cg._forecast_blocking,
+            cg._due_departure, cg._commute)
+    cg._push_all = _push
+    cg._remember_said = _said
+    cg._forecast_blocking = lambda lat, lon, tz: data
+    # the clock is not what this test is about; the window logic has its own
+    # checks above, and pinning the departure here keeps this one about spending
+    cg._due_departure = lambda _now, _sched: dep
+    cg._commute = SCHED
+    cg._push_targets["ExponentPushToken[x]"] = "android"
+    try:
+        # nothing arrived: no line spent, and the day is NOT consumed
+        asyncio.run(cg._commute_tick())
+        assert len(sent) == 1, sent
+        assert cg._voice == {}, cg._voice
+        assert cg._briefed == {}, cg._briefed
+
+        # the retry says the same thing, because the cursor never moved
+        delivered[0] = True
+        asyncio.run(cg._commute_tick())
+        assert len(sent) == 2, sent
+        assert sent[1] == sent[0], "the retry reworded a briefing nobody had seen"
+        assert cg._voice.get("rain") == 1, cg._voice
+        assert cg._briefed.get("office") == today
+
+        # and the next briefing says it differently
+        cg._briefed.clear()
+        asyncio.run(cg._commute_tick())
+        assert len(sent) == 3
+        assert sent[2] != sent[1], "the briefing after a delivered one repeated it"
+    finally:
+        (cg._push_all, cg._remember_said, cg._forecast_blocking,
+         cg._due_departure, cg._commute) = real
+        cg._push_targets.clear()
+
+
 # once-a-day `_briefed` marks are module state and a test inheriting another's
 # would pass or fail on the order it happened to run in.
 if __name__ == "__main__":

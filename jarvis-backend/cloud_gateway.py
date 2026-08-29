@@ -2181,21 +2181,26 @@ def _expo_push_blocking(tokens: list, title: str, body: str, data: dict,
 
 
 async def _push_all(title: str, body: str, data: Optional[dict] = None,
-                    kind: str = "general", force: bool = False) -> None:
-    """Push to every registered phone.
+                    kind: str = "general", force: bool = False) -> bool:
+    """Push to every registered phone. True if anything actually went out.
 
     `force` skips the quiet gap, and exactly one caller uses it: the desk watch.
     That alert is a 30-second window on whether a machine stays unlocked, so
     rate-limiting it would mean choosing to drop a security event because a
     status notification happened to go out four minutes earlier.
+
+    The return value is new, and one caller reads it: the briefing spends a line
+    of its rotation only when the notification carrying it left. Every other
+    caller ignores it, exactly as before - nothing about what is sent, or when,
+    changed here.
     """
     global _last_push_at
     if not _push_targets:
-        return
+        return False
     now = time.monotonic()
     if not force and _last_push_at and now - _last_push_at < APP_PUSH_MIN_GAP_SECS:
         print("[CLOUD] push suppressed - inside the quiet gap", flush=True)
-        return
+        return False
     _last_push_at = now
     sent = list(_push_targets)
     try:
@@ -2204,7 +2209,7 @@ async def _push_all(title: str, body: str, data: Optional[dict] = None,
     except Exception as e:  # noqa: BLE001
         # a push that cannot be delivered must never take the desk link down
         print(f"[CLOUD] push failed: {e}", flush=True)
-        return
+        return False
 
     # Expo answers 200 with a per-token verdict, in the order the tokens went out.
     # Read it: a token belonging to an uninstalled or replaced app comes back
@@ -2215,7 +2220,11 @@ async def _push_all(title: str, body: str, data: Optional[dict] = None,
     if not isinstance(tickets, list):
         print(f"[CLOUD] push -> {len(sent)} target(s), but Expo's reply was not "
               f"readable, so DELIVERY IS UNCONFIRMED: {out}", flush=True)
-        return
+        # Unconfirmed counts as SENT for the one caller that reads this, because
+        # the two ways of being wrong are not symmetric: calling it sent costs one
+        # line of a rotation nobody saw, calling it unsent means tomorrow repeats
+        # today's wording - which is the defect this return value exists for.
+        return True
 
     ok, dead, failed = 0, [], []
     for token, ticket in zip(sent, tickets):
@@ -2244,6 +2253,7 @@ async def _push_all(title: str, body: str, data: Optional[dict] = None,
         # way to find out.
         print(f"[CLOUD] PUSH REACHED NOBODY - {len(sent)} target(s), "
               f"{len(dead)} unregistered, errors={failed}", flush=True)
+    return ok > 0
 
 
 # ── The briefing the gateway sends itself ────────────────────────────────────
@@ -2271,6 +2281,176 @@ HOT_C = 35.0
 COLD_C = 12.0
 WINDY_KMH = 40.0
 _THUNDER = {95, 96, 99}
+
+# ── The briefing's voice ───────────────────────────────────────────────────
+#
+# Ported from jarvis-mobile `src/lib/briefingVoice.ts` on 2026-08-29, lines and
+# all, and the porting is the point. The phone rotates its wording as of
+# 2026-08-26; this sender did not, and on a cloud-linked phone the gateway IS the
+# sender - so the original complaint survived wherever the cloud was armed. Two
+# senders inventing two different voices would have been the worse of the two
+# outcomes available.
+#
+# **What varies and what must not.** The figures never vary. They are
+# measurements, and a measurement rephrased for novelty can no longer be compared
+# with yesterday's. What varies is the remark after the figure, and the title.
+#
+# **Every variant keeps the actionable word.** Android truncates a body in the
+# shade, so `umbrella`, `jacket`, `Water` survive in all of them. A rotation that
+# dropped the instruction from one variant in six would be a briefing that failed
+# one morning in six - a worse bug than the one being fixed.
+#
+# **Rotation, not randomness.** On a pool of six, random shows the same line twice
+# running about one morning in six, which is the exact complaint. A cursor per
+# slot spends the whole pool before a line comes round again, and it is
+# deterministic, so the harness asserts the sequence instead of sampling it.
+_BRIEFING_REMARKS: dict = {
+    # Thunder: the only slot whose advice is about timing rather than about what
+    # to carry, so what must survive every rewording is the choice between the two.
+    "storm": [
+        "Leave early or wait it out — either beats the alternative.",
+        "Leave early or wait it out. Standing under it is not the third option.",
+        "Leave early or wait it out; the middle course is the one that soaks you.",
+        "Leave early or wait it out. I have no preference, and the sky has one.",
+        "Leave early or wait it out — both are decisions, unlike the usual approach.",
+        "Leave early or wait it out. Either is fine. Neither is optional.",
+    ],
+    "rain": [
+        "An umbrella, unless you've grown fond of arriving wet.",
+        "An umbrella. It is by the door, where it has been all week.",
+        "An umbrella would be the sensible half of this conversation.",
+        "Take the umbrella. I shall not raise it again until tomorrow.",
+        "An umbrella, or a convincing account of yourself on arrival.",
+        "An umbrella exists for precisely this forecast. Yours, specifically.",
+        "The umbrella, then. I did ask.",
+    ],
+    "hot": [
+        "Water, and something for your head — I would rather not arrange the hospital visit.",
+        "Water, and something for your head. Heatstroke is a poor look on anyone.",
+        "Water, and something for your head, before the afternoon makes the case itself.",
+        "Water, and something for your head. The sun is not negotiating today.",
+        "Water, and something for your head — the alternative is a very dull evening.",
+        "Water, and something for your head. Consider it a formality you will be glad of.",
+    ],
+    "cold": [
+        "The jacket you keep ignoring would be appropriate.",
+        "The jacket. The one you own and decline to wear.",
+        "A jacket, and I will pretend this is the first time I have suggested it.",
+        "The jacket would be sensible, which is presumably why it is still indoors.",
+        "A jacket. Shivering is not a personality.",
+        "The jacket, which has been waiting by the door for this exact morning.",
+    ],
+    "wind": [
+        "Mind the hair.",
+        "Mind the hair. It will not survive the argument.",
+        "Mind the hair, and anything else you are fond of holding.",
+        "Mind the hair. Today it is a gesture rather than a plan.",
+        "Mind the hair — the wind has its own arrangement in mind.",
+        "Mind the hair, and hold on to whatever is loose.",
+    ],
+    # The tail of a quiet briefing: the only pool with no instruction in it,
+    # because on a quiet morning there is nothing to carry. The figures above it
+    # are what make the reassurance disagreeable-with.
+    "clear": [
+        "Do try to enjoy it.",
+        "A rare morning with nothing to argue about.",
+        "Nothing further from me. Go on.",
+        "Unremarkable, in the best available sense.",
+        "I have nothing to add, which is itself a small event.",
+        "Enjoy the absence of my advice.",
+    ],
+}
+
+# The titles carry the label and spend the message's one `sir`. The place is
+# named in every variant, because two of these arrive in a day and a shade
+# holding both has to say which door each one is about.
+_BRIEFING_TITLES: dict = {
+    "warn": [
+        "Before you leave {label}, sir",
+        "A word before you leave {label}, sir",
+        "{label}, and one thing to take with you, sir",
+        "On your way out of {label}, sir",
+        "Leaving {label}? A moment, sir",
+        "Before {label} is behind you, sir",
+    ],
+    "clear": [
+        "Nothing in your way from {label}, sir",
+        "{label} to anywhere, unobstructed, sir",
+        "Clear run from {label}, sir",
+        "No obstacles leaving {label}, sir",
+        "{label} looks agreeable, sir",
+        "Nothing to report on leaving {label}, sir",
+    ],
+}
+
+# slot -> the next line to use. One small object, written once per briefing, and
+# shared across departures on purpose: leaving home and leaving the office are
+# the two messages most likely to be compared, since they arrive the same day.
+_voice: dict = {}
+_VOICE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_voice.json")
+
+
+def _load_voice() -> None:
+    global _voice
+    try:
+        with open(_VOICE_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        _voice = {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        # A missing or unreadable store is not an error: it is the first briefing,
+        # or a fresh instance, and starting the rotation at the top is right in
+        # both cases.
+        _voice = {}
+
+
+def _save_voice() -> None:
+    try:
+        with open(_VOICE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_voice, fh)
+    except Exception:  # noqa: BLE001
+        # One repeated line is a smaller failure than a briefing that did not
+        # arrive, and this is never allowed to be the reason for the second.
+        pass
+    # And across a deploy, or the rotation restarts at the same line every time,
+    # which is indistinguishable from never having rotated. This is the half of
+    # the item that waited on durable state.
+    _persist("briefing_voice", _voice)
+
+
+class _Voice:
+    """A briefing's worth of lines, drawn in order and written back once.
+
+    Separated from storage the way the phone's is, so the property that matters -
+    the pool is spent before a line returns - is testable over a plain dict with
+    no file in the way.
+    """
+
+    def __init__(self, stored: Optional[dict] = None) -> None:
+        self.at = dict(stored or {})
+
+    def _take(self, key: str, n: int) -> int:
+        # a stored cursor that is not a usable index starts its slot over rather
+        # than raising inside a briefing, which is the one place a crash costs the
+        # whole morning
+        raw = self.at.get(key)
+        cur = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
+        self.at[key] = (cur + 1) % n
+        return cur % n
+
+    def remark(self, slot: str) -> str:
+        pool = _BRIEFING_REMARKS[slot]
+        return pool[self._take(slot, len(pool))]
+
+    def title(self, kind: str, label: str) -> str:
+        pool = _BRIEFING_TITLES[kind]
+        return pool[self._take(f"title:{kind}", len(pool))].format(label=label)
+
+    def commit(self) -> None:
+        """Spend what was drawn - called only when the briefing actually went out."""
+        global _voice
+        _voice = dict(self.at)
+        _save_voice()
+
 
 # place_id -> the day it was last briefed, so the same umbrella is not announced
 # three times. Per departure, so the morning cannot silence the evening.
@@ -2389,14 +2569,21 @@ def _forecast_blocking(lat: float, lon: float, tz: str) -> Optional[dict]:
         return None
 
 
-def _briefing_text(data: dict, dep: dict, today: str) -> Optional[tuple]:
+def _briefing_text(data: dict, dep: dict, today: str,
+                   voice: Optional["_Voice"] = None) -> Optional[tuple]:
     """The briefing, or None when the forecast said nothing about these hours.
 
     The voice is the phone's and the four rules travel with it: the figure comes
     first and the remark second, the remark never replaces the instruction, `sir`
     is spent once and the title spends it, and there are no exclamation marks.
     Understatement is the whole instrument.
+
+    `voice` is the rotation, and omitting it draws the first line of every pool -
+    the wording this function had before the rotation existed. Not a convenience:
+    it means a caller with no cursor to spend reads the same sentence it always
+    did, rather than a different one chosen at random.
     """
+    voice = voice or _Voice()
     hourly = (data or {}).get("hourly") or {}
     times = hourly.get("time") or []
     if not times:
@@ -2435,22 +2622,22 @@ def _briefing_text(data: dict, dep: dict, today: str) -> Optional[tuple]:
     max_wind = max(winds) if winds else 0.0
     storm = any(int(c) in _THUNDER for c in codes)
 
+    # The figure is built here and the remark is drawn after it. That order is
+    # the voice rule rather than a formatting preference: what he can act on has
+    # to survive a truncated shade, so the measurement leads.
     notes = []
     if storm:
-        notes.append("Thunderstorms forecast. Leave early or wait it out — "
-                     "either beats the alternative.")
+        notes.append(f"Thunderstorms forecast. {voice.remark('storm')}")
     if max_chance >= RAIN_CHANCE or total_mm >= RAIN_MM:
         near = f", around {total_mm:.1f} mm" if total_mm >= RAIN_MM else ""
         notes.append(f"A {round(max_chance)}% chance of rain on your way out{near}. "
-                     "An umbrella, unless you've grown fond of arriving wet.")
+                     f"{voice.remark('rain')}")
     if max_temp is not None and max_temp >= HOT_C:
-        notes.append(f"It reaches {round(max_temp)}°C today. Water, and something "
-                     "for your head — I would rather not arrange the hospital visit.")
+        notes.append(f"It reaches {round(max_temp)}°C today. {voice.remark('hot')}")
     if min_temp is not None and min_temp <= COLD_C:
-        notes.append(f"Down to {round(min_temp)}°C. The jacket you keep ignoring "
-                     "would be appropriate.")
+        notes.append(f"Down to {round(min_temp)}°C. {voice.remark('cold')}")
     if max_wind >= WINDY_KMH:
-        notes.append(f"Gusts to {round(max_wind)} km/h. Mind the hair.")
+        notes.append(f"Gusts to {round(max_wind)} km/h. {voice.remark('wind')}")
 
     hour = int(dep["hour"])
     window = f"{_hour_label(hour)}–{_hour_label((hour + 3) % 24)}"
@@ -2462,13 +2649,13 @@ def _briefing_text(data: dict, dep: dict, today: str) -> Optional[tuple]:
     # numbers that can be disagreed with if they are wrong.
     if not notes:
         degrees = "" if max_temp is None else f"{round(max_temp)}°C, "
-        return (f"Nothing in your way from {label}, sir",
+        return (voice.title("clear", label),
                 f"Nothing to carry. {degrees}a {round(max_chance)}% chance of rain, "
-                f"wind {round(max_wind)} km/h ({window}). Do try to enjoy it.")
+                f"wind {round(max_wind)} km/h ({window}). {voice.remark('clear')}")
 
     # named, because two of these arrive in a day and a shade holding both has to
     # say which door each one is about
-    return (f"Before you leave {label}, sir", f"{' '.join(notes)} ({window})")
+    return (voice.title("warn", label), f"{' '.join(notes)} ({window})")
 
 
 async def _commute_tick() -> None:
@@ -2490,7 +2677,11 @@ async def _commute_tick() -> None:
         # lookup must not consume the day, which is the mistake the phone made
         # and then had to be talked out of.
         return
-    said = _briefing_text(data, dep, today)
+    # Drawn against a COPY of the cursors, because everything below can still
+    # decide not to send - and a line spent on a briefing that never went out is
+    # the pool rotating past him in silence.
+    voice = _Voice(_voice)
+    said = _briefing_text(data, dep, today, voice)
     if said is None:
         return
 
@@ -2502,9 +2693,18 @@ async def _commute_tick() -> None:
     # the operator actually asked for by name. Dropping it because a status
     # notification went out four minutes earlier would be the gap deciding
     # against the one thing it was never meant to police.
-    await _push_all(title, body,
-                    data={"kind": "commute", "place_id": dep.get("place_id")},
-                    kind="general", force=True)
+    went_out = await _push_all(
+        title, body,
+        data={"kind": "commute", "place_id": dep.get("place_id")},
+        kind="general", force=True)
+    if not went_out:
+        # Nothing arrived, so nothing is spent and the day is NOT marked: the next
+        # tick tries again, with the same wording. This is the whole reason the
+        # cursor is committed here rather than where it was drawn.
+        print("[CLOUD] briefing push reached nobody - the day stays open",
+              flush=True)
+        return
+    voice.commit()
     # He can ask about a briefing he was just sent — "was that for the office
     # or for home", "what did you say about the rain" — and before this the
     # brain had never said any of it. Same argument as the nudge, and this one
@@ -3215,6 +3415,7 @@ _load_push_targets()
 _load_commute()
 _load_briefed()
 _load_nudge()
+_load_voice()
 
 
 async def _restore_state() -> None:
@@ -3232,7 +3433,7 @@ async def _restore_state() -> None:
     Empty is not a failure and is not reported as one: the first deploy after this
     lands finds an empty table, which is correct and says nothing interesting.
     """
-    global _push_targets, _commute, _briefed, _nudge
+    global _push_targets, _commute, _briefed, _nudge, _voice
     if not DATABASE_URL:
         return
     try:
@@ -3269,6 +3470,14 @@ async def _restore_state() -> None:
         if got:
             _nudge = got
             recovered.append("today's remark marker")
+
+        got = await asyncio.to_thread(_db_state_get_blocking, "briefing_voice")
+        if got:
+            # A cursor a deploy resets restarts the rotation at the same line every
+            # time, which is indistinguishable from never having rotated at all.
+            _voice = {str(k): int(v) for k, v in got.items()
+                      if isinstance(v, int) and not isinstance(v, bool)}
+            recovered.append("the briefing's place in its rotation")
     except Exception as e:  # noqa: BLE001
         print(f"[CLOUD] state restore failed: {e}", flush=True)
         return
