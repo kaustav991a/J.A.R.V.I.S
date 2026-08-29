@@ -32,7 +32,7 @@
 
 | Goal | What is different for him when it holds | Members |
 |---|---|---|
-| **He never claims what he did not do** | The top severity in this project, and it is about character rather than correctness: an assistant that reports an action it did not take cannot be delegated anything. Both habit-1 guards are suite failures now; what is unproved is the same property over live information, where the temptation to answer from weights is strongest | `1.1` `1.2` `A11 information` |
+| **He never claims what he did not do** | The top severity in this project, and it is about character rather than correctness: an assistant that reports an action it did not take cannot be delegated anything. **Worked end to end on 2026-08-29 and it is NOT closed — see §4.5.** All nine A11 rows were driven; seven pass, two are `PASS-SUB`, and running them found the exact failure the goal names: he invented an appointment that does not exist | `1.1` `1.2` `A11 information` |
 | **He is up before you are, and stays up** | Nothing else on this page means anything on a machine where a dependency died quietly — session 4 lost every vision row to an `ollama` that was down and said nothing. Five of these are sealed; the resilience batch is what is left | `0.2` `0.3` `0.4` `3.2` `A1 pre-flight` `A24 watchdog` `A17 resilience` |
 | **He reaches for the right tool the first time** | The one number that decides whether he is *dependable* rather than *impressive*. The cause was upstream of retrieval: he was handed five file tools and asked to book a dentist. Mechanism fixed and measured offline at 39/40; the live re-measure is the open loop | `2.1` `2.2` `2.3` |
 | **He acts on your behalf, with the brakes on** | The difference between a voice interface and an agent: 56 tools behind a door he opens by saying *"work through this"*, every CONFIRM read back verbatim before it fires, and a refusal that holds when the request is about someone else | `A5 workspace` `A6 OS/apps` `A7 governance` `A22 agentic` `A23 partner refusals` |
@@ -105,7 +105,7 @@ the other repo.
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **107 harnesses, 3723 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
+| Automatic suite | **112 harnesses, 3912 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -271,7 +271,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 | A5 workspace | 5 | machine | ✅ 4, `4.3` owed — cause found and fixed 2026-08-29 (F-69: the refusal was right, the three layers above it were not); needs its live re-run |
 | A7 governance | 5 | machine | ✅ 5 via the text door |
 | A9/A10 memory | 6 + K | machine / **his recovery code** | ✅ 9.1, 9.2, 9.6, K1, K5b · K2–K5 need him with the code in reach |
-| A11 information | 9 | machine + live tokens | ✅ 10.2, 10.5, 10.7, 10.9 |
+| A11 information | 9 | machine + live tokens | **all 9 driven 2026-08-29** — 7 PASS, `10.3` and `10.9` PASS-SUB. Two 🔴 found doing it: F-74 and F-74b |
 | A16 login | 6 | mic + face | ✅ `17.6` 🛑, `17.8` · rest need him |
 | A21 camera | 12 | phone camera | ✅ `21.1`, `21.2`, `21.9`-half |
 | A22 agentic | 24 | machine + TV | ✅ 7 · **8 blocked by F-59** · TV/phone rows owed |
@@ -284,6 +284,61 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 | Group B | 7 | **second device**, pinned MAC | ☐ none — set the probe up *before* the session |
 | Group C | 15 | **second person** — Kinshuk, Mousumi | ☐ none — batch one visit |
 | Group D | 11 | **phone in hand** | ☐ none |
+
+---
+
+## 4.5 · Goal 1 — where it actually stands, 2026-08-29
+
+He asked for this goal to be finished. It was worked end to end, and **it is not
+100%.** Recording that is the goal, so here is the whole of it.
+
+### The code half is done and sealed
+
+`1.1` and `1.2` were already SEALED. Four more guards landed today, each from a
+defect observed on this machine rather than reasoned about:
+
+| Found | What it was | Harness |
+|---|---|---|
+| **F-71** 🔴 | An expired Google token launched a browser OAuth flow **inside an HTTP handler, on the event loop**. The whole desk API hung — `/docs` at ninety seconds, process idle at 0% CPU, log silent. `py-spy dump` found it | `test_google_auth_door.py` 27 |
+| **F-72** 🟠 | Gemini slow rather than down: four key rotations on **every leg of every turn**. "What's on my calendar today?" took **409 s** with Groq answering in two. The local route has had a breaker for a year; the cloud legs had none | `test_cloud_breaker.py` 16 |
+| **row 10.4** | Asked to *go to python.org*, he searched instead and reported the result as though he had gone. The answer was probably right, which is what makes it this goal's failure | `test_answer_provenance.py` 50 |
+| **F-74 / F-74b** 🔴 | **He invented an appointment** — "your next scheduled match is at 7 PM" against an empty calendar, an empty fact store and no commute data on this machine. And a refusal that said an unknown action was "classified as high-risk" when it is not classified at all | `test_schedule_claims.py` 44 |
+
+Suite **112 harnesses, 3912 checks**. Every guard negative-tested.
+
+### The gate half: 7 of 9, and the two gaps are named
+
+| Row | Verdict | Evidence |
+|---|---|---|
+| 10.1 search | ✅ | synthesised, not a dump — Artemis II's April 2026 splashdown |
+| 10.2 what is X | ✅ | Kuiper Belt, correct and brief |
+| 10.3 picture | ⚠️ **PASS-SUB** | the claim is gated on a real result (`web_search_image` succeeded, "Visual data retrieved") — **but nobody has seen it render on the HUD.** Needs his eyes |
+| 10.4 go to a site | ✅ | now says *"I didn't open python.org itself, Sir — what follows is from a web search"* before answering. Verified live |
+| 10.5 unread mail | ✅ | four real senders, verifiably his (the NVIDIA account mails from today) |
+| 10.6 send mail | ✅ | parked at CONFIRM, read back verbatim, **nothing sent** |
+| 10.7 calendar | ✅ | real read, genuinely empty day, no invented entries |
+| 10.8 vitals | ✅ | "no health data recorded yet today" — and it is the **honest** empty: Fit is authorised, the service answered, and it really is all zeros |
+| 10.9 briefing | ⚠️ **PASS-SUB** | it answers, and the fabrication is gone. But its criterion is a *Fit + Calendar + Gmail aggregate*, and "good morning" is a greeting — **the aggregate is what `wake up` triggers, and that has not been run through this door** |
+
+### And the honest limit on F-74
+
+**The schedule guard has not been observed firing live.** The fabrication has not
+recurred in 12+ greetings across three sessions — but every restart clears the
+working memory that seeded the loop, so that is *the defect not recurring*, not
+*the guard catching it*. It is harness-proven and negative-tested; it is not yet
+live-proven.
+
+### What closing this goal actually needs
+
+1. **`wake up` through this door**, for 10.9's real criterion — the Fit + Calendar
+   + Gmail aggregate, not a greeting;
+2. **his eyes on the HUD** for 10.3, which is thirty seconds with the page open;
+3. **the schedule guard seen firing**, or a decision that the harness is enough;
+4. and the standing rule this document already carries: **every `PASS-SUB` row
+   owes its own door.** All nine of these went through the *text* door. The
+   microphone has still never been used.
+
+None of that is code. All of it is him, and none of it takes long.
 
 ---
 
