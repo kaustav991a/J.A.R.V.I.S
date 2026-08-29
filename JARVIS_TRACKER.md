@@ -105,7 +105,7 @@ the other repo.
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **112 harnesses, 3926 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
+| Automatic suite | **113 harnesses, 3943 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -318,7 +318,7 @@ Suite **112 harnesses, 3926 checks**. Every guard negative-tested.
 | 10.5 unread mail | ✅ | four real senders, verifiably his — the NVIDIA account mails from that same afternoon |
 | 10.6 send mail | ✅ | parked at CONFIRM, read back verbatim, **nothing sent** |
 | 10.7 calendar | ✅ | real read, genuinely empty day, no invented entries |
-| 10.8 vitals | ✅ | the **honest** empty: Fit authorised, service answered, genuinely all zeros — distinct from "offline", which is what it used to say |
+| 10.8 vitals | ✅ **on the second attempt — the first was wrong** | It was passed at 14:00 as an "honest empty", and it was not empty: **F-76**, a UTC-midnight window discarding 00:00–05:30 local, where all 64 of his steps and 277.1 kcal were. Now live: *"64 steps and 277.1 kcal burned, Sir."* |
 | 10.9 briefing | ✅ | **through `wake up`, not "good morning"** — the row wants a Fit + Calendar + Gmail aggregate and that is what the comprehensive briefing produces: *"Your calendar holds no appointments… You have 201 unread emails… the health integration…"*. All three verified independently |
 
 ### The residuals, named rather than buried
@@ -337,6 +337,43 @@ Suite **112 harnesses, 3926 checks**. Every guard negative-tested.
   wording is free — a genuine *"Latest News: Today's big news headlines"* became
   *"Google News highlights a fresh breakthrough"*. Sourced, so not a fabrication,
   and not worth a guard that would flatten the persona.
+
+### Going back over it, an hour later, found one more
+
+**He asked whether the completed rows needed re-checking. They did.** Row `10.8`
+was re-opened within the hour and **F-76** came out of it: the vitals answer was a
+correct-looking sentence produced by broken arithmetic, and because the sentence
+was the thing being read, it passed. It would have gone on passing indefinitely.
+
+Two things that follow, and they govern every other ✅ on this board:
+
+1. **A pass is a snapshot, not a guarantee.** Row `10.9` genuinely passed on
+   2026-08-22 with a real Fit aggregate — *"1,068 steps, 962.5 kcal, 100 active
+   minutes"*. By today the news lookup underneath it had begun returning nothing
+   and the row failed (**F-75**). No code changed. The world did.
+2. **A row whose evidence is a SENTENCE needs its numbers checked against the
+   source.** That is the entire difference between how `10.8` was passed at 14:00
+   and how it was passed at 15:30.
+
+### The re-audit this earns, and what it is bounded to
+
+Not "re-run everything". The risk is concentrated and nameable: **every row whose
+pass depends on an external source that can fail or under-report without
+raising.** Today produced four instances of that one shape — a revoked token
+(F-71), a rate-limited image search, an empty news lookup (F-75), and a window
+that silently dropped five and a half hours (F-76).
+
+| To re-check | Why it is on this list |
+|---|---|
+| `A11` rows that quote a **figure** | `10.5` says "201 unread" and `10.8` said "no data" — one was right, one was arithmetic. Check the number against the API, not the sentence |
+| `A9/A10` memory rows | their evidence is recall working; a quiet store failure reads as "you never told me that", which the gate marks 🛑 at `K3` |
+| `A13` vision, `A21` camera | `12.1` already failed this way once (F-61 — it invented two of four claims). Both depend on a camera that can be present but wrong |
+| `A22` agentic rows passed **before** the tool preload | the shelf changed underneath them; a row that passed with five file tools in front of it is not evidence about today's router |
+| anything ✅ from a session where the **provider mix differed** | Gemini is a 20/day burst resource now and NVIDIA NIM is a new leg — neither was true when the earliest rows were ticked |
+
+**Not on the list, deliberately:** rows whose evidence is a refusal, a governance
+verdict or a harness assertion. Those do not rot, because nothing outside the
+repository can change them.
 
 ### The lesson this goal paid for twice
 

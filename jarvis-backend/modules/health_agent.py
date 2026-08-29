@@ -80,10 +80,15 @@ class HealthAgent:
                     "calories": 0.0, "active_mins": 0}
 
         try:
-            now = datetime.datetime.now(datetime.timezone.utc)
-            start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            now_ms       = int(now.timestamp() * 1000)
-            start_ms     = int(start_of_day.timestamp() * 1000)
+            # F-76: this used to be UTC midnight, which begins at 05:30 local
+            # and threw away everything before it. Measured on 2026-08-29 at
+            # 15:21 local: the UTC window held 0 steps, the real local day held
+            # 64, and all 64 were in the discarded hours - so the desk reported
+            # "no health data recorded yet today" while Fit held a day's worth of
+            # his late-night walking. The calendar fixed this same bug for itself
+            # long ago; the helper exists so there is no third copy to fix.
+            from modules.local_day import elapsed_today_ms
+            start_ms, now_ms = elapsed_today_ms()
 
             def _aggregate(data_type: str) -> list:
                 resp = (

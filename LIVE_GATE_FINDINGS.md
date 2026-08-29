@@ -3165,3 +3165,68 @@ result of *"Latest News: Today's big news headlines"* was rendered as *"Google
 News highlights a fresh breakthrough"*. The topic is genuinely sourced, so this
 guard correctly stays out of it, and it is a **paraphrase** rather than a
 fabrication. Worth knowing, not worth a guard that would flatten the persona.
+
+---
+
+## F-76 🔴 · "No health data today" — while Fit held a day's worth of it
+
+**Found by going back over a row that had been marked complete an hour earlier**,
+which is the finding behind the finding.
+
+Row `10.8` had just been passed on the strength of this sentence being an
+*honest empty*:
+
+> "No health data has been recorded yet today, Sir."
+
+It was not empty. `HealthAgent.get_today_health_data` computed its window from
+**UTC midnight**. He is in IST (UTC+5:30), so "today" began at **05:30 local**
+and everything before it was discarded. Measured at 15:21 local, against the same
+Fit account, in the same minute:
+
+| window | steps |
+|---|---|
+| UTC midnight — what the agent used | **0** |
+| the real local day | **64** |
+| dropped, 00:00–05:30 IST | **64** |
+
+**Every step he had taken that day was inside the discarded hours** — which, for
+someone who works past midnight, is exactly where his day's activity lives. The
+calories were going the same way: 277.1 kcal, reported as nothing.
+
+What the desk says now, live, after the fix:
+
+> "64 steps and 277.1 kcal burned, Sir."
+
+### Why this one matters more than its size
+
+It is the **third** instance in one day of a single shape: a source that fails or
+under-reports *quietly*, and a layer above it that describes the result anyway.
+F-74 invented an appointment, F-75 quoted a headline from an empty lookup, and
+this one reported a real day as an empty one. Different data, same defect.
+
+And **the calendar had already fixed this exact bug for itself.**
+`calendar_agent._ist_day_bounds` carries the comment *"Fixes the UTC-boundary bug
+that dropped midnight-5:30am IST events"* — found once, fixed in one of the two
+places that had it, left in the other. Root cause #4.
+
+**FIXED**: `modules/local_day.py`, one place where the day begins, with the
+offset configurable (`JARVIS_TZ_OFFSET_MIN`) because a hardcoded +5:30 is the
+same bug one move away. The health agent no longer computes a window of its own,
+and the harness pins that **the calendar and the health agent agree on the
+boundary** — pinning one and not the other is how they drifted apart.
+
+`test_local_day.py`, **17 checks**. Suite 113 harnesses, 3943 checks.
+
+### What this says about every other ✅ on the board
+
+Row `10.8` passed a **correct-looking sentence produced by broken arithmetic**,
+and it passed because the sentence was the thing being read. It would have gone
+on passing indefinitely. Two conclusions worth writing down:
+
+1. **A pass is a snapshot, not a guarantee.** Row `10.9` genuinely passed on
+   2026-08-22 with a real Fit aggregate ("1,068 steps, 962.5 kcal, 100 active
+   minutes") — and by today the news lookup underneath it had started returning
+   nothing, and the row failed. Nothing about the code changed. The world did.
+2. **Rows whose evidence is a SENTENCE need their numbers checked against the
+   source**, not just read for tone. That is the whole difference between how
+   `10.8` was passed at 14:00 and how it was passed at 15:30.
