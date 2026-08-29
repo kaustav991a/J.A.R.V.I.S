@@ -49,7 +49,7 @@
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **106 harnesses, 3626 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
+| Automatic suite | **106 harnesses, 3641 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -392,12 +392,36 @@ can finish alone on the ladder is still finished.
 The desk ladder has **nothing machine-only left**. The work that does is
 `jarvis-mobile`'s `docs/brain-dependencies.md` — that laptop has no Python at all
 (`python`/`python3` are the Microsoft Store stub), so **this machine is the only
-place any of it is testable.** It was 9 queue items; **13 and 24 are now done**, so
-seven remain: `6` (the transcribe prompt overcorrects on plain English), `11`
-(notification listener, gated on 12), `12` (split `APP_TOKEN` by capability — the
-gate in front of every new sense), `14` (the situation on the persona envelope),
-`15` (delivered/read ticks), `22` (the gateway briefing repeats itself — unblocked
-now that durable state is merged), `25` (a spoken turn that outlives its socket).
+place any of it is testable.** It was 9 queue items; **13, 24, 25 and 22 are now
+written**, so five remain: `6` (the transcribe prompt overcorrects on plain
+English), `11` (notification listener, gated on 12), `12` (split `APP_TOKEN` by
+capability — the gate in front of every new sense), `14` (the situation on the
+persona envelope), `15` (delivered/read ticks).
+
+**25 and 22 landed on 2026-08-29 and NEITHER IS LIVE.** Both are gateway commits
+on a branch Render has not taken, and 25's other half is an app commit that has
+not been published. What they are owed is a deploy and an OTA publish, then the
+device repro that found each — not more code:
+
+* **25** (`2301ad7` here, `6d8be2d` in jarvis-mobile) — the transcript `emit()`
+  result is read rather than discarded, and a transcript that met a dead socket
+  rides on the reply's push as `data.transcript`. The app writes his turn from
+  that field, because a transcript pushed as its own notification would be filed
+  as the machine speaking. **Both halves had to land together:** an unknown field
+  on a push is dropped in silence, so the gateway change alone would have looked
+  like it did nothing. `test_app_link.py` 42 → 46.
+* **22** — the briefing's wording rotates now, ported from the phone's
+  `briefingVoice.ts` line for line: a pool per slot, one cursor shared across
+  departures, figures never varied, the actionable word in every variant. The
+  cursor is spent only on a briefing that actually went out — `_push_all` returns
+  whether anything left, and a push that reached nobody leaves the day OPEN
+  instead of marking it done, which is the rule the failed-forecast path already
+  had. `test_commute_briefing.py` 15 → 26.
+
+**Read `/health` after the deploy that carries these**, and then look at the
+`briefing_voice` row surviving the one after it — a cursor a deploy resets
+restarts the rotation at the same line every time, which is indistinguishable
+from never having rotated.
 
 **Its line numbers are stale** — written from a checkout 42 commits behind. Verified
 here on 2026-08-29: item 25's transcript `emit()` is at `cloud_gateway.py:3979` and
