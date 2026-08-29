@@ -450,6 +450,23 @@ The desk bridge was then connected for twelve seconds by
 the cloud believes the desk is up while it is attached — and the cloud went
 `has_desk_key: false` -> `true` with the real desk's public half.
 
+**And the deploy AFTER that one proved the point.** `fded484` is a new
+container with the desk not connected, and it read `has_desk_key: true` — out of
+Postgres, where nothing had ever been able to put it before. Every deploy until
+today returned that flag to false, and `queue_fact` DROPS what it cannot seal.
+
+Two operational facts fell out of doing this, both worth keeping:
+
+* **a docs-only commit does not redeploy the gateway.** The Blueprint sets
+  `rootDir: jarvis-backend`, so a push touching only root files was still on the
+  old commit twelve minutes later. If a deploy is what you are testing, the
+  commit has to touch that folder.
+* **the desk's `.env` cannot open `/app-tokens`.** `APP_TOKEN` is unset there and
+  `BRIDGE_SECRET` is refused, which is the right answer: the phone's pairing
+  secret lives in the Render dashboard and in SecureStore, and the desk has no
+  business holding it. It also means the live token-split proof needs his phone,
+  not this machine.
+
 **And `/health` now names the commit it is running** (`RENDER_GIT_COMMIT`,
 short-form). Every rule above is a claim about the code that is *running*, and
 until this field existed "read /health after every deploy" could confirm the
