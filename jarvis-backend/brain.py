@@ -1716,10 +1716,14 @@ def process_command(user_text: str, active_user: str = "KAUSTAV") -> str:
             # fabrication left in the buffer becomes established context, and
             # the next turn builds on it as though it were true.
             _title = "Madam" if active_user == "MOUSUMI" else "Sir"
+            _wm = memory.get_working_memory()
             response = _strip_unfounded_conversational_claims(
                 response,
-                actions_ran=_actions_ran_recently(memory.get_working_memory()),
+                actions_ran=_actions_ran_recently(_wm),
                 title=_title,
+                # F-74: describing HIS diary needs the diary to have been read,
+                # not merely some action to have run.
+                calendar_read=_calendar_read_recently(_wm),
             )
             # F-60, the half the reply-side rule cannot see. If he asked for a
             # capability the catalogue does not have, the ONLY honest reply is to
@@ -2888,6 +2892,35 @@ def _actions_ran_recently(messages: list, window: int = _EVIDENCE_WINDOW_MSGS) -
     return False
 
 
+def _calendar_read_recently(messages: list, window: int = _EVIDENCE_WINDOW_MSGS) -> bool:
+    """True if a CALENDAR action really executed within the last `window` messages.
+
+    F-74. Read the same way `_actions_ran_recently` reads its evidence - from the
+    "[Executed: ...]" stub, which is written from a parse of what was dispatched
+    and never from what the model said about itself. That is the whole reason it
+    can stand as evidence for admitting a schedule sentence.
+
+    Narrower than `_actions_ran_recently` on purpose: ANY action having run is
+    not permission to describe his diary. Only having read the diary is.
+    """
+    if not messages:
+        return False
+    for msg in list(messages)[-window:]:
+        try:
+            if msg.get("role") != "assistant":
+                continue
+            content = str(msg.get("content", "") or "")
+            if not _EXECUTED_STUB_RE.search(content):
+                continue
+            low = content.lower()
+            if any(a in low for a in ("check_calendar", "calendar_", "get_schedule",
+                                      "week_preview", "tomorrow_preview")):
+                return True
+        except AttributeError:
+            continue
+    return False
+
+
 def _conversational_allowed(actions_ran: bool = False, fenced: bool = False) -> frozenset:
     """The admissible-claim set for one conversational reply.
 
@@ -3055,8 +3088,81 @@ def _sentence_is_unfounded(sentence: str, allowed: frozenset) -> bool:
     return _claims_a_completion(sentence, allowed)
 
 
+# A sentence asserting something on the OPERATOR'S schedule.
+#
+# F-74, measured on the desk 2026-08-29 while verifying goal 1's own gate batch.
+# "good morning" was answered:
+#
+#     "Good morning, Sir - it's actually 2:14 PM, Sir; your next scheduled
+#      match is at 7 PM, Sir."
+#
+# There is no match. Checked, not assumed: the calendar returns
+# `Your calendar is clear today` and `get_upcoming(720) == []`; the desk's whole
+# store - 62 facts, session digests, partner messages - has no "7 PM" and no
+# "match" in it; and the commute schedule that really does hold a 7 PM departure
+# lives in the CLOUD gateway, which this machine cannot read. Invented, then
+# repeated on three consecutive retries because a fabrication re-enters working
+# memory and is read back as established fact.
+#
+# **The briefing already refuses to do this** - `_strip_unsourced_state_claims`
+# drops a schedule sentence when the calendar was not read. The conversation did
+# not, because `_strip_unfounded_conversational_claims` was built for a different
+# failure: claims about what JARVIS DID, not claims about how the operator's
+# world IS. One door guarded, the other not, and the same root cause (#4) that
+# this project has paid for repeatedly.
+#
+# Deliberately narrow, because this runs on EVERY reply. A sentence has to do
+# BOTH: name a scheduled commitment AND pin it to a clock time. "See you later"
+# survives; "your meeting is at 4" does not, unless the calendar was actually
+# consulted this turn.
+_SCHEDULE_NOUNS = (
+    "meeting", "appointment", "match", "call", "session", "booking",
+    "reservation", "event", "fixture", "class", "interview", "flight",
+    "train", "deadline", "scheduled", "on your calendar", "in your diary",
+    # Added within the hour of the first list, by watching the same defect walk
+    # around it. Three consecutive "good morning" turns produced, in order:
+    #   "still set on coding until the early hours?"        (a question - fine)
+    #   "another marathon coding session, I presume?"       (hedged - fine)
+    #   "your coding marathon until 4 AM remains on the agenda."   (an ASSERTION)
+    # A hedged guess became established fact two turns later, with a clock time
+    # attached and nothing behind it - zero facts here mention late-night coding.
+    # That is the same working-memory loop as the 7 PM match, and it walked
+    # straight past a noun list that did not contain "agenda".
+    "agenda", "on the agenda", "plan", "planned", "schedule", "itinerary",
+    "commitment", "due at", "starts at", "begins at",
+)
+
+# A clock time, in the forms a model actually writes them.
+_CLOCK_RE = re.compile(
+    r"(?:\d{1,2}\s*[:.]\s*\d{2}\s*(?:am|pm)?"
+    r"|\d{1,2}\s*(?:am|pm)"
+    r"|noon|midnight"
+    r"|(?:this|tomorrow|tonight)\s+(?:morning|afternoon|evening))",
+    re.I,
+)
+
+# Possessives that make it HIS schedule rather than a general remark. "The match
+# is at 7" is a fact about the world and none of this guard's business; "YOUR
+# match is at 7" is a claim about him.
+_HIS_SCHEDULE_RE = re.compile(
+    r"(?:your|you\s+have|you've\s+got|you\s+are\s+due|yours)", re.I)
+
+
+def _asserts_his_schedule(sentence: str) -> bool:
+    """True when a sentence pins one of HIS commitments to a clock time."""
+    low = sentence.lower()
+    if any(a in low for a in _ADMITS_ABSENCE):
+        return False                      # an admission is the sentence we want
+    if not _HIS_SCHEDULE_RE.search(low):
+        return False
+    if not any(n in low for n in _SCHEDULE_NOUNS):
+        return False
+    return bool(_CLOCK_RE.search(low))
+
+
 def _strip_unfounded_conversational_claims(
-    text: str, actions_ran: bool = False, title: str = "Sir"
+    text: str, actions_ran: bool = False, title: str = "Sir",
+    calendar_read: bool = False
 ) -> str:
     """Remove sentences claiming JARVIS completed work it did not do (F-16).
 
@@ -3092,13 +3198,25 @@ def _strip_unfounded_conversational_claims(
     body = _FENCE_RE.sub(_stash, text) if fenced else text
     parts = _SENTENCE_SPLIT_RE.split(body)
     kept, dropped = [], []
+    schedule_dropped = []
     for i in range(0, len(parts), 2):
         sentence = parts[i]
         separator = parts[i + 1] if i + 1 < len(parts) else ""
         if _sentence_is_unfounded(sentence, allowed):
             dropped.append(sentence)
+        elif not calendar_read and _asserts_his_schedule(sentence):
+            # F-74. Only when the calendar was NOT consulted this turn: with a
+            # real read behind it, "your meeting is at 4" is the feature working.
+            schedule_dropped.append(sentence)
         else:
             kept.append(sentence + separator)
+    if schedule_dropped:
+        print(f"[BRAIN] reply: dropped {len(schedule_dropped)} invented "
+              f"schedule claim(s) — the calendar was not read this turn.",
+              flush=True)
+        for d in schedule_dropped:
+            print(f"[BRAIN]   dropped (no calendar source): {d[:110]}", flush=True)
+        dropped.extend(schedule_dropped)
     if not dropped:
         return text          # untouched turns keep their formatting exactly
     print(f"[BRAIN] reply: dropped {len(dropped)} unfounded action claim(s) "
@@ -3111,7 +3229,16 @@ def _strip_unfounded_conversational_claims(
     # If the guard ate the whole reply, say something that is true whatever the
     # turn was about. Silence reads as a fault; an acknowledgement ("of course")
     # would agree with the claim we just refused to speak.
-    return cleaned or f"I have no completed actions to report, {title}."
+    if cleaned:
+        return cleaned
+    # Nothing survived. Say the true thing about WHICH kind of claim went, or the
+    # fallback is a non-sequitur: "I have no completed actions to report" answers
+    # a question about the diary with a statement about actions, which is its own
+    # small dishonesty.
+    if schedule_dropped and len(schedule_dropped) == len(dropped):
+        return (f"I don't have your schedule in front of me, {title} — "
+                f"ask me to check the calendar and I'll read it properly.")
+    return f"I have no completed actions to report, {title}."
 
 
 def generate_briefing(weather_data: dict, wake_phrase: str = "wake up", active_user: str = "KAUSTAV", comprehensive: bool = False) -> str:

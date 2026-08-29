@@ -73,12 +73,17 @@ _WANTED_CONSTS = {
     # predicate, so this namespace needs its vocabulary too — and this harness
     # going to ZERO CHECKS with a NameError is exactly how it told us so.
     "_NO_TOOL_VERBS", "_PROMISE_RE", "_PROMISE_NEGATED_RE",
+    # F-74: the schedule-claim guard shares this namespace. Its vocabulary has to
+    # come with it, and the harness told us so the same way it did for F-60 -
+    # zero checks and a NameError, which is this file working as designed.
+    "_SCHEDULE_NOUNS", "_CLOCK_RE", "_HIS_SCHEDULE_RE", "_ADMITS_ABSENCE",
 }
 _WANTED_FUNCS = (
     "_claims_a_completion", "_actions_ran_recently", "_conversational_allowed",
     "_sentence_is_unfounded", "_strip_unfounded_conversational_claims",
     "_security_locked",
     "_promises_a_capability_it_lacks",          # F-60
+    "_asserts_his_schedule",                    # F-74
 )
 
 _consts = [n for n in _TREE.body

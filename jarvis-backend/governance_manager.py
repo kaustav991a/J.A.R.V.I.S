@@ -367,6 +367,18 @@ class GovernanceManager:
         """Return the tier string for a given action_type (for introspection)."""
         return self._rules.get(action_type.lower(), "BLOCK")
 
+    def is_known(self, action_type: str) -> bool:
+        """Whether a rule was actually WRITTEN for this action.
+
+        `get_tier` cannot answer this: it returns "BLOCK" both for an action ruled
+        high-risk and for one nobody has ever heard of, which is right for the
+        decision and wrong for the explanation. F-74b - the desk told the operator
+        `get_calendar` was "classified as high-risk" when governance.json has no
+        such entry and `check()` had already said so in its own reason. A refusal
+        that misstates its grounds sends him looking for a rule that is not there.
+        """
+        return str(action_type or "").strip().lower() in self._rules
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton — import this from everywhere

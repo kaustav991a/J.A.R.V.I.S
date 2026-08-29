@@ -33,7 +33,7 @@ load_dotenv(override=True)
 import speaker 
 import memory 
 import threading
-from modules.answer_provenance import answer_or_admission
+from modules.answer_provenance import answer_or_admission, refusal_sentence
 from brain import (
     process_command,
     synthesize_info,
@@ -2131,10 +2131,10 @@ async def run_remote_command(command_text: str, channel) -> None:
             # ── Governance sentinels ──────────────────────────────────────────
             if isinstance(result, str) and result.startswith("GOVERNANCE_BLOCKED:"):
                 blocked = result.split(":", 1)[1] if ":" in result else "unknown"
-                await channel.reply(
-                    f"That action is blocked by governance policy, Sir. "
-                    f"'{blocked}' is classified as high-risk and cannot be executed."
-                )
+                # F-74b, third door: the remote path. All three said the same
+                # invented thing, which is why the sentence lives in one place now.
+                await channel.reply(refusal_sentence(
+                    blocked, governance_manager.is_known(blocked), honor))
                 replied = True
                 continue
             if isinstance(result, str) and result.startswith("GOVERNANCE_CONFIRM:"):
@@ -2856,10 +2856,10 @@ async def backdoor_command(req: BackdoorRequest):
                     elif isinstance(result, str) and result.startswith("GOVERNANCE_BLOCKED:"):
                         blocked_action = result.split(":", 1)[1] if ":" in result else "unknown"
                         title = "Madam" if active_user == "MOUSUMI" else "Sir"
-                        msg = (
-                            f"That action is blocked by governance policy, {title}. "
-                            f"'{blocked_action}' is classified as high-risk and cannot be executed."
-                        )
+                        # F-74b, same distinction on the desk door.
+                        msg = refusal_sentence(
+                            blocked_action,
+                            governance_manager.is_known(blocked_action), title)
                         await safe_send_all({"status": "complete", "result": msg})
                         asyncio.create_task(speaker.speak_text(msg))
 
@@ -4105,10 +4105,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                             elif isinstance(result, str) and result.startswith("GOVERNANCE_BLOCKED:"):
                                                 blocked_action = result.split(":", 1)[1] if ":" in result else "unknown"
                                                 title = "Madam" if active_user == "MOUSUMI" else "Sir"
-                                                msg = (
-                                                    f"That action is blocked by governance policy, {title}. "
-                                                    f"'{blocked_action}' is classified as high-risk and cannot be executed."
-                                                )
+                                                # F-74b, same distinction on the
+                                                # websocket door.
+                                                msg = refusal_sentence(
+                                                    blocked_action,
+                                                    governance_manager.is_known(blocked_action),
+                                                    title)
                                                 await safe_send({"status": "complete", "result": msg})
                                                 asyncio.create_task(speaker.speak_text(msg))
                                             elif isinstance(result, str) and result.startswith("GOVERNANCE_CONFIRM:"):

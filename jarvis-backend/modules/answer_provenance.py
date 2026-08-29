@@ -133,3 +133,42 @@ def answer_or_admission(text: Optional[str]) -> str:
     places that were trying to ANSWER him.
     """
     return (text or "").strip() or SILENT_ANSWER
+
+
+# ── a refusal has to say what it actually refused ────────────────────────
+#
+# F-74b, measured on the desk 2026-08-29. Asked "what time is my next thing", the
+# model emitted `calendar_next_event`; asked again, `get_calendar`. Neither exists
+# - the real action is `check_calendar` - so governance refused them by its
+# documented fail-safe: an action nobody wrote a rule for is blocked.
+#
+# What he was told:
+#
+#     "That action is blocked by governance policy, Sir. 'get_calendar' is
+#      classified as high-risk and cannot be executed."
+#
+# It is not classified as high-risk. It is not classified at all. `governance.json`
+# has never heard of it, `GovernanceManager.check` already said exactly that in
+# the reason it returned, and the caller replaced that reason with a hardcoded
+# sentence. The refusal is right and stays; the explanation was invented.
+#
+# **Same shape as F-69 - a guard's error message is a UI** - and this project has
+# now paid for that lesson twice. The distinction is not cosmetic: "blocked by
+# policy" sends him to `governance.json` to find a rule that is not there, while
+# the truth points at the real defect, which is a model naming a capability that
+# does not exist.
+def refusal_sentence(action: str, known: bool, title: str = "Sir") -> str:
+    """What to say when governance refused an action.
+
+    `known` is `governance_manager.is_known(action)` - whether a rule was ever
+    WRITTEN for it. `get_tier` cannot answer that: it returns "BLOCK" both for an
+    action ruled high-risk and for one nobody has heard of, which is right for
+    the decision and wrong for the explanation.
+    """
+    name = action or "that"
+    if known:
+        return (f"That action is blocked by governance policy, {title}. "
+                f"'{name}' is classified as high-risk and cannot be executed.")
+    return (f"I don't have an action called '{name}', {title}, so I refused it "
+            f"rather than guessing at what you meant. Nothing was judged risky "
+            f"— there is simply no such capability.")
