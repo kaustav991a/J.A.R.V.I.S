@@ -105,7 +105,7 @@ the other repo.
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **113 harnesses, 3943 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
+| Automatic suite | **114 harnesses, 3970 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -271,7 +271,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 | A5 workspace | 5 | machine | ✅ 4, `4.3` owed — cause found and fixed 2026-08-29 (F-69: the refusal was right, the three layers above it were not); needs its live re-run |
 | A7 governance | 5 | machine | ✅ 5 via the text door |
 | A9/A10 memory | 6 + K | machine / **his recovery code** | ✅ 9.1, 9.2, 9.6, K1, K5b · K2–K5 need him with the code in reach |
-| A11 information | 9 | machine + live tokens | ✅ **all 9 PASS, 2026-08-29** — driven through the text door, `10.3` verified on the HUD in a browser, `10.9` through its real `wake up` trigger. Three 🔴 found doing it: F-74, F-74b, F-75 |
+| A11 information | 9 | machine + live tokens | ✅ **all 9 VERIFIED AGAINST THEIR SOURCES, 2026-08-29** — `tools/verify_a11.py`, three consecutive clean runs: *9 verified, 0 need a person, 0 failed*. Six 🔴/🟠 found doing it: F-74, F-74b, F-75, F-77, F-78, F-79 |
 | A16 login | 6 | mic + face | ✅ `17.6` 🛑, `17.8` · rest need him |
 | A21 camera | 12 | phone camera | ✅ `21.1`, `21.2`, `21.9`-half |
 | A22 agentic | 24 | machine + TV | ✅ 7 · **8 blocked by F-59** · TV/phone rows owed |
@@ -287,102 +287,86 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 
 ---
 
-## 4.5 · Goal 1 — CLOSED, 2026-08-29, and what it cost
+## 4.5 · Goal 1 — CLOSED, and how it was actually closed
 
-**"He never claims what he did not do" is done: `1.1` and `1.2` sealed, and all
-nine `A11` rows pass.** Closing it is worth reading, because the goal was not
-closed by ticking rows — it was closed by *running* them, and running them found
-**three 🔴 fabrications that nobody knew were there.**
+**"He never claims what he did not do" is done.** `1.1` and `1.2` were sealed;
+all nine `A11` rows now pass **against their sources**, three runs in a row.
 
-### What running the goal's own rows found
+### It was declared done twice before it was, and that is the story
 
-| Found | What it was | Harness |
-|---|---|---|
-| **F-71** 🔴 | An expired Google token launched a browser OAuth flow **inside an HTTP handler, on the event loop**. The whole desk API hung — `/docs` at ninety seconds, process idle at 0% CPU, log silent. `py-spy dump` found it | `test_google_auth_door.py` 27 |
-| **F-72** 🟠 | Gemini slow rather than down: four key rotations on **every leg of every turn**. "What's on my calendar today?" took **409 s** with Groq answering in two | `test_cloud_breaker.py` 16 |
-| **row 10.4** | Asked to *go to python.org*, he searched instead and reported the result as though he had gone | `test_answer_provenance.py` 50 |
-| **F-74** 🔴 | **He invented an appointment** — *"your next scheduled match is at 7 PM"* against an empty calendar, 62 facts with no match in them, and no commute data on this machine. Then *"your coding marathon until 4 AM remains on the agenda"*, also from nothing | `test_schedule_claims.py` 58 |
-| **F-74b** 🟠 | A refusal said an unknown action was *"classified as high-risk"*. It is not classified at all — and `check()` had already said so in a reason all three doors discarded | ↑ |
-| **F-75** 🔴 | The `wake up` briefing **quoted a headline with a publisher attached** — TechCrunch, then Reuters, then Google News — while the news lookup was returning **zero results without raising** | ↑ |
+Twice I read the desk's sentences, found them well-formed, and called the goal
+finished. Twice he asked whether the completed rows needed re-checking. **Both
+times the numbers did not survive being checked** — which is the goal's own
+failure, committed in the verification of the goal.
 
-Suite **112 harnesses, 3926 checks**. Every guard negative-tested.
+What closed it was not more reading. It was `tools/verify_a11.py`: it drives all
+nine rows, reads what the desk actually **said** out of the log, then goes to
+Gmail, Calendar and Fit **itself, in the same minute**, and compares the figures.
 
-### The nine rows, and how each was proved
+```
+9 verified, 0 need a person, 0 FAILED        (three consecutive runs)
+```
 
-| Row | Verdict | Evidence |
-|---|---|---|
-| 10.1 search | ✅ | synthesised, not a dump — Artemis II's April 2026 splashdown |
-| 10.2 what is X | ✅ | Kuiper Belt, correct and brief |
-| 10.3 picture | ✅ | **seen rendering.** The HUD was opened in a browser and the Eiffel Tower drew in the SATELLITE DATA LINK panel, captioned — `naturalWidth 1056 × 1600`, screenshot on file |
-| 10.4 go to a site | ✅ | *"I didn't open python.org itself, Sir — what follows is from a web search"*, said **before** the answer |
-| 10.5 unread mail | ✅ | four real senders, verifiably his — the NVIDIA account mails from that same afternoon |
-| 10.6 send mail | ✅ | parked at CONFIRM, read back verbatim, **nothing sent** |
-| 10.7 calendar | ✅ | real read, genuinely empty day, no invented entries |
-| 10.8 vitals | ✅ **on the second attempt — the first was wrong** | It was passed at 14:00 as an "honest empty", and it was not empty: **F-76**, a UTC-midnight window discarding 00:00–05:30 local, where all 64 of his steps and 277.1 kcal were. Now live: *"64 steps and 277.1 kcal burned, Sir."* |
-| 10.9 briefing | ✅ | **through `wake up`, not "good morning"** — the row wants a Fit + Calendar + Gmail aggregate and that is what the comprehensive briefing produces: *"Your calendar holds no appointments… You have 201 unread emails… the health integration…"*. All three verified independently |
+### What running it found — nine rows, six findings
 
-### The residuals, named rather than buried
+| Found | What it was |
+|---|---|
+| **F-71** 🔴 | An expired Google token launched a browser OAuth flow **inside an HTTP handler, on the event loop**. The whole desk API hung: `/docs` at ninety seconds, process idle at 0% CPU, log silent. `py-spy dump` found it |
+| **F-72** 🟠 | Gemini slow rather than down: four key rotations on **every leg of every turn**. "What's on my calendar today?" took **409 s** with Groq answering in two |
+| **F-74 / F-74b** 🔴 | **He invented an appointment** — *"your next scheduled match is at 7 PM"* against an empty calendar, 62 facts with no match in them, and no commute data on this machine. And a refusal that said an unknown action was *"classified as high-risk"* when it is not classified at all |
+| **F-75** 🔴 | The briefing **quoted a headline with a publisher attached** while the news lookup was returning **zero results without raising** |
+| **F-76** 🔴 | *"No health data recorded today"* — while Fit held **64 steps and 277.1 kcal**. A UTC-midnight window discarding 00:00–05:30 local, which is exactly where his day's activity is |
+| **F-77** 🔴 | *"201 unread emails"* for a mailbox holding **66,373**. The count came from `resultSizeEstimate`, which tracks the **page size** — 201 at maxResults 100, 501 at maxResults 500 |
+| **F-78** 🟠 | The **byline the lookup never gave** — TechCrunch, Reuters, Google News, Reuters again, attached to a bare title across four briefings |
+| **F-79** 🔴 | An **empty 200 ended the cascade**. OpenRouter and the new NVIDIA backstop were never tried, and no `FATAL` was logged. `_call_ollama` has raised on this since G5.7 — fixed in one leg of five |
 
-* **The F-74 guard has never been observed firing live.** It is harness-proven and
-  negative-tested (7 checks fail without it), and the fabrication has not recurred
-  in ~20 attempts since — but every restart clears the working memory that seeded
-  the loop, so that is *the defect not recurring*, not *the guard catching it*.
-  F-75's fix, by contrast, **was** proved deterministically: lookup forced empty,
-  3 of 3 briefings clean.
-* **All nine rows went through the TEXT door.** The standing rule in this document
-  still applies — every `PASS-SUB` owes its own door, and **the microphone has
-  never been used by any row in this batch.** That is `A3 voice`'s fourteen rows,
-  and it belongs to a different goal.
-* **A paraphrase residual in the briefing**: with a real headline behind it, the
-  wording is free — a genuine *"Latest News: Today's big news headlines"* became
-  *"Google News highlights a fresh breakthrough"*. Sourced, so not a fabrication,
-  and not worth a guard that would flatten the persona.
+**Five of the eight are one shape**: a source that fails, under-reports or
+returns nothing *quietly*, and a layer above it that describes the result anyway.
 
-### Going back over it, an hour later, found one more
+### The nine rows, and what each was checked against
 
-**He asked whether the completed rows needed re-checking. They did.** Row `10.8`
-was re-opened within the hour and **F-76** came out of it: the vitals answer was a
-correct-looking sentence produced by broken arithmetic, and because the sentence
-was the thing being read, it passed. It would have gone on passing indefinitely.
+| Row | Verified by |
+|---|---|
+| 10.1 | a real `tavily_search` ran, and the answer claims nothing it did not do |
+| 10.2 | answered from its own knowledge and **claimed no lookup** — honest. (The row's wording expects a search; that is tier 2's question) |
+| 10.3 | the URL it handed the HUD was **fetched and is a real `image/jpeg`** — and the picture was watched rendering in a browser, `naturalWidth 1056×1600` |
+| 10.4 | the **actions**, not the words: either `web_browse` ran, or it said *"I didn't open python.org itself"* first. Both observed, on different runs |
+| 10.5 | **66,375** quoted, `labels().get("INBOX").messagesUnread` agrees |
+| 10.6 | **end to end, with his go-ahead**: cancel → *"Action cancelled"*, nothing sent; confirm → a real message in the **Sent folder** (`1a04d73847fbc56e`) and *"Email sent to kaustav.wlh@gmail.com…"*. The claim and the mailbox agree |
+| 10.7 | `get_today_events_structured()` really is empty, and it said so |
+| 10.8 | **64 steps** quoted, Fit agrees |
+| 10.9 | through `wake up`, the real trigger: Fit + Calendar + Gmail all present, and the figures match their sources |
 
-Two things that follow, and they govern every other ✅ on this board:
+### What is honestly still outstanding
 
-1. **A pass is a snapshot, not a guarantee.** Row `10.9` genuinely passed on
-   2026-08-22 with a real Fit aggregate — *"1,068 steps, 962.5 kcal, 100 active
-   minutes"*. By today the news lookup underneath it had begun returning nothing
-   and the row failed (**F-75**). No code changed. The world did.
-2. **A row whose evidence is a SENTENCE needs its numbers checked against the
-   source.** That is the entire difference between how `10.8` was passed at 14:00
-   and how it was passed at 15:30.
+* **The F-74 schedule guard has never been observed firing live.** Harness-proven
+  and negative-tested; the fabrication has not recurred in ~30 turns since. That
+  is *the defect not recurring*, which is not the same claim. F-75's, F-77's and
+  F-79's fixes **were** each proved live or deterministically.
+* **All nine rows went through the TEXT door.** The microphone has never been
+  used by any row in this batch — that is `A3 voice`, under a different goal.
+* **A pass is a snapshot.** Row `10.9` genuinely passed on 2026-08-22 and failed
+  today because a lookup underneath it had started returning nothing. No code
+  changed; the world did. **The verifier is the answer to that** — re-taking the
+  snapshot is now one command, and the bounded re-audit list below says where
+  else to point it.
 
 ### The re-audit this earns, and what it is bounded to
 
-Not "re-run everything". The risk is concentrated and nameable: **every row whose
-pass depends on an external source that can fail or under-report without
-raising.** Today produced four instances of that one shape — a revoked token
-(F-71), a rate-limited image search, an empty news lookup (F-75), and a window
-that silently dropped five and a half hours (F-76).
+Not "re-run everything". The risk is concentrated in **rows whose pass depends on
+an external source that can fail or under-report without raising**:
 
 | To re-check | Why it is on this list |
 |---|---|
-| `A11` rows that quote a **figure** | `10.5` says "201 unread" and `10.8` said "no data" — one was right, one was arithmetic. Check the number against the API, not the sentence |
-| `A9/A10` memory rows | their evidence is recall working; a quiet store failure reads as "you never told me that", which the gate marks 🛑 at `K3` |
-| `A13` vision, `A21` camera | `12.1` already failed this way once (F-61 — it invented two of four claims). Both depend on a camera that can be present but wrong |
-| `A22` agentic rows passed **before** the tool preload | the shelf changed underneath them; a row that passed with five file tools in front of it is not evidence about today's router |
-| anything ✅ from a session where the **provider mix differed** | Gemini is a 20/day burst resource now and NVIDIA NIM is a new leg — neither was true when the earliest rows were ticked |
+| `A11` rows quoting a **figure** | two of them were wrong today, and both read perfectly |
+| `A9/A10` memory rows | a quiet store failure reads as "you never told me that", which the gate marks 🛑 at `K3` |
+| `A13` vision, `A21` camera | `12.1` already failed this way (F-61 — it invented two of four claims) |
+| `A22` agentic rows passed **before** the tool preload | the shelf changed underneath them |
+| anything ✅ from a session with a different **provider mix** | Gemini is a 20/day burst resource now; NVIDIA NIM is a new leg |
 
 **Not on the list, deliberately:** rows whose evidence is a refusal, a governance
-verdict or a harness assertion. Those do not rot, because nothing outside the
-repository can change them.
-
-### The lesson this goal paid for twice
-
-**Three of the six findings were the same shape**: a source that failed *quietly*
-— a revoked token, a rate-limited image search, a news lookup returning an empty
-list without raising — and a layer above it that described the result anyway. The
-briefing had been guarded against that since F-09 for email, calendar and vitals.
-News was simply never added to the list, and conversation was never guarded at
-all.
+verdict or a harness assertion. Those cannot rot — nothing outside the repository
+can change them.
 
 ---
 
