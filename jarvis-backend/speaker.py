@@ -171,6 +171,16 @@ async def speak_text(text):
     # callers guard their own text, but every spoken line in the process funnels
     # through here, so this is the one place that cannot be bypassed by a new
     # caller. See modules/reasoning_guard.py.
+    # `guard_spoken` returns its own spoken admission when an answer is
+    # entirely reasoning ("I lost the thread of that one, Sir…"), so a non-empty
+    # answer never arrives here empty. An empty one means the CALLER meant
+    # silence - a status frame with no message, a keepalive - and narrating that
+    # would put a sentence where the code deliberately put none.
+    #
+    # A guard was briefly added here for the row 10.9 silence and removed the
+    # same hour: it could not fire, and a guard that cannot fire is the claim
+    # this goal exists to stop. The real silence was upstream, in the callers
+    # that blank their own text with `fallback=""` - see `answer_or_admission`.
     text = reasoning_guard.guard_spoken(text)
     if not text:
         return

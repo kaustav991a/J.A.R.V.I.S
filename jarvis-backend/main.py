@@ -33,6 +33,7 @@ load_dotenv(override=True)
 import speaker 
 import memory 
 import threading
+from modules.answer_provenance import answer_or_admission
 from brain import (
     process_command,
     synthesize_info,
@@ -2213,6 +2214,20 @@ async def run_remote_command(command_text: str, channel) -> None:
         # ── Synthesise all data-producing results into one clean message ──────
         if batched_data:
             combined_raw = "\n---\n".join(f"[{at}]: {d}" for at, d in batched_data)
+            # Goal 1, row 10.4 - the same gate as the desk path. THREE doors build
+            # an answer out of batched results, and a guard on one of them is a
+            # guard on the door somebody happened to be watching. This one has no
+            # stream to get ahead of, so the note is simply said first.
+            try:
+                from modules.answer_provenance import provenance_note
+                _prov = provenance_note(
+                    command_text, [a.get("action_type") for a in actions])
+            except Exception as _e:  # noqa: BLE001
+                _prov = None
+                print(f"[PROVENANCE] check failed: {_e}", flush=True)
+            if _prov:
+                print(f"[PROVENANCE] {_prov}", flush=True)
+                await channel.reply(_prov)
             try:
                 final_answer = await asyncio.to_thread(
                     synthesize_info, command_text, combined_raw, user
@@ -2221,11 +2236,20 @@ async def run_remote_command(command_text: str, channel) -> None:
                 print(f"[REMOTE] Synthesis fault: {e}", flush=True)
                 final_answer = combined_raw
             if final_answer and final_answer.strip():
-                await channel.reply(final_answer)
+                await channel.reply(answer_or_admission(final_answer))
                 replied = True
 
         if not replied:
-            await channel.reply(f"Done, {honor}.")
+            # "Done, Sir." for a turn in which NOTHING RAN is the purest form of
+            # the habit this project ranks first - and the router's own comment
+            # already warned about this exact sentence ("narrated as 'Done, Sir'
+            # - a silent..."). With actions behind it, it is a fair summary of
+            # work that produced no text. With an empty action list, it is a
+            # report of work that never happened.
+            if actions:
+                await channel.reply(f"Done, {honor}.")
+            else:
+                await channel.reply(answer_or_admission(_parsed.preamble))
 
     except Exception as e:
         print(f"[REMOTE] Execution fault: {e}", flush=True)
@@ -2762,6 +2786,20 @@ async def backdoor_command(req: BackdoorRequest):
                     _parsed.actions, command_text
                 )
 
+                # Row 10.9: an ACTION answer with no actions in it is not an
+                # answer. `clean_response` has just been blanked as leftover JSON,
+                # the loop below runs zero times, `batched_data` stays empty and
+                # the turn ends at HTTP 200 having said nothing at all. Measured on
+                # "good morning": payload composed, 200 OK, no spoken line, no
+                # frame. Silence is indistinguishable from a desk that never heard
+                # him, and he has no way to tell the two apart from where he sits.
+                if not actions:
+                    _said = answer_or_admission(_parsed.preamble)
+                    print(f"[MAIN] empty action list — answering rather than "
+                          f"going quiet: {_said[:60]}", flush=True)
+                    await safe_send_all({"status": "speaking", "message": _said})
+                    asyncio.create_task(speaker.speak_text(_said))
+
                 if _parsed.preamble:
                     print(
                         f"[MAIN] Silence protocol: dropped JSON-adjacent preamble "
@@ -3003,6 +3041,23 @@ async def backdoor_command(req: BackdoorRequest):
                 # --- SYNTHESIZE ALL BATCHED DATA (STREAMING) ---
                 if batched_data:
                     combined_raw = "\n---\n".join(f"[{at}]: {str(d)}" for at, d in batched_data)
+                    # Goal 1, gate row 10.4: he was asked to go to a site, searched
+                    # instead, and reported the result as though the instruction had
+                    # been carried out. Said BEFORE the stream and in the desk's own
+                    # voice, because the synthesis speaks each sentence as it
+                    # arrives - a rule in the prompt would be a request to a model
+                    # that is already talking.
+                    try:
+                        from modules.answer_provenance import provenance_note
+                        _prov = provenance_note(
+                            command_text, [a.get("action_type") for a in actions])
+                    except Exception as _e:  # noqa: BLE001
+                        _prov = None
+                        print(f"[PROVENANCE] check failed: {_e}", flush=True)
+                    if _prov:
+                        print(f"[PROVENANCE] {_prov}", flush=True)
+                        await safe_send_all({"status": "speaking", "message": _prov})
+                        await speaker.speak_text(_prov)
                     # Phase 8.7: read sass_index from the most recent classify_intent() call
                     _sass = get_last_sass_index()
                     # _stream_synthesize_speak now sends UI updates per-sentence BEFORE TTS,
@@ -3016,14 +3071,21 @@ async def backdoor_command(req: BackdoorRequest):
                     # For non-web, a final authoritative send ensures the complete text is
                     # committed even if a per-sentence send was dropped.
                     if not has_web_search:
-                        await safe_send_all({"status": "complete", "result": final_answer})
+                        await safe_send_all({"status": "complete",
+                                             "result": answer_or_admission(final_answer)})
 
             except json.JSONDecodeError:
-                await safe_send_all({"status": "speaking", "message": clean_response})
-                asyncio.create_task(speaker.speak_text(clean_response))
+                # Row 10.9: an empty answer used to be total silence - `speak_text`
+                # returns without a sound for empty text, by design - so a model
+                # that produced nothing was indistinguishable from a desk that
+                # never heard him.
+                _said = answer_or_admission(clean_response)
+                await safe_send_all({"status": "speaking", "message": _said})
+                asyncio.create_task(speaker.speak_text(_said))
         else:
-            await safe_send_all({"status": "speaking", "message": clean_response})
-            asyncio.create_task(speaker.speak_text(clean_response))
+            _said = answer_or_admission(clean_response)
+            await safe_send_all({"status": "speaking", "message": _said})
+            asyncio.create_task(speaker.speak_text(_said))
     except Exception as e:
         print(f"[ERROR] EXECUTION FAULT: {e}", flush=True)
         import traceback
@@ -3983,6 +4045,16 @@ async def websocket_endpoint(websocket: WebSocket):
                                             _parsed.actions, command_text
                                         )
 
+                                        # Row 10.9, same guard, second door.
+                                        if not actions:
+                                            _said = answer_or_admission(_parsed.preamble)
+                                            print(f"[MAIN] empty action list — "
+                                                  f"answering rather than going "
+                                                  f"quiet: {_said[:60]}", flush=True)
+                                            await safe_send({"status": "speaking",
+                                                             "message": _said})
+                                            asyncio.create_task(speaker.speak_text(_said))
+
                                         if _parsed.preamble:
                                             print(
                                                 f"[MAIN] Silence protocol: dropped JSON-adjacent preamble "
@@ -4204,6 +4276,20 @@ async def websocket_endpoint(websocket: WebSocket):
                                         # --- SYNTHESIZE ALL BATCHED DATA (STREAMING) ---
                                         if batched_data:
                                             combined_raw = "\n---\n".join(f"[{at}]: {str(d)}" for at, d in batched_data)
+                                            # Goal 1, row 10.4 - the same gate, on
+                                            # the third door, before the stream.
+                                            try:
+                                                from modules.answer_provenance import provenance_note
+                                                _prov = provenance_note(
+                                                    command_text,
+                                                    [a.get("action_type") for a in actions])
+                                            except Exception as _e:  # noqa: BLE001
+                                                _prov = None
+                                                print(f"[PROVENANCE] check failed: {_e}", flush=True)
+                                            if _prov:
+                                                print(f"[PROVENANCE] {_prov}", flush=True)
+                                                await safe_send({"status": "speaking", "message": _prov})
+                                                await speaker.speak_text(_prov)
                                             # Phase 8.7: read sass_index from the most recent classify_intent() call
                                             _sass = get_last_sass_index()
                                             final_answer = await _stream_synthesize_speak(
@@ -4213,11 +4299,14 @@ async def websocket_endpoint(websocket: WebSocket):
                                             if not has_web_search:
                                                 await safe_send({"status": "complete", "result": final_answer})
                                     except json.JSONDecodeError:
-                                        await safe_send({"status": "speaking", "message": clean_response})
-                                        asyncio.create_task(speaker.speak_text(clean_response))
+                                        # Row 10.9, same guard, second door.
+                                        _said = answer_or_admission(clean_response)
+                                        await safe_send({"status": "speaking", "message": _said})
+                                        asyncio.create_task(speaker.speak_text(_said))
                                 else:
-                                    await safe_send({"status": "speaking", "message": clean_response})
-                                    asyncio.create_task(speaker.speak_text(clean_response))
+                                    _said = answer_or_admission(clean_response)
+                                    await safe_send({"status": "speaking", "message": _said})
+                                    asyncio.create_task(speaker.speak_text(_said))
                                 
                                 # --- Phase 4: Log assistant response to episodic memory (skip JSON actions) ---
                                 if not json_match:

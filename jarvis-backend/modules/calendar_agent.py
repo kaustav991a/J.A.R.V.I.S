@@ -18,7 +18,8 @@ import datetime
 import re
 from typing import Optional
 from googleapiclient.discovery import build
-from modules.google_auth import get_google_credentials, is_google_configured
+from modules.google_auth import (get_google_credentials, is_google_configured,
+                                 needs_reauth, unauthorised_reply)
 
 # IST offset (UTC+5:30)
 _IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
@@ -85,6 +86,12 @@ class CalendarAgent:
         """TTS-ready summary of today's events (IST day boundaries)."""
         service = _get_service()
         if not service:
+            # "not configured yet" was the only sentence here, and with a REVOKED
+            # token it is false in the direction that matters: it reads as a
+            # feature never set up, so nothing gets re-authorised and every day
+            # after this one is answered the same way.
+            if needs_reauth():
+                return unauthorised_reply("your calendar")
             return "Calendar integration is not configured yet, Sir."
         try:
             time_min, time_max = _ist_day_bounds()

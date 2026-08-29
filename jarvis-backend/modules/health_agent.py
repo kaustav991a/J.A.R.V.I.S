@@ -16,7 +16,8 @@ Changes from Phase 6:
 import datetime
 from typing import Optional
 from googleapiclient.discovery import build
-from modules.google_auth import get_google_credentials, is_google_configured
+from modules.google_auth import (get_google_credentials, is_google_configured,
+                                 needs_reauth, unauthorised_reply)
 
 # Required OAuth scope for Google Fitness data
 _FITNESS_SCOPE = "https://www.googleapis.com/auth/fitness.activity.read"
@@ -153,6 +154,8 @@ class HealthAgent:
             err = data.get("error", "")
             if err:
                 print(f"[HEALTH] summary_string error detail: {err}", flush=True)
+            if needs_reauth():
+                return unauthorised_reply("your vitals")
             return "The health module is offline or not configured, Sir."
 
         steps = data["steps"]
@@ -171,6 +174,10 @@ class HealthAgent:
             parts.append(f"{mins} active minutes")
 
         if not parts:
+            # This one IS an honest empty: the service answered, and it had
+            # nothing. Left as it is deliberately - the sentence above is for
+            # when nobody answered at all, and collapsing the two would undo the
+            # distinction this change exists to make.
             return "No health data has been recorded yet today, Sir."
 
         sentence = ", ".join(parts[:-1])

@@ -36,6 +36,8 @@ from googleapiclient.discovery import build
 from modules.google_auth import (
     get_google_credentials,
     is_google_configured,
+    needs_reauth,
+    unauthorised_reply,
     _CLIENT_SECRET_FILE,
     _TOKEN_FILE,
     _CREDENTIALS_PRESENT,
@@ -319,6 +321,12 @@ class GmailAgent:
             return _NOT_CONFIGURED_MSG
         svc = _build_service()
         if svc is None:
+            if needs_reauth():
+                # This sentence was already honest about the cause - it is the
+                # only one of the three that was - and it still left him to guess
+                # what "re-run the authorisation flow" means. One wording, in one
+                # place, naming the script.
+                return unauthorised_reply("your inbox")
             return (
                 "Gmail is configured but the OAuth token is invalid or expired, Sir. "
                 "Please re-run the authorisation flow."
@@ -359,6 +367,10 @@ class GmailAgent:
         limit = max(1, min(limit, 20))
         service = _build_service()
         if not service:
+            # "temporarily" is a claim about the future, and an expired refresh
+            # token is not temporary - it is over until he re-authorises.
+            if needs_reauth():
+                return unauthorised_reply("your inbox")
             return "Gmail service is temporarily unavailable, Sir."
 
         try:

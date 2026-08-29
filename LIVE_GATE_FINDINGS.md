@@ -2809,3 +2809,82 @@ count is only observable from `/health`, and no harness can reach a deployed ser
 That is not a gap to close with a test — it is the reason the standing habit for
 these sessions is worth its cost: **read `/health` after every deploy.** This finding
 took one HTTP GET.
+
+---
+
+## F-71 🔴 · An expired Google token stopped the desk being a desk
+
+**Found on 2026-08-29, while trying to run the A11 rows** that goal 1 ("He never
+claims what he did not do") is measured by. The desk was launched, `Application
+startup complete` appeared in the log, and then **every HTTP request timed out**.
+Ninety seconds for `/docs`. The process was alive, listening on 8000, accepting
+TCP — and idle at 0% CPU, which is the detail that makes this hard to read: it
+was not busy, it was waiting.
+
+`py-spy dump` on the running process, which is what found it:
+
+```
+Thread (idle): "MainThread"
+    _select (selectors.py:305)
+    handle_request (socketserver.py:297)
+    run_local_server (google_auth_oauthlib\flow.py:459)
+    get_google_credentials (modules\google_auth.py:161)
+    is_health_available (modules\health_agent.py:192)
+    health_summary (main.py:1487)
+    ... run_asgi ... run_forever
+```
+
+One routine `GET /api/health/summary` reached `is_health_available()`, which
+called `get_google_credentials()`, which found the stored token dead
+(`invalid_grant: Token has been expired or revoked`) and **launched a browser
+OAuth flow — a blocking `socketserver.handle_request()` waiting for a redirect,
+on the event loop, inside the request handler.** Nobody was going to complete it.
+Every other route died with it: the HUD, the phone, the bridge, everything.
+
+**Nothing in the log said so.** The last line was a camera retry.
+
+### The second half, and the one that belongs to goal 1
+
+With no credentials, the agents' own sentences were:
+
+| | Said | Why it is wrong |
+|---|---|---|
+| calendar | "Calendar integration is not configured yet, Sir." | It IS configured. This reads as a feature never set up, so nothing gets re-authorised and every day after is answered the same way |
+| gmail | "Gmail service is temporarily unavailable, Sir." | "Temporarily" is a claim about the future. An expired refresh token is not temporary |
+| health | "The health module is offline or not configured, Sir." | Same shape |
+
+And one step further down that road is the failure the gate itself marks 🛑 STOP
+at row `K3`: **an empty read reported as an empty day.** "Your calendar is clear
+today" and "I could not read your calendar" are different sentences, and only one
+of them is true when a token has expired.
+
+### FIXED
+
+* `get_google_credentials(interactive=False)` — the browser flow is **unreachable
+  from any request, loop or answer**. A dead token returns None, loudly, naming
+  the fix. Re-authorising is a deliberate act at a keyboard: the new
+  `tools/google_reauth.py`, which is the only caller that passes `interactive=True`
+  and is pinned as such by the harness.
+* Even there the flow carries `timeout_seconds=300`, passed defensively: "waits
+  forever" is a hang wherever it runs.
+* `needs_reauth()` and one shared `unauthorised_reply()`, used by all three
+  agents: *"I can't read your calendar, Sir — my Google authorisation has expired.
+  That is a gap in what I can see, not an empty result. Re-authorise with
+  tools/google_reauth.py and I'll have it back."* Gmail's own sentence was the
+  only one already honest about the cause, and it still left him to guess what
+  "re-run the authorisation flow" meant.
+* **The honest empty is left alone.** "No health data has been recorded yet
+  today" still means the service answered and had nothing — collapsing the two
+  would have replaced one wrong sentence with another.
+
+Harness `test_google_auth_door.py`, **27 checks**, offline: the flow object is
+replaced with one that fails the test by being called at all.
+
+### What it cost, and what it says about the habit
+
+The desk had been up for twenty-five minutes answering nothing, and the only
+outward sign was that requests hung. **This is the fourth consecutive session
+where capturing stdout to a file is what produced a finding** — and the first
+where the log alone was not enough. `py-spy dump --pid` on a live desk belongs in
+the same habit: a process that is idle and unresponsive has already told you it
+is blocked on something synchronous, and the stack names it in one line.

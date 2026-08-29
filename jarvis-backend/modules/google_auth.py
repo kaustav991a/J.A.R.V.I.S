@@ -110,7 +110,37 @@ def is_google_configured() -> bool:
         return False
 
 
-def get_google_credentials() -> Credentials | None:
+# Set the moment a token is found dead with no way to refresh it, so every
+# surface can say the true thing — "Google needs re-authorising" — instead of
+# reporting an empty calendar or no vitals, which is the same sentence a genuinely
+# free day produces.
+_needs_reauth = False
+
+
+def needs_reauth() -> bool:
+    """True when a lookup failed for want of authorisation, not for want of data."""
+    return _needs_reauth
+
+
+def unauthorised_reply(what: str) -> str:
+    """What to say when Google is unauthorised, rather than answering emptily.
+
+    The distinction this exists to keep is the whole of habit 1: **"your calendar
+    is clear today" and "I could not read your calendar" are different
+    sentences**, and only one of them is true when a token has expired. An empty
+    read reported as an empty day is a claim about the world made from an absence
+    of information - the same shape as K3's "you never told me that" after a
+    locked key store, which the gate marks 🛑 STOP.
+
+    Also names the fix, because he is the only one who can apply it and a
+    sentence that leaves him guessing costs another day of empty answers.
+    """
+    return (f"I can't read {what}, Sir — my Google authorisation has expired. "
+            f"That is a gap in what I can see, not an empty result. "
+            f"Re-authorise with tools/google_reauth.py and I'll have it back.")
+
+
+def get_google_credentials(interactive: bool = False) -> Credentials | None:
     """
     Return valid Google OAuth2 credentials, or None on any failure.
     Never raises — all exceptions produce a console warning and None return.
@@ -118,9 +148,25 @@ def get_google_credentials() -> Credentials | None:
     Flow:
       1. Load existing token.json  → validate → return if valid.
       2. If expired + has refresh_token → refresh → save → return.
-      3. If no valid token but client_secret.json present → run browser OAuth flow.
+      3. If still invalid: **None**, unless `interactive=True`.
       4. If no client_secret.json at all → return None (pre-flight check failed).
+
+    **`interactive` defaults to False, and that default is load-bearing.**
+    Measured on 2026-08-29, on the desk, with an `invalid_grant: Token has been
+    expired or revoked`: one `GET /api/health/summary` reached
+    `is_health_available()`, which reached this function, which called
+    `flow.run_local_server()` — a blocking `socketserver.handle_request()` waiting
+    for a browser redirect **on the event loop, inside the request handler**. The
+    whole desk API stopped answering. Not the health route: everything. `/docs`,
+    the HUD, the phone, ninety seconds each and no reply, with `Application
+    startup complete` in the log and the process idle at 0% CPU. A `py-spy dump`
+    is what found it, and nothing in the log ever said what had happened.
+
+    An expired token is an ordinary event. It must degrade to "I cannot reach
+    your calendar", never to a server that has silently stopped being a server.
+    Re-authorising is a deliberate act at a real keyboard: `tools/google_reauth.py`.
     """
+    global _needs_reauth
     if not _CREDENTIALS_PRESENT:
         print(
             "[GOOGLE AUTH] No credential file found. Place credentials.json in the "
@@ -148,24 +194,51 @@ def get_google_credentials() -> Credentials | None:
                     _save_token(creds)
                     print("[GOOGLE AUTH] Token refreshed successfully.")
                 except Exception as exc:
+                    # `invalid_grant` is the ordinary end of a refresh token's
+                    # life (revoked, or 6 months unused on a test-mode project).
+                    # It is not a transient error and retrying will not fix it.
                     print(f"[GOOGLE AUTH] Token refresh failed: {exc}")
                     creds = None
 
-    # ── Step 3: full OAuth flow if still no valid creds ───────────────────────
+    # ── Step 3: no valid creds ────────────────────────────────────────────────
     if not creds or not creds.valid:
+        if not interactive:
+            _needs_reauth = True
+            # Loud, and it names the fix. A silent None here is how "no events
+            # today" came to mean two different things.
+            print("[GOOGLE AUTH] ⛔ No valid token and no refresh — Google is "
+                  "UNAUTHORISED. Calendar, Gmail and Fitness will report that "
+                  "they cannot reach Google rather than answering emptily. "
+                  "Re-authorise at a real keyboard: "
+                  "venv\\Scripts\\python.exe tools\\google_reauth.py", flush=True)
+            return None
         print("[GOOGLE AUTH] No valid token — launching browser OAuth flow...")
         try:
             flow = InstalledAppFlow.from_client_secrets_file(
                 str(_CLIENT_SECRET_FILE), SCOPES
             )
-            creds = flow.run_local_server(port=0, open_browser=True)
+            # A timeout even here. `run_local_server` blocks forever by default,
+            # and "forever" on a machine nobody is sitting at is a hang rather
+            # than a prompt. Passed defensively: older google-auth-oauthlib does
+            # not take the argument, and losing the timeout is better than losing
+            # the ability to re-authorise at all.
+            try:
+                creds = flow.run_local_server(port=0, open_browser=True,
+                                              timeout_seconds=300)
+            except TypeError:
+                creds = flow.run_local_server(port=0, open_browser=True)
             _save_token(creds)
+            _needs_reauth = False
             print("[GOOGLE AUTH] Authorisation successful. Token saved.")
         except Exception as exc:
             print(f"[GOOGLE AUTH] OAuth flow failed: {exc}")
             return None
 
-    return creds if (creds and creds.valid) else None
+    if creds and creds.valid:
+        _needs_reauth = False
+        return creds
+    _needs_reauth = True
+    return None
 
 
 def _save_token(creds: Credentials) -> None:
