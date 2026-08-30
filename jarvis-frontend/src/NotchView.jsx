@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import Visualizer from './components/Visualizer';
 import TypewriterText from './components/TypewriterText';
 import './NotchView.scss';
+import { WS_BASE } from './api';
 
 /**
  * NOTCH VIEW — rendered inside the tiny top-center Electron window.
@@ -13,7 +14,7 @@ export default function NotchView() {
   const socket = useRef(null);
 
   useEffect(() => {
-    socket.current = new WebSocket('ws://127.0.0.1:8000/ws');
+    socket.current = new WebSocket(`${WS_BASE}/ws`);
 
     socket.current.onopen = () => {
       setStatus('online');

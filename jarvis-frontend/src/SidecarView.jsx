@@ -4,6 +4,7 @@ import HealthWidget from './components/HealthWidget';
 import CalendarWidget from './components/CalendarWidget';
 import { MinimalHudClock } from './components/ClockWidget';
 import './SidecarView.scss';
+import { WS_BASE } from './api';
 
 // Task event types that trigger a refresh of the TaskHud.
 const TASK_EVENTS = [
@@ -21,7 +22,7 @@ export default function SidecarView() {
   const socket = useRef(null);
 
   useEffect(() => {
-    socket.current = new WebSocket('ws://127.0.0.1:8000/ws');
+    socket.current = new WebSocket(`${WS_BASE}/ws`);
 
     socket.current.onopen = () => setStatus('online');
 

@@ -1,31 +1,25 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { Activity, Heart, RefreshCw } from "lucide-react";
-import { API_BASE } from "../api";
+import { useSource } from "../useSource";
 
 const HealthWidget = () => {
-  const [data, setData] = useState({ configured: false, steps: 0, heart_rate: 0 });
-  const [loading, setLoading] = useState(false);
+  // One source, three states kept apart - see ../useSource.js. This widget
+  // used to render OFFLINE while the request was still in flight, and the
+  // vitals call takes about ten seconds because it reaches Google Fit.
+  const { data, phase, loading, refresh: fetchHealth } =
+    useSource("/api/health/summary", { initial: { configured: false, steps: 0, heart_rate: 0 } });
 
-  const fetchHealth = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/health/summary`);
-      if (res.ok) setData(await res.json());
-    } catch (e) { /* silent */ }
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    fetchHealth();
-    const timer = setInterval(fetchHealth, 60000);
-    return () => clearInterval(timer);
-  }, []);
-
-  if (!data.configured) {
+  if (phase !== "ready") {
+    // "Offline" is a claim about the source. Only say it when the source
+    // actually said so; while the request is in flight the honest word is
+    // that it is being fetched, and a failure names itself.
+    const label = phase === "loading" ? "VITALS\u2026"
+                : phase === "error" ? "VITALS UNREACHABLE"
+                : "VITALS OFFLINE";
     return (
       <div className="health-widget-offline">
         <Activity size={18} color="#555" />
-        <span>VITALS OFFLINE</span>
+        <span>{label}</span>
       </div>
     );
   }

@@ -294,6 +294,13 @@ def main() -> None:
     try:
         signal.signal(signal.SIGINT, _on_signal)
         signal.signal(signal.SIGTERM, _on_signal)
+        # SIGBREAK is Ctrl+Break, and on Windows it is a normal way to stop a
+        # console program. Without this the supervisor died on the default
+        # handler and left the uvicorn child RUNNING and unsupervised - a
+        # half-stopped system that looks stopped from the console it was stopped
+        # from. Same handler, because there is only one right answer to "stop".
+        if hasattr(signal, "SIGBREAK"):
+            signal.signal(signal.SIGBREAK, _on_signal)
     except Exception:
         pass
 

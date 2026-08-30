@@ -1,31 +1,25 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { Mail, MailOpen, RefreshCw } from "lucide-react";
-import { API_BASE } from "../api";
+import { useSource } from "../useSource";
 
 const EmailWidget = () => {
-  const [data, setData] = useState({ configured: false, unread: 0, previews: [] });
-  const [loading, setLoading] = useState(false);
+  // One source, three states kept apart - see ../useSource.js. This widget
+  // used to render OFFLINE while the request was still in flight, and the
+  // vitals call takes about ten seconds because it reaches Google Fit.
+  const { data, phase, loading, refresh: fetchEmails } =
+    useSource("/api/email/summary", { initial: { configured: false, unread: 0, previews: [] } });
 
-  const fetchEmails = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/email/summary`);
-      if (res.ok) setData(await res.json());
-    } catch (e) { /* silent */ }
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    fetchEmails();
-    const timer = setInterval(fetchEmails, 60000);
-    return () => clearInterval(timer);
-  }, []);
-
-  if (!data.configured) {
+  if (phase !== "ready") {
+    // "Offline" is a claim about the source. Only say it when the source
+    // actually said so; while the request is in flight the honest word is
+    // that it is being fetched, and a failure names itself.
+    const label = phase === "loading" ? "GMAIL\u2026"
+                : phase === "error" ? "GMAIL UNREACHABLE"
+                : "GMAIL OFFLINE";
     return (
       <div className="email-widget-offline">
         <Mail size={18} color="#555" />
-        <span>GMAIL OFFLINE</span>
+        <span>{label}</span>
       </div>
     );
   }

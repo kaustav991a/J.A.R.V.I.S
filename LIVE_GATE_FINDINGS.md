@@ -3381,3 +3381,128 @@ like the silence class this session has been fixing. It was not. **Twice today a
 row was misjudged by reading the log before the desk had finished speaking**,
 which is why `verify_a11.py` waits for the log to settle and reports *"no line
 captured — NOT proof of silence"* rather than "said nothing".
+
+---
+
+# Goal 2 — "He is up before you are, and stays up" · 2026-08-30
+
+Driven unattended while he was away from the desk: no speakers, no phone, no
+camera. That rules out `18.5` and nothing else in this goal, which is why it was
+the right one to take.
+
+## F-80 🟠 · Two views dialled the loopback directly, and they are the two that must not
+
+`src/api.js` exists to hold the backend origin in one place, and says so in its
+own first line: *"One place instead of hard-coded localhost:8000 / 127.0.0.1:8000
+scattered across the HUD + widgets. Override at build/run time with
+VITE_API_BASE."* Eight of the twelve call sites used it. Two did not:
+
+```
+src/NotchView.jsx:16    new WebSocket('ws://127.0.0.1:8000/ws')
+src/SidecarView.jsx:24  new WebSocket('ws://127.0.0.1:8000/ws')
+```
+
+**These are the two views meant for a second screen** — the Electron shell opens
+them as separate frameless windows — which is the one situation where the
+override is not optional. Set `VITE_API_BASE=192.168.1.5:8000`, open the sidecar
+on a tablet, and it dials `127.0.0.1`: the tablet's own machine, where nothing is
+listening. The failure is silent — a view that renders and never receives a frame.
+
+**FIXED**, and pinned by `test_frontend_api_base.py` (11 checks, negative-tested),
+which sweeps the whole source tree rather than those two files: the next
+component added is the risk, not the two that were caught.
+
+## F-81 🔴 · The HUD said a source was OFFLINE before it had asked
+
+Measured while driving `18.7`. The vitals panel read **VITALS OFFLINE** while the
+same URL, fetched from the same page seconds later, returned:
+
+```
+{"configured":true,"steps":799,"heart_rate":0,"calories":803.9,"active_mins":10}
+```
+
+Nothing was offline. `/api/health/summary` reaches Google Fit and takes about ten
+seconds; the widget's initial state was `{configured: false}`, and its render
+treats that as *the source is down*. The same eight lines appeared in **three**
+widgets, collapsing three different situations into one word:
+
+1. **not asked yet** — a claim made before any request left the browser;
+2. **the request failed** — the catch was `/* silent */`, so a network error and
+   a source answering "not configured" were indistinguishable;
+3. **genuinely unavailable** — the only one OFFLINE actually means.
+
+`loading` was tracked in all three widgets and used only to spin an icon, never
+to change the message.
+
+**This is goal 1's defect living in the HUD.** Two days were spent making sure the
+desk does not state what it does not know, and a panel three feet away was doing
+exactly that — to a reader who would reasonably have gone hunting for a broken
+Google token. **A screen is an assertion too.**
+
+**FIXED** in `src/useSource.js` — one hook, not three repairs, because three
+copies of eight lines is how it happened. Phases are `loading / error / ready /
+unconfigured`, and the labels differ: `VITALS…`, `VITALS UNREACHABLE`, `VITALS
+OFFLINE`. Pinned by `test_hud_source_states.py` (34 checks). Verified live: the
+sidecar now renders `BIOMETRICS` with real data and never claims offline.
+
+## F-82 🟠 · Ctrl+Break killed the supervisor and left the server running
+
+The watchdog handled `SIGINT` and `SIGTERM`. It did not handle `SIGBREAK`, which
+is what **Ctrl+Break** delivers and which is an ordinary way to stop a console
+program on Windows. The supervisor would die on the default handler with the
+uvicorn child still running and now unsupervised — a half-stopped system that
+looks stopped from the console it was stopped from.
+
+**FIXED**: the same handler answers `SIGBREAK`, because there is one right answer
+to "stop". Proved live driving row `1.5`.
+
+## Two test artifacts that were nearly filed as findings
+
+Worth recording, because both would have been defensible on the transcript and
+both were wrong.
+
+**Parking the Google token does not take a source offline.** `_get_service()`
+caches, so a desk that has already answered one question keeps a live credential
+after the file is gone. The first run of `18.1` produced this:
+
+```
+[GOOGLE AUTH] Google is UNAUTHORISED. Calendar, Gmail and Fitness will report
+              that they cannot reach Google rather than answering emptily.
+[JARVIS] You've logged a modest 799 steps, burned 803.9 kcal...
+[JARVIS] Your calendar is delightfully empty today...
+[JARVIS] Regrettably my Google token has expired, so I cannot fetch your inbox...
+```
+
+which reads exactly like two sources inventing data while a third stays honest.
+Checked against the sources: **799 steps, 803.9 kcal and an empty calendar were
+all true.** Gmail's service needed rebuilding and the other two did not. The desk
+was right; the test was wrong. `verify_a17.py` now restarts the child first, so
+the condition is cold: no process, no cache, no token.
+
+**A 27-second "event-loop stall" was a Google round-trip.** `18.2`'s first probe
+was `/api/health/summary`, which looks trivial and calls Google Fit. `/health` is
+genuinely cheap but is declared `def`, not `async def`, so FastAPI serves it from
+a threadpool and it answers *even when the loop is fully blocked* — useless for
+this row. The probe that measures the thing is a **WebSocket ping**, answered by
+the protocol machinery on the loop itself, which is also what feeds the HUD.
+Re-measured: **20 pings, worst 0.66 s.**
+
+## The rows
+
+| Row | Verdict | Checked against |
+|---|---|---|
+| 18.1 | ✅ PASS | cold desk, no token: named all three sources — *"my window into your vitals, calendar and inbox has been shuttered by an expired Google token… until you run tools/google_reauth.py"*. No figures, no traceback |
+| 18.2 | ✅ PASS | 20 WebSocket pings during a 143 s action, worst stall **0.66 s** |
+| 18.3 | ✅ PASS | backend killed with the HUD open; it reconnected with **no reload** and rendered a broadcast sent after the restart |
+| 18.4 | ✅ PASS | `check my email` spoken as 397 characters of prose, no JSON punctuation |
+| 18.5 | ⬜ OWED | needs the gesture daemon, which needs a camera |
+| 18.6 | ✅ PASS | panel at x=1520 in a 1920 viewport; viewport shrunk to 900 → clamped to **x=840**, the documented ">=60px on-screen". Nothing stranded |
+| 18.7 | ✅ PASS | after F-80: every widget fetch came from `127.0.0.1:8000` and no other host |
+| 1.1 | ✅ PASS | `💥 Server process exited … Restarting…` twice, back both times |
+| 1.4 | ✅ PASS | wrong token **403**, real token **200**, both processes gone, nothing restarted |
+| 1.5 | ✅ PASS-SUB | console control signal → exit 0, both gone, `Watchdog stopped. J.A.R.V.I.S. is offline.` **The literal interactive Ctrl+C is still owed** — it needs a keyboard at the desk |
+
+**Also noted, his call:** `.env` line 34 is `WATCHDOG_TOKEN=` with an empty value,
+so the shutdown token is regenerated every boot and printed to the log. The
+watchdog is behaving correctly — it refuses to leave that endpoint open — but the
+token is not stable across restarts.

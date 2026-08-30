@@ -33,7 +33,7 @@
 | Goal | What is different for him when it holds | Members |
 |---|---|---|
 | **He never claims what he did not do** | The top severity in this project, and it is about character rather than correctness: an assistant that reports an action it did not take cannot be delegated anything. ✅ **CLOSED 2026-08-29 — all nine A11 rows pass and both habit-1 guards are sealed. See §4.5.** Closing it meant finding three 🔴 first: he invented an appointment, quoted a headline from an empty source, and misstated why he refused something. One residual is named there, and it is the microphone door, which no row in this batch has ever used | `1.1` `1.2` `A11 information` |
-| **He is up before you are, and stays up** | Nothing else on this page means anything on a machine where a dependency died quietly — session 4 lost every vision row to an `ollama` that was down and said nothing. Five of these are sealed; the resilience batch is what is left | `0.2` `0.3` `0.4` `3.2` `A1 pre-flight` `A24 watchdog` `A17 resilience` |
+| **He is up before you are, and stays up** | Nothing else on this page means anything on a machine where a dependency died quietly — session 4 lost every vision row to an `ollama` that was down and said nothing. ⚠️ **ONE ROW SHORT, 2026-08-30**: everything but `18.5`, which needs a camera. Three findings, one of them goal 1's own defect living in the HUD — see §4.6 | `0.2` `0.3` `0.4` `3.2` `A1 pre-flight` `A24 watchdog` `A17 resilience` |
 | **He reaches for the right tool the first time** | The one number that decides whether he is *dependable* rather than *impressive*. The cause was upstream of retrieval: he was handed five file tools and asked to book a dentist. Mechanism fixed and measured offline at 39/40; the live re-measure is the open loop | `2.1` `2.2` `2.3` |
 | **He acts on your behalf, with the brakes on** | The difference between a voice interface and an agent: 56 tools behind a door he opens by saying *"work through this"*, every CONFIRM read back verbatim before it fires, and a refusal that holds when the request is about someone else | `A5 workspace` `A6 OS/apps` `A7 governance` `A22 agentic` `A23 partner refusals` |
 | **He hears you, across the room** | Fourteen rows and **not one has ever been run**. Everything proved so far went through a keyboard, so the whole microphone path — wake word, barge-in, contention while he is speaking — is unknown rather than working. The spoken recovery code is here too, and it is the only done item not sealed | `0.1` `A3 voice` |
@@ -105,7 +105,7 @@ the other repo.
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **114 harnesses, 3970 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
+| Automatic suite | **116 harnesses, 4015 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -267,7 +267,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 | Batch | Rows | Needs | State |
 |---|---|---|---|
 | A1 pre-flight | 5 | machine | ✅ all 5 |
-| A24 watchdog | 5 | machine | ✅ 3 of 5 (`1.5` needs a real Ctrl+C) |
+| A24 watchdog | 5 | machine | ✅ **all 5, 2026-08-30** — `1.4` wrong token 403 / real token 200 / nothing restarted; `1.5` PASS-SUB by console control signal, the literal interactive Ctrl+C still owed |
 | A5 workspace | 5 | machine | ✅ 4, `4.3` owed — cause found and fixed 2026-08-29 (F-69: the refusal was right, the three layers above it were not); needs its live re-run |
 | A7 governance | 5 | machine | ✅ 5 via the text door |
 | A9/A10 memory | 6 + K | machine / **his recovery code** | ✅ 9.1, 9.2, 9.6, K1, K5b · K2–K5 need him with the code in reach |
@@ -278,7 +278,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 | A3 voice | 14 | **microphone** | ☐ none |
 | A6 OS/apps | 7 | his desktop | ☐ mostly |
 | A13 vision | 4 | camera + ollama | ☐ `12.1` FAILS (F-61 fixed, needs re-run) |
-| A17 resilience | 7 | machine + HUD | ☐ |
+| A17 resilience | 7 | machine + HUD | ✅ **6 of 7, 2026-08-30** — driven unattended by `tools/verify_a17.py` + the HUD in a browser. `18.5` OWED (needs a camera). Three findings: F-80, F-81, F-82 |
 | A18–A20 gesture | 25 | **his hands** | ☐ none |
 | A23 partner refusals | 2 | machine | ⚠️ refused, but via the wrong path — **F-57** |
 | Group B | 7 | **second device**, pinned MAC | ☐ none — set the probe up *before* the session |
@@ -372,6 +372,59 @@ an external source that can fail or under-report without raising**:
 **Not on the list, deliberately:** rows whose evidence is a refusal, a governance
 verdict or a harness assertion. Those cannot rot — nothing outside the repository
 can change them.
+
+## 4.6 · Goal 2 — one row short, and the row is a camera
+
+**"He is up before you are, and stays up."** Driven 2026-08-30 while he was away
+from the desk: no speakers, no phone, no camera. Nine of its ten outstanding rows
+now pass against the machine; `18.5` needs the gesture daemon, which needs a
+camera, and is recorded as owed rather than reasoned about.
+
+`0.2`, `0.3`, `0.4`, `3.2` and `A1` were already sealed. What ran today:
+
+| Row | Verdict | Checked against |
+|---|---|---|
+| 18.1 | ✅ | a **cold** desk with no token: it named all three sources and quoted no figures |
+| 18.2 | ✅ | 20 WebSocket pings through a 143 s action, worst loop stall **0.66 s** |
+| 18.3 | ✅ | backend killed with the HUD open — reconnected with **no reload**, rendered a broadcast sent after the restart |
+| 18.4 | ✅ | a structured source spoken as 397 characters of prose |
+| 18.5 | ⬜ | **owed — needs a camera** |
+| 18.6 | ✅ | viewport 1920 → 900: panel clamped from x=1520 to x=840, nothing stranded |
+| 18.7 | ✅ | every widget fetch from `127.0.0.1:8000`, no other host — after F-80 |
+| 1.1 / 1.4 / 1.5 | ✅ | watchdog relaunched twice; wrong token 403, real token 200, nothing restarted; console signal → clean stop of both |
+
+### The finding that matters
+
+**F-81: the HUD said VITALS OFFLINE while the vitals were fine.** The panel read
+`VITALS OFFLINE` at the same moment the same URL returned `configured:true,
+steps:799`. `/api/health/summary` reaches Google Fit and takes ten seconds, and
+the widget's initial state was `{configured: false}` — so it declared the source
+down *before making a request*. Three widgets carried the same eight lines, and
+three different situations rendered as one word: not asked yet, request failed
+(the catch was `/* silent */`), and genuinely unavailable.
+
+**This is goal 1's defect, three feet from the desk.** Two days were spent making
+sure he does not say what he does not know, while a panel on the screen did
+exactly that — to a reader who would reasonably have gone looking for a broken
+Google token. **A screen is an assertion too.** Fixed as one shared hook rather
+than three repairs.
+
+### Two test artifacts that were nearly filed as findings
+
+Both would have looked convincing in a transcript.
+
+* **Parking the Google token does not take a source offline** — `_get_service()`
+  caches. The first `18.1` run produced a briefing quoting 799 steps and an empty
+  calendar right under a log line saying Google was UNAUTHORISED. Checked against
+  the sources: **all of it was true.** The desk was right and the test was wrong.
+* **A 27-second "event-loop stall" was a Google round-trip.** The probe was
+  `/api/health/summary`, which is not trivial. `/health` is cheap but is `def`,
+  not `async def`, so it answers *even when the loop is blocked*. The probe that
+  measures the loop is a **WebSocket ping** — the same loop that feeds the HUD.
+
+Twice in one goal, the instrument was the thing at fault. That is the same lesson
+goal 1 ended on, arriving from the other direction: **an unverified measurement
+is not evidence, even when it is your own.**
 
 ---
 
