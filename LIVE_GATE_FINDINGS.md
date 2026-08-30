@@ -3506,3 +3506,104 @@ Re-measured: **20 pings, worst 0.66 s.**
 so the shutdown token is regenerated every boot and printed to the log. The
 watchdog is behaving correctly — it refuses to leave that endpoint open — but the
 token is not stable across restarts.
+
+---
+
+# 🔴 INCIDENT, 2026-08-30 — locked out of his own desk, ended in a hard power-off
+
+He was away from home. The desk soft-locked, he could not get back in from
+Telegram or from the lock screen itself, and he powered the machine off at the
+case. **Four independent defects lined up; any one of them fixed would have let
+him back in.** This is the worst outcome the project has produced, and it
+happened on a desk I had restarted and left running unattended.
+
+## What actually happened, from the log
+
+```
+[GESTURE] G3 daemon started.
+[GESTURE] camera auto-select: chose 0 from ['http://10.171.25.26:8080/video',
+          'http://192.168.0.105:8080/video', ..., 0]
+[REMOTE:bridge] Command from KAUSTAV (tier=admin): Desk is on the lock and it's says Jarvis soft lock
+[REMOTE:bridge] Command from KAUSTAV (tier=admin): then how it will be unlocked?
+[REMOTE:bridge] Command from KAUSTAV (tier=admin): Turn off the soft lock.  I'm not at the home ..
+[ACTION ENGINE] Processing payload: {'action_type': 'os_control', 'target': 'lock_screen'}
+[REMOTE:bridge] Command from KAUSTAV (tier=admin): I need the unlock code .. see the .env file
+[GOVERNANCE] [BLOCKED] Action 'run_terminal_command' is ... permanently blocked
+[GESTURE] desk soft-locked (owner away).
+```
+
+His phone was with him, so all four IP-camera URLs failed and the daemon fell
+back to `0` — the built-in webcam, pointed at an empty room.
+
+## F-83 🔴 · Motion armed a lock that only a FACE can clear
+
+`AbsenceTracker.update` counted `moving` as presence:
+
+```python
+if owner_present or any_face or moving:
+    self._last_presence_t = t
+```
+
+A frame-difference over a real sensor picks up light changes and noise, so an
+empty room *armed* the tracker. Stillness then ran out the timer and the desk
+locked. **No face was ever seen** — and the lock's only exits are *be recognised
+by the camera* or *type the code at the keyboard*, both of which need a person
+there. The tracker already refused to lock if it had seen nobody at all; motion
+was enough to defeat that guard.
+
+**Never enter a state whose exit has never been demonstrated.** FIXED: a lock is
+armed only once a face has actually been seen. Motion still keeps a session alive
+after that — which is the whole reason it is there, a turned head loses the face
+while typing continues.
+
+## F-84 🔴 · There was no unlock action, so it locked the screen again
+
+He said *"Turn off the soft lock. I'm not at the home .."* and got
+`os_control: lock_screen` — the exact opposite action.
+
+The daemon has always been able to do this: `set_auto_lock(False)` unlocks if
+locked. **Nothing exposed it to the assistant.** `action_engine.py` had no unlock
+of any kind, so the model picked the nearest thing in its vocabulary.
+
+**A capability the assistant cannot reach is not a capability.** A model with no
+right action does not say it has none — it picks a wrong one. FIXED: an
+`unlock_desk` action, governed `AUTO` (a CONFIRM prompt he cannot see is another
+closed door), **and advertised in both action lists the brain reads**, with the
+wrong answer named explicitly: *NEVER answer an unlock request with os_control
+lock_screen*. Adding the handler without advertising it would have reproduced the
+defect exactly.
+
+## F-85 🟠 · The admin override did not work on the lock screen
+
+He typed `JARVIS_ADMIN_OVERRIDE_CODE` at the overlay. It compared only against
+`JARVIS_UNLOCK_CODE` and swallows every other key, so there was not even
+feedback. Both codes are set in `.env` (9 characters and 5); he reached for the
+one that means "override" and it was the one that did nothing.
+
+**An override that fails on the one screen you cannot walk away from is not an
+override.** FIXED: the overlay accepts either code, and *says on screen* that the
+admin override works — F-25's lesson was that an exit nobody knows about is an
+exit nobody has.
+
+## F-86 🔵 · The last door, and it was locked correctly
+
+He asked JARVIS to read the code out of `.env`. That needs
+`run_terminal_command`, which governance blocks permanently. **The refusal was
+right** — this is the same rule that stops a stranger doing it — and it is
+recorded only because it was the fourth closed door, not because it should open.
+
+## What I got wrong
+
+Earlier that afternoon I told him: *"JARVIS's presence probe is disabled and the
+gesture soft-lock needs the camera daemon, which isn't running."* That was true
+**when I checked it** — and I then restarted the desk at the end of the session,
+which started the G3 daemon and armed the very thing I had just called inert. I
+never re-checked after the restart.
+
+A statement about live state has a shelf life, and mine expired the moment I
+changed the state myself. He was given a false all-clear and acted on it.
+
+Pinned by `test_soft_lock_exit.py` (17 checks). Suite 117 harnesses, 4032 checks.
+
+**Not yet proven live** — the desk was off when these were written, and every one
+of the four needs the daemon running with a camera to demonstrate. See §7.

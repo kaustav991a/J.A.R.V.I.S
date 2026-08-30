@@ -121,14 +121,37 @@ class AbsenceTracker:
     def __init__(self, absent_after_s: float = 6.0):
         self.absent_after_s = absent_after_s
         self._last_presence_t: float | None = None
+        # Has a face - anyone's - actually been seen? The auto-lock is only
+        # armed once one has, because clearing the lock requires one.
+        self._saw_a_face = False
 
     def update(self, owner_present: bool, any_face: bool, moving: bool,
                t: float) -> bool:
         """Feed one observation; returns True when the desk counts as absent."""
         if owner_present or any_face or moving:
             self._last_presence_t = t
+            if owner_present or any_face:
+                self._saw_a_face = True
             return False
         if self._last_presence_t is None:  # never saw anyone yet — not "left"
+            return False
+        # **Never enter a state whose exit has never been demonstrated.**
+        #
+        # 2026-08-30: he was away from home. The daemon's phone-camera URLs were
+        # unreachable, so it fell back to the built-in webcam pointed at an empty
+        # room. No face was ever seen - but `moving` was, because a frame-diff
+        # over a real sensor picks up light changes and noise. That armed the
+        # tracker, stillness ran out the timer, and the desk soft-locked.
+        #
+        # The lock's exits are: be RECOGNISED by the camera, or type the code at
+        # the keyboard. Both need a person at the desk. So a lock armed by motion
+        # alone, with no face ever seen, is a lock nobody present can open - and
+        # he ended up powering the machine off at the case.
+        #
+        # Motion still keeps a session alive (a turned head loses the face while
+        # typing continues, which is the whole reason motion is here). It just
+        # cannot be the ONLY evidence that there was ever someone to leave.
+        if not self._saw_a_face:
             return False
         return (t - self._last_presence_t) >= self.absent_after_s
 

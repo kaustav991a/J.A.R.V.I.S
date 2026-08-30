@@ -105,7 +105,7 @@ the other repo.
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **116 harnesses, 4015 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
+| Automatic suite | **117 harnesses, 4032 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -511,90 +511,69 @@ Sequence (from the roadmap's after-the-gate list, which still stands):
 
 ## 7 · Resume point — start here
 
-**Stamped 2026-08-29, evening. Everything below is measured, not remembered.**
+**Stamped 2026-08-30, evening.** Read the incident first; everything else can wait.
 
 ```powershell
 cd F:\work\JARVIS-Project
-git log --oneline -1        # 67e829d - PUSHED, and deployed
+git log --oneline -1
 cd jarvis-backend
-venv\Scripts\python.exe run_harnesses.py   # expect 114/114, 3970 checks, 0 failed
+venv\Scripts\python.exe run_harnesses.py   # expect 117/117, 4032 checks, 0 failed
 ```
 
-A harness reporting **0 checks is broken, not green** — the runner parses
-`<n>/<n> passed`, so a summary line reading "55/55 checks passed" scores zero.
-And the system python fakes failures; use the venv.
+### 🔴 START HERE: he was locked out of his own desk and pulled the power
 
-### Goal 1 is CLOSED. That is the headline, and §4.5 is how
+2026-08-30, away from home. The desk soft-locked, he could not get back in from
+Telegram **or** from the lock screen, and he shut the machine off at the case.
+**Four independent defects lined up** — F-83, F-84, F-85, F-86 in
+`LIVE_GATE_FINDINGS.md`. All four are fixed and pinned by `test_soft_lock_exit.py`
+(17 checks), and **none of them has been proved live**, because the desk was off
+when they were written and each needs the daemon running with a camera.
 
-**"He never claims what he did not do"** — `1.1` and `1.2` sealed, and all nine
-`A11` rows verified **against their sources**, three consecutive clean runs:
+**The first hardware session must gate these four before anything else:**
 
-```powershell
-venv\Scripts\python.exe tools\verify_a11.py   # 9 verified, 0 need a person, 0 FAILED
-```
-
-**That command is the durable part of today.** It drives every A11 row, reads
-what the desk actually SAID out of the log, then asks Gmail, Calendar and Fit
-itself, in the same minute, and compares the figures. Re-run it monthly, or after
-any provider or API change. It replaces a session of reading with fifteen
-unattended minutes.
-
-**Eight findings came out of running those nine rows** — F-71, F-72, F-74, F-74b,
-F-75, F-76, F-77, F-78, F-79. **Five are one shape:** a source that fails,
-under-reports or returns nothing *quietly*, and a layer above it describing the
-result anyway. Two of them (F-76's vitals, F-77's unread count) were sentences
-that read perfectly and were produced by broken arithmetic; both had already
-passed their rows.
-
-### What is live right now
-
-`/health` on `67e829d`, read after the deploy:
-
-| | |
+| Check | How |
 |---|---|
-| `commit` | **67e829d** — the field exists now; before it, "read /health after every deploy" could confirm the service was up but never that it was the build you pushed |
-| `fact_outbox` | `has_desk_key: true`, `durable: true` — **survived a third deploy**, which is F-76's sibling proved again |
-| `commute` / `push_targets` | 2 departures, `days_on: 5`, 1 target — intact across the deploy |
-| `app_auth.master_calls` | `{}` — the phone has not yet presented a capability token, because **the app half is unpublished** (frozen, §0.5) |
-| `memory` | `state_durable: true`, 17 facts |
+| motion alone cannot arm the lock | cover the camera / point it at an empty room, wait past `JARVIS_LOCK_AFTER` (`.env` pins 120 s) — it must **NOT** lock |
+| a real absence still locks | sit in frame until recognised, then leave — it **must** lock, or the feature is gone |
+| "turn off the soft lock" unlocks | say it, and send it over Telegram. It must reach `unlock_desk`, **never** `os_control lock_screen` |
+| the admin override opens the overlay | type `JARVIS_ADMIN_OVERRIDE_CODE` blind at the lock screen + Enter |
 
-**A fourth cloud leg exists now: NVIDIA NIM**, behind `NVIDIA_API_KEY` (set), last
-in the chain, measured before it was trusted — Ultra 4/4 on tools, nano-30b 3/4
-and seven times faster, so Ultra leads. Its free tier returns intermittent 500s.
+Until that session, know that **the desk can still lock itself while he is away.**
+The remote unlock now exists, which is the door that was missing. If it is ever
+needed in a hurry: `JARVIS_AUTO_LOCK=0` in `.env` disarms auto-lock at boot.
 
-### Quotas, because they will shape the next session
+### The lesson, written down because it is mine
 
-Today's testing spent both daily allowances: **Gemini's quota is out**, and
-**Groq hit 198,705 of its 200,000 tokens/day**. The desk kept answering on the
-OpenRouter and NVIDIA legs — that is the cascade working, and it is why late
-turns were slow or admitted they had nothing. Both reset on their own; if a
-session starts slow, check `/health` and the log before assuming a defect.
+I told him that afternoon: *"the presence probe is disabled and the gesture
+soft-lock needs the camera daemon, which isn't running."* True **when I checked
+it** — and I then restarted the desk to leave it healthy, which started the G3
+daemon and armed the very thing I had just called inert. I never re-checked.
 
-### What to do next, in order
+**A statement about live state has a shelf life, and mine expired the moment I
+changed that state myself.** He acted on a false all-clear.
 
-1. **The bounded re-audit** (§4.5 has the table). Not "re-run everything" — the
-   risk is in rows whose pass depends on an external source that can fail
-   quietly. Point `verify_a11.py`-style checking at the `A9/A10` memory rows
-   first: a quiet store failure reads as *"you never told me that"*, which the
-   gate marks 🛑 at `K3`.
-2. **Pick the next goal from §0** and close it the way goal 1 was closed — build
-   the check first, run the rows, fix what it finds. Reading the answers is what
-   made goal 1 take three attempts.
-3. **3.3, the soak** — still the only item whose cost is elapsed time. Nothing
-   blocks starting it.
-4. **0.5 + 3.1 together** — one hardware session, face first.
+### Where the goals stand
 
-### His, and none of them take long
+* **Goal 1, "He never claims what he did not do" — CLOSED** (§4.5). Nine A11 rows
+  verified against Gmail, Calendar and Fit by `tools/verify_a11.py`. Re-run it
+  monthly: `venv\Scripts\python.exe toolserify_a11.py`.
+* **Goal 2, "He is up before you are, and stays up" — one row short** (§4.6).
+  Everything but `18.5`, which needs a camera. Three findings, one of them goal
+  1's own defect living in the HUD (F-81).
+* **Next**: the hardware session above. It clears `18.5`, the four lock rows,
+  `0.5`+`3.1`, and row `0.1`'s spoken override phrase in one sitting.
 
-1. **`GEMINI_API_KEY`** — delete or replace the legacy singular one in `.env`; it
-   is `400 API_KEY_INVALID` and boot names the right variable.
+### What is still his
+
+1. **`GEMINI_API_KEY`** — the legacy singular key in `.env` is `400
+   API_KEY_INVALID`. Delete it.
 2. **F-70** — are the four Gemini keys four separate Google **projects**? The
-   20/day quota is one bucket per project, so copying them to Render changes
-   nothing if they share one.
+   20/day quota is per project.
 3. **F-68** — declare `LLM_PROVIDER_VISION` in `render.yaml`, or drop the
    dashboard override.
-4. **Row 0.1** — say the override phrase into the microphone once. Still the only
-   done ladder item not SEALED, and the gap is the door, not the code.
+4. **`WATCHDOG_TOKEN=`** is empty in `.env`, so the shutdown token is regenerated
+   every boot and only printed to the log.
+5. **Row 0.1** — say the override phrase into the microphone once.
 
 
 ### If the next session is a CODE session — NOT the other repo, as of 2026-08-29

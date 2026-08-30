@@ -190,6 +190,7 @@ ACTION_CATALOGUE = """Available Actions for JSON Output:
 - "gui_action": single input (scroll/keypress). target="keyboard_type"|"keyboard_press"|"mouse_scroll".
 - "close_app": close an app. target=app name.
 - "os_control": target="mute"|"unmute"|"volume_up"|"volume_down"|"next_track"|"prev_track"|"play_pause"|"lock_screen".
+- "unlock_desk": clear the gesture SOFT LOCK / auto-lock. Use this for "unlock the desk", "turn off the soft lock", "disable auto lock". target="" disarms auto-lock, target="keep" unlocks once and leaves it armed. NEVER answer an unlock request with os_control lock_screen.
 - "system_status": CPU/RAM/disk diagnostics. target="hardware".
 - "get_telemetry": full live system snapshot. target="snapshot".
 - "run_terminal_command": OS shell op. target="verb: argument". Verbs: list_directory, create_folder, move_file, copy_file, delete_file, list_processes, kill_process, network_info, ping, lock, sleep.
@@ -325,7 +326,7 @@ morning briefing / daily update / how does my day look / what's on today → mor
 show mail/email/inbox **widget** or **panel on the HUD** → hud_open_widget (target="mail") | show calendar/schedule **widget on HUD** → hud_open_widget (target="calendar") | show vitals/health **widget on HUD** → hud_open_widget (target="vitals") | show the camera/optical feed / "show me what you see" / "open your eyes" → hud_open_widget (target="camera") | hide the camera feed / "close your eyes" → hud_close_widget (target="camera") | hide those panels → hud_close_widget with same target | reading inbox content aloud (no widget) → gmail_read_unread or check_email | vitals readout only (no widget) → check_vitals | calendar/schedule readout only (no HUD widget) → check_calendar | stop/close HUD music or embedded video (not OS mute) → close_app target="music" OR close_display target="search_panel"
 quick fact / what is / who is / look up / latest / current / price → tavily_search | deeper research or "browse <site>" → web_search / web_browse | find file/locate → find_file | read screen → read_screen | build/generate the Figma design (only with a file key) → run_autopilot
 cpu/ram/disk/diagnostics → system_status | recall/memory → memory_recall
-focus mode toggle → enable_focus_mode/disable_focus_mode | mute/volume/lock → os_control | tv status → tv_control
+focus mode toggle → enable_focus_mode/disable_focus_mode | mute/volume/lock → os_control | unlock/soft lock off → unlock_desk | tv status → tv_control
 play/watch/listen **on the TV / television / big screen** → tv_play_media (THE TV EXECUTION MANDATE — JSON only; bare target if app unspecified)
 play on YouTube / Spotify / browser on **this PC** with **no TV in the sentence** → play_music (HUD / PC embed — NOT tv_play_media)
 any filename with extension (.py, .js, .exe, .txt, etc.) → workspace_read / workspace_write / workspace_patch ONLY
@@ -366,6 +367,7 @@ CORE ACTIONS (always available):
 - "system_status": CPU/RAM/disk diagnostics. target="hardware".
 - "get_telemetry": full live system snapshot. target="snapshot".
 - "os_control": target="mute"|"unmute"|"volume_up"|"volume_down"|"next_track"|"prev_track"|"play_pause"|"lock_screen".
+- "unlock_desk": clear the gesture SOFT LOCK / auto-lock. Use this for "unlock the desk", "turn off the soft lock", "disable auto lock". target="" disarms auto-lock, target="keep" unlocks once and leaves it armed. NEVER answer an unlock request with os_control lock_screen.
 - "tavily_search": FAST AI lookup — PREFER for quick facts, definitions, current events, prices, "what is/who is/when is/latest". target=query. AUTO.
 - "web_search": deeper/multi-result research. target=query.
 - "web_search_image": ONLY for "show picture"/"what does X look like". target=query.
@@ -387,7 +389,7 @@ morning briefing/daily update/how's my day → morning_briefing (target="")
 show mail/calendar/vitals/camera/map widget|panel on HUD → hud_open_widget (matching target) | hide it → hud_close_widget
 "show me what you see"/"open your eyes" → hud_open_widget target="camera" | "open the map"/"map of X"/"where I stay" → hud_open_widget target="map"
 quick fact/what is/who is/look up/latest/price → tavily_search | recall/memory → memory_recall
-cpu/ram/disk/diagnostics → system_status | mute/volume/lock → os_control | chart/graph/plot → render_chart
+cpu/ram/disk/diagnostics → system_status | mute/volume/lock → os_control | unlock/soft lock off → unlock_desk | chart/graph/plot → render_chart
 play on YouTube/Spotify/browser on THIS PC (no TV named) → play_music
 
 CHAINING: multiple distinct tasks → all actions in one JSON array. EXCEPT briefings: never chain health+calendar+email; use morning_briefing alone.

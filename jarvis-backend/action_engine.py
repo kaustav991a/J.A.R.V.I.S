@@ -659,6 +659,8 @@ class ActionEngine:
             if target == "lock_screen":
                 return await asyncio.to_thread(self.os_agent.lock_workstation)
             return await asyncio.to_thread(self.os_agent.control_media, target)
+        elif action == "unlock_desk":
+            return await asyncio.to_thread(self._unlock_desk, target)
         elif action == "system_status":
             # Phase 2 upgrade: full TelemetryAgent snapshot supersedes os_agent basic read
             return await asyncio.to_thread(self.telemetry_agent.get_summary_string)
@@ -1453,6 +1455,54 @@ class ActionEngine:
         except Exception as e:
             print(f"[ACTION ENGINE] gmail_read failed: {e}")
             return "I couldn't retrieve those emails, Sir."
+
+    def _unlock_desk(self, target: str = "") -> str:
+        """Clear the gesture soft-lock, and optionally disarm it.
+
+        **This action did not exist, and its absence cost him a hard power-off.**
+
+        2026-08-30, from the log: he was away from the desk, the gesture daemon
+        soft-locked it, and over the Telegram bridge he wrote *"Turn off the soft
+        lock. I'm not at the home .."*. The model had no unlock action in its
+        vocabulary, so it reached for the nearest thing it did have:
+
+            [ACTION ENGINE] Processing payload:
+                {'action_type': 'os_control', 'target': 'lock_screen'}
+
+        It locked the screen again. He then asked it to read the unlock code out
+        of `.env`; that needs `run_terminal_command`, which governance blocks
+        permanently and correctly. With no remaining way in, he powered the
+        machine off at the case.
+
+        The daemon could always do this - `set_auto_lock(False)` unlocks if
+        locked. Nothing exposed it. A capability the assistant cannot reach is
+        not a capability, and the model will pick the closest wrong action rather
+        than say it has none.
+
+        `target` of "keep" (or "temporary") clears the lock but leaves auto-lock
+        armed; anything else disarms it too, which is what "turn it off" means
+        when he is not there to be seen by the camera.
+        """
+        try:
+            from gesture_daemon import gesture_daemon as daemon
+        except Exception as e:  # noqa: BLE001
+            return f"I could not reach the gesture daemon, Sir: {e}"
+        if daemon is None or not getattr(daemon, "running", False):
+            return ("The gesture daemon is not running, Sir, so there is no soft "
+                    "lock to clear.")
+        want = str(target or "").strip().lower()
+        was_locked = bool(getattr(daemon, "_locked", False))
+        if want in ("keep", "temporary", "once"):
+            daemon._unlock()
+            return ("Desk unlocked, Sir. Auto-lock is still armed, so it will "
+                    "lock again once the camera stops seeing you."
+                    if was_locked else
+                    "The desk was not locked, Sir. Auto-lock is still armed.")
+        daemon.set_auto_lock(False)
+        return ("Desk unlocked and auto-lock disarmed, Sir. It will not lock "
+                "itself again until you turn that back on."
+                if was_locked else
+                "Auto-lock disarmed, Sir. The desk was not locked.")
 
     def _gmail_send(self, target: str | dict) -> str:
         """

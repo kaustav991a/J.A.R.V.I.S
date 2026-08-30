@@ -68,12 +68,25 @@ def main() -> int:
     # does now: every exit that exists is on the screen, and the spoken one is
     # named FIRST because voice is never blocked — only keys and clicks are.
     code = os.getenv("JARVIS_UNLOCK_CODE", "")
+    # The admin override opens this screen too.
+    #
+    # 2026-08-30: locked out while away from home, he typed
+    # JARVIS_ADMIN_OVERRIDE_CODE at this overlay. Nothing happened - it only ever
+    # compared against JARVIS_UNLOCK_CODE, and every other key is swallowed, so
+    # there was no feedback either. He powered the machine off at the case.
+    #
+    # An override that does not work on the one screen you cannot walk away from
+    # is not an override. Both codes are accepted here; neither is displayed.
+    admin_code = (os.getenv("JARVIS_ADMIN_OVERRIDE_CODE", "") or "").strip()
+    accepted = [c for c in (code, admin_code) if c]
     exits = [
         'say  "auto lock off"           — voice is never blocked',
         "face the camera                — if it can still see",
     ]
-    if code:
+    if accepted:
         exits.append("type the unlock code + Enter   — blind, nothing is shown")
+        if admin_code:
+            exits.append("...the admin override code works here too")
     else:
         # Said plainly rather than omitted. An exit the owner believes he has and
         # does not is worse than a missing line.
@@ -88,10 +101,11 @@ def main() -> int:
     typed = []
 
     def on_key(ev):
-        if not code:
+        if not accepted:
             return "break"
         if ev.keysym == "Return":
-            if "".join(typed[-64:]).endswith(code):
+            tail = "".join(typed[-64:])
+            if any(tail.endswith(c) for c in accepted):
                 root.destroy()
             typed.clear()
         elif len(ev.char) == 1:
