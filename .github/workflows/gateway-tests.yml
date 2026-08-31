@@ -1,0 +1,94 @@
+# The gateway's tests, run somewhere that can actually run them.
+#
+# Why this exists: `feat/cloud-gateway` is the branch Render watches, so a push to
+# it is a deploy — to the live gateway that answers as him and holds his memory.
+# Until now nothing stood between the two, and the machine most often at hand has no
+# Python on it at all, so "run the harnesses first" was advice nobody could follow.
+# This makes the suite something GitHub runs on every push, on a clean Linux box,
+# with the real dependency list and no secrets.
+#
+# It is a gate, not a deploy. Nothing here touches Render, and nothing here needs a
+# credential — see the env block below, which is the point rather than a detail.
+
+name: gateway tests
+
+on:
+  push:
+    paths:
+      - 'jarvis-backend/**'
+      - '.github/workflows/gateway-tests.yml'
+  pull_request:
+    paths:
+      - 'jarvis-backend/**'
+      - '.github/workflows/gateway-tests.yml'
+  # so a run can be started by hand against any branch, without an empty commit
+  workflow_dispatch:
+
+# a second push supersedes the first: the answer wanted is about the newest tree
+concurrency:
+  group: gateway-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    # the suite is ~121 files of harnesses; if it is still going at 20 minutes,
+    # something is hanging rather than working
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: jarvis-backend
+
+    env:
+      # Webhook mode, and BOTH tokens deliberately blank.
+      #
+      # This is the same neutering the harnesses do to their own module globals: a
+      # blank BOT_TOKEN makes `_startup` return before `_ensure_bot`, and a blank
+      # PUBLIC_URL makes webhook registration impossible even if it did not. A CI
+      # run that re-pointed the live gateway's webhook would be an expensive
+      # mistake, and the way to make it impossible is to never give this job a
+      # credential in the first place. **Do not add repository secrets here.** A
+      # test that cannot pass without one is a test that reaches the live service,
+      # and that is a finding about the test.
+      CLOUD_GATEWAY_MODE: webhook
+      BOT_TOKEN: ''
+      PUBLIC_URL: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Render's blueprint does not pin one; 3.13 is what the repo's own wheels
+          # were built for. If a dependency ever refuses this version, that is worth
+          # knowing here rather than discovering it in a deploy.
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: jarvis-backend/requirements-cloud.txt
+
+      - name: Install the gateway's own dependencies
+        run: pip install -r requirements-cloud.txt
+
+      - name: Install what the harnesses need on top
+        # Deliberately not in requirements-cloud.txt, which the comment at its head
+        # asks to be kept tiny so free-tier builds stay fast — these are for running
+        # the tests, not for serving. `httpx` is what starlette's TestClient needs,
+        # and `test_app_link.py` is built on it.
+        run: pip install pytest httpx
+
+      - name: Run the harnesses
+        # `-o testpaths=.` is not decoration. `pytest.ini` says `testpaths = tests`
+        # and there is no `tests/` directory — every harness is `test_*.py` beside
+        # the code — so a bare `pytest` collects NOTHING and exits green. A CI job
+        # that passes by finding no tests is worse than no CI job, because it is
+        # believed.
+        run: python -m pytest -o testpaths=. -q --durations=10
+
+      - name: Say what ran
+        # a count, so "green" can be told apart from "collected nothing" at a glance
+        # in the run summary, without opening the log
+        if: always()
+        run: |
+          python -m pytest -o testpaths=. --collect-only -q 2>/dev/null | tail -1 \
+            >> "$GITHUB_STEP_SUMMARY"
