@@ -3794,3 +3794,74 @@ The honest conclusion for row `2.1`: **the live eval is not an unattended test.*
 Its value is the end-to-end number, and the cost is real actions on whatever desk
 it runs from. It should be run with him present, or replaced with a scorer that
 records the tool the model *chose* without executing it.
+
+---
+
+# Google OAuth, fixed 2026-09-05 — and four ways the re-auth tool lost the answer
+
+Gmail, Calendar and Fit went dark at **12:18 IST**, when the access token expired
+and the refresh was rejected (`invalid_grant: Token has been expired or
+revoked`). All three are live again, verified against the real APIs rather than
+the token file: **98 steps, 0 calendar events, 66,551 unread**.
+
+Getting there took five sign-ins, and every one of them was lost by the tooling
+rather than by Google.
+
+## The 401 was his Chrome profile, not the client
+
+Signed-in Chrome returned a bare *"401. That's an error … malformed"* at the
+consent endpoint — **for any scope, including a single harmless one**. The same
+URL in an incognito window reached sign-in normally and consented fine.
+
+That rules out scopes, PKCE, URL length and copy-paste. It points at profile
+state — most likely multiple accounts (the failing URL carried `authuser=0`, and
+Google answers with a bare 401 rather than an account picker when the indexed
+account cannot grant). **Not proven**, and not worth proving: the fix is to
+re-auth in incognito.
+
+**Two diagnoses of mine were wrong before that one.** First "Testing-mode
+7-day refresh expiry", then "the consent screen is broken at Google's end". Both
+fitted what I had seen; neither was checked before I said it. The first may still
+be true of the expiry and is not what caused the 401.
+
+## F-94 🟠 · `run_local_server` loses the authorisation four ways
+
+The verifier lives in the running process, so consent only completes if that
+exact process is still listening when the browser comes back. In one afternoon:
+
+* **it exited before the redirect** — `ERR_CONNECTION_REFUSED` after he had
+  already approved;
+* **it timed out mid-consent** — `WSGITimeoutError`, because signing in, picking
+  an account and reading six scopes takes longer than the default allows;
+* **an older tab reached it first** — `MismatchingStateError`, since the port is
+  fixed and every previous attempt still points at it;
+* **and the library serves *"The authentication flow has completed"* BEFORE
+  validating**, so he saw success three times while nothing was written.
+
+Each cost him a full sign-in. The authorisation was never the problem: the code
+came back correctly every time and landed on a socket that had stopped listening.
+It was sitting in the window title, complete and unused, while I was explaining
+why the flow had failed.
+
+**FIXED** two ways. `tools/google_reauth_fixed.py` now waits 900 s and treats a
+stale redirect or a timeout as a reason to keep listening rather than to stop.
+And `tools/google_reauth_manual.py` removes the listener from the problem
+entirely: it writes the PKCE verifier to disk, lets the browser fail at the
+redirect, and redeems the `code` from the address bar afterwards. There is no
+window to miss. The verifier is deleted the moment it is spent.
+
+## Row 2.1 — the dry scorer reproduces the live number
+
+`--dry` scored all 37 tasks with an untouched desk:
+
+* **23 hits, 3 genuine misses** on the tasks where the model actually chose;
+* **12 more named no tool at all** — Groq returning 400s on tool-call validation
+  and every Gemini key rate-limited. Those measure the provider weather, and are
+  now reported separately instead of counted as the agent's judgement.
+
+**23 of 26 = 88%, against the live run's 24 of 27 = 89%.** Same number, no
+Notepad, no macro, no TV.
+
+And it nearly threw the result away: `score_dry` built its rows without the three
+keys `summarise` reads, so all thirty-seven tasks scored and the reporting then
+died on a `KeyError`. A measurement that cannot be printed was not taken.

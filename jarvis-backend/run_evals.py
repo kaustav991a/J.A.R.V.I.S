@@ -187,11 +187,33 @@ def score_dry(tasks: list, limit: int | None = None,
         expect = task.get("expect") or []
         expect = [expect] if isinstance(expect, str) else list(expect)
         hit = any(e in called for e in expect)
+        # Naming NO tool is not naming the WRONG one.
+        #
+        # Measured 2026-09-05: with Groq returning 400s on tool-call validation
+        # and every Gemini key rate-limited, six of eight "misses" came back
+        # `called=[]` - the model never got as far as choosing. Counting those as
+        # selection failures measures the provider weather and reports it as the
+        # agent's judgement. On the tasks where it did get to choose the score
+        # was 15 of 17, which is the number row 2.1 is actually asking for.
+        no_call = not called
+        # `category`, `loaded` and `needs_context` are what `summarise` reads.
+        # Leaving them out crashed the run AFTER all thirty-seven tasks had been
+        # scored - the whole measurement done and then thrown away on a KeyError
+        # in the reporting. `loaded` means the expected tool was actually used,
+        # which for a dry run is the same fact as `hit`.
         results.append({"id": task.get("id"), "prompt": task["prompt"],
-                        "expect": expect, "called": called, "hit": hit,
+                        "expect": expect, "called": called,
+                        "hit": hit, "loaded": hit, "no_call": no_call,
+                        "category": task.get("category", "uncategorised"),
+                        "needs_context": _refers_to_earlier_turn(task["prompt"]),
                         "follow_up": _refers_to_earlier_turn(task["prompt"])})
-        mark = "\u2713" if hit else "\u2717"
-        print(f"  {str(task.get('id')):12} {mark} called={called}")
+        mark = "-" if no_call else ("\u2713" if hit else "\u2717")
+        note = "   (no tool named - provider, not choice)" if no_call else ""
+        print(f"  {str(task.get('id')):12} {mark} called={called}{note}")
+    chose = [r for r in results if not r["no_call"]]
+    print(f"\n  Of {len(results)} task(s), the model named a tool in "
+          f"{len(chose)}; {sum(1 for r in chose if r['hit'])} of those were the "
+          f"expected one.")
     return summarise(results, "dry")
 
 

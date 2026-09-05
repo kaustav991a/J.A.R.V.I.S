@@ -126,6 +126,40 @@ def test_reset_clears_between_tasks():
     check(e.tools_called() == [], "reset empties the recording")
 
 
+def test_the_dry_results_carry_what_the_reporter_reads():
+    """The whole run was measured and then thrown away on a KeyError.
+
+    `score_dry` built its result rows without `category`, `loaded` or
+    `needs_context` - the three keys `summarise` reads. All thirty-seven tasks
+    scored, then the reporting crashed and the numbers were lost. A measurement
+    that cannot be printed was not taken.
+    """
+    import run_evals
+    rows = [
+        {"id": "a", "hit": True, "loaded": True, "no_call": False,
+         "category": "mail", "needs_context": False, "called": ["gmail_read"]},
+        {"id": "b", "hit": False, "loaded": False, "no_call": True,
+         "category": "mail", "needs_context": False, "called": []},
+        {"id": "c", "hit": False, "loaded": False, "no_call": False,
+         "category": "git", "needs_context": True, "called": ["find_file"]},
+    ]
+    out = run_evals.summarise(rows, "dry")
+    check(out["mode"] == "dry", "the mode is carried through")
+    check(out["tasks"] == 2,
+          f"a follow-up with no antecedent is excluded from the score "
+          f"({out['tasks']})")
+    check(out["found"] == 1, f"hits are counted ({out['found']})")
+    check(out["accuracy"] == 0.5, f"and the accuracy computed ({out['accuracy']})")
+
+
+def test_score_dry_emits_those_keys():
+    """Pinned against the source, because the crash was three missing keys."""
+    src = (HERE / "run_evals.py").read_text(encoding="utf-8")
+    body = src.split("def score_dry")[1].split("def score_live")[0]
+    for key in ('"category"', '"loaded"', '"needs_context"'):
+        check(key in body, f"score_dry emits {key}")
+
+
 if __name__ == "__main__":
     tests = sorted(((n, f) for n, f in globals().items()
                     if n.startswith("test_") and callable(f)),

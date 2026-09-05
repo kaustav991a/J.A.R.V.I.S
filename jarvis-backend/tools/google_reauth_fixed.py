@@ -58,8 +58,54 @@ def main() -> int:
     print("(the link dies when this process does - do not use an older one)\n",
           flush=True)
 
-    creds = flow.run_local_server(port=PORT, open_browser=True,
-                                  authorization_prompt_message="")
+    # A stale tab must not kill the wait.
+    #
+    # 2026-09-05: he consented, and the redirect hit ERR_CONNECTION_REFUSED
+    # because this process had already exited - on a redirect from an EARLIER
+    # flow whose `state` did not match:
+    #
+    #     MismatchingStateError: CSRF Warning! State not equal in request and
+    #     response.
+    #
+    # The port is fixed, so every browser tab ever opened by this tool points at
+    # it. Whichever arrives first is consumed, and one stale tab was enough to
+    # end the session before the real consent arrived. The rejection is correct -
+    # that check is CSRF protection and must stay - but it is a reason to keep
+    # waiting, not to stop.
+    creds = None
+    for attempt in range(1, 6):
+        try:
+            # `timeout_seconds` matters: without it this build of
+            # google-auth-oauthlib gave up with
+            #
+            #     WSGITimeoutError: Timed out waiting for response from
+            #     authorization server
+            #
+            # while he was still on the consent screen - so he approved, and the
+            # redirect arrived at a socket nobody was listening on any more.
+            # Signing in, picking an account and reading six scopes takes longer
+            # than the default allows, and it takes longer still when the person
+            # doing it is not sitting at the machine.
+            creds = flow.run_local_server(port=PORT, open_browser=(attempt == 1),
+                                          authorization_prompt_message="",
+                                          timeout_seconds=900)
+            break
+        except Exception as e:  # noqa: BLE001
+            text = str(e).lower()
+            if "state" in text:
+                print(f"  (ignored a stale redirect from an earlier attempt "
+                      f"[{attempt}/5] - still waiting for THIS one)", flush=True)
+                continue
+            if "timed out" in text or "timeout" in text:
+                print(f"  (no redirect within the window [{attempt}/5] - "
+                      f"listening again; the URL above is still valid)",
+                      flush=True)
+                continue
+            raise
+    if creds is None:
+        print("Gave up after five stale redirects. Close every old Google tab "
+              "and run this again.")
+        return 3
     TOKEN.parent.mkdir(parents=True, exist_ok=True)
     TOKEN.write_text(creds.to_json(), encoding="utf-8")
     print(f"\nToken written to {TOKEN}")
