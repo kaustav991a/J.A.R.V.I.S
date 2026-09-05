@@ -565,6 +565,17 @@ changed that state myself.** He acted on a false all-clear.
 
 ### What is still his
 
+0. **🔴 Google OAuth is in TESTING mode, and that is why the token keeps
+   dying.** 2026-09-05: the access token expired at 12:18 IST, the refresh was
+   rejected (`invalid_grant: Token has been expired or revoked`), and the consent
+   screen then returned a bare **401** in his browser. One cause behind both:
+   Google expires refresh tokens after **7 days** for apps still in Testing, and
+   refuses consent to accounts off the test-user list. Fix in Google Cloud
+   console, project `jarvis-494505` → APIs & Services → OAuth consent screen:
+   **Publish app** (permanent), or add himself under Test users (buys 7 days).
+   Until then Gmail, Calendar and Fit go dark weekly, and every row that reads
+   them fails for a reason that has nothing to do with the code.
+   `tools/google_reauth_fixed.py` prints a stable URL on a fixed port for this.
 1. **`GEMINI_API_KEY`** — the legacy singular key in `.env` is `400
    API_KEY_INVALID`. Delete it.
 2. **F-70** — are the four Gemini keys four separate Google **projects**? The

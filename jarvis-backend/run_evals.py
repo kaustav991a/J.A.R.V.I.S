@@ -110,7 +110,60 @@ def _refers_to_earlier_turn(prompt: str) -> bool:
 
 # ── live: does the MODEL choose it, and does the run finish? ────────────────
 
-def score_live(tasks: list, limit: int | None = None) -> dict:
+# Tasks whose ACTION this machine is not permitted to take. Not a failure of
+# tool selection - the model may well pick the right tool - so they are reported
+# as SKIPPED with a reason rather than scored either way. Counting a forbidden
+# action as a miss would understate the agent; counting it as a hit would
+# overstate it; leaving it out silently would be the worst of the three.
+def _at_desk() -> bool:
+    """Whether a CONFIRM-tier tool would be offered to this run at all."""
+    try:
+        from modules import presence
+        return bool(presence.is_at_desk())
+    except Exception:  # noqa: BLE001
+        # No presence signal is not "he is here". The unattended reading is the
+        # safe one, and it is the one that was true when this mattered.
+        return False
+
+
+def forbidden_tasks(tasks: list, exclude: set) -> dict:
+    """Map task prompt -> why it will not be run here."""
+    out = {}
+    try:
+        from modules.lock_policy import never_lock
+        locked_out = never_lock()
+    except Exception:  # noqa: BLE001
+        locked_out = False
+    for t in tasks:
+        expect = t.get("expect") or t.get("expected") or []
+        expect = [expect] if isinstance(expect, str) else list(expect)
+        prompt = str(t.get("prompt", ""))
+        low = prompt.lower()
+        # A CONFIRM-tier task in an UNATTENDED run. `agent_runner` sets
+        # `allow_confirm=at_desk`, so with nobody at the desk the tool is hidden
+        # from the shelf by design - correctly, it needs his approval. Scoring
+        # that as a tool-selection miss blames the model for a policy working:
+        # `git-03` ("commit these changes for me", expect github_commit) went
+        # down as a failure on 2026-09-05 for exactly this reason.
+        if t.get("confirm") and not _at_desk():
+            out[prompt] = ("needs CONFIRM and nobody is at the desk - the tool "
+                           "is hidden by policy, not missed by the model")
+            continue
+        if locked_out and ("lock" in low or "os_control" in expect):
+            # He set JARVIS_NEVER_LOCK after being locked out of his own desk
+            # while away from home. An eval must not do the one thing the
+            # machine has been told never to do, and the interlock would refuse
+            # it anyway - which would score as a miss for a correct choice.
+            out[prompt] = "JARVIS_NEVER_LOCK is set - this desk may not lock"
+            continue
+        hit = [e for e in expect if e in exclude]
+        if hit:
+            out[prompt] = f"excluded by --exclude ({', '.join(hit)})"
+    return out
+
+
+def score_live(tasks: list, limit: int | None = None,
+               exclude: set | None = None) -> dict:
     """Run each task through the real loop and record the tools it called.
 
     Needs the real provider chain and a real `ActionEngine`, so it is deliberately
@@ -123,6 +176,13 @@ def score_live(tasks: list, limit: int | None = None) -> dict:
 
     engine = ActionEngine()
     results = []
+    skipped = forbidden_tasks(tasks, exclude or set())
+    if skipped:
+        print(f"Skipping {len(skipped)} task(s) this desk may not run:")
+        for prompt, why in skipped.items():
+            print(f"  - {prompt[:52]!r}: {why}")
+        print()
+        tasks = [t for t in tasks if str(t.get("prompt", "")) not in skipped]
 
     async def send(_payload):
         return None
@@ -236,6 +296,10 @@ def main(argv: list) -> int:
         print(agent_metrics.format_summary(
             agent_metrics.summarise(agent_metrics.load_runs())))
         return 0
+    exclude = set()
+    for i, a in enumerate(argv):
+        if a == "--exclude" and i + 1 < len(argv):
+            exclude = {x.strip() for x in argv[i + 1].split(",") if x.strip()}
     if "--live" in argv:
         # `--live` drives a REAL ActionEngine, so the tasks do not simulate
         # anything: they close apps, lock the screen, read the inbox and spend
@@ -267,7 +331,7 @@ def main(argv: list) -> int:
                 return 2
         print(f"Running {len(tasks)} tasks against the REAL model — this costs "
               f"rate limit and minutes.\n")
-        return report(score_live(tasks))
+        return report(score_live(tasks, exclude=exclude))
     return report(score_retrieval(tasks))
 
 

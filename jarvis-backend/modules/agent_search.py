@@ -286,7 +286,39 @@ class ToolShelf:
         query = (query or "").strip()
         candidates = [n for n in self.registry.names()
                       if n not in self.resident() and self._visible(n)]
+        return self._rank(query, candidates)
 
+    def already_have(self, query: str) -> list[SearchHit]:
+        """The tools ALREADY on the shelf that answer this query.
+
+        `search` deliberately hides resident tools - there is no point offering
+        what is already loaded. But that turns the one case the preload exists
+        for into a dead end.
+
+        Measured 2026-09-05 on eval task `web-02`, "click the sign in button on
+        the page". The runner preloaded exactly the right tool:
+
+            [AGENT] shelf preload for this goal: web_click
+            [AGENT] shelf: 6 resident of 56 catalogued, 0 free slot(s)
+
+        The model then searched for it. `web_click` is rank 1 for that query with
+        a score of 12.0 - and being resident, it was filtered out, so the model
+        was shown `web_type`, `web_back`, `web_scroll`, and with no free slots it
+        got "there is no room to load any of them". It searched again. Six times,
+        then gave up. `web-03` failed the same way.
+
+        **The preload and the search were fighting each other**, and the model
+        was never told the thing that would have ended it in one step: you are
+        already holding it. So the two mechanisms are reconciled here rather than
+        one being weakened - hiding resident tools stays right, and saying "you
+        already have this one" is what was missing.
+        """
+        return self._rank(query, [n for n in self.resident()
+                                  if self._visible(n)])
+
+    def _rank(self, query: str, candidates: list) -> list[SearchHit]:
+
+        query = (query or "").strip()
         if query.lower().startswith("select:"):
             wanted = [w.strip() for w in query.split(":", 1)[1].split(",") if w.strip()]
             return [SearchHit(n, 100.0, self.registry.tier_of(n))
@@ -388,6 +420,19 @@ class ToolShelf:
         query = (arguments or {}).get("query") or ""
         hits = self.search(query)
         record = {"query": query, "found": [h.name for h in hits[:MAX_RESULTS]]}
+
+        # Said FIRST, and said even when there are other matches: a model that is
+        # already holding the right tool needs to stop searching, not to be
+        # handed three more. See `already_have`.
+        holding = [h.name for h in self.already_have(query)[:MAX_RESULTS]]
+        if holding:
+            self.searches.append(record | {"promoted": [], "evicted": [],
+                                           "already": holding})
+            return (f"You already have {', '.join(holding)} loaded - call it "
+                    f"directly rather than searching again. "
+                    + (f"(Also available to load: "
+                       f"{', '.join(h.name for h in hits[:2])}.)"
+                       if hits else ""))
 
         if not hits:
             self.searches.append(record | {"promoted": [], "evicted": []})

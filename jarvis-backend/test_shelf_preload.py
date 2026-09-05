@@ -187,6 +187,54 @@ def test_a_goal_with_no_good_match_preloads_nothing_harmful():
           "a nonsense goal leaves the wired set intact")
 
 
+def test_a_preloaded_tool_is_not_hidden_from_the_model_that_asks_for_it():
+    """The preload and the search were fighting each other.
+
+    Eval task web-02, "click the sign in button on the page", 2026-09-05. The
+    runner preloaded exactly the right tool:
+
+        [AGENT] shelf preload for this goal: web_click
+        [AGENT] shelf: 6 resident of 56 catalogued, 0 free slot(s)
+
+    The model then searched for it. `web_click` is rank 1 for that query at
+    score 12.0 - and `search` hides resident tools, so it was filtered out. The
+    model saw web_type, web_back, web_scroll, was told there was no room to load
+    any of them, and searched again. Six times, then gave up. web-03 failed the
+    same way.
+
+    Hiding resident tools stays right; the model just has to be TOLD it is
+    already holding the answer.
+    """
+    q = "click the sign in button on the page"
+    shelf = _shelf(q, allow_confirm=False, preload=False)
+    before = [h.name for h in shelf.search(q)]
+    check(before and before[0] == "web_click",
+          f"web_click is the top match before it is loaded: {before[:3]}")
+
+    shelf.promote(["web_click"])
+    check("web_click" not in [h.name for h in shelf.search(q)],
+          "search still hides what is already resident - that part was right")
+    check([h.name for h in shelf.already_have(q)][:1] == ["web_click"],
+          "but the shelf can now say which resident tool answers the query")
+
+    said = shelf.handle({"query": q})
+    check("web_click" in said,
+          f"and the model is TOLD it already has it: {said[:70]!r}")
+    check("call it directly" in said.lower(),
+          "with the instruction that ends the loop rather than continuing it")
+    check("no room" not in said.lower(),
+          "instead of 'there is no room', which is true and useless here")
+
+
+def test_the_already_have_notice_does_not_fire_when_it_should_not():
+    """A notice that appears for every search teaches the model to ignore it."""
+    shelf = _shelf("click something", allow_confirm=False, preload=False)
+    shelf.promote(["web_click"])
+    said = shelf.handle({"query": "what is on my calendar today"})
+    check("already have" not in said.lower(),
+          f"an unrelated query gets no already-have notice: {said[:60]!r}")
+
+
 TESTS = sorted(
     (fn for name, fn in list(globals().items())
      if name.startswith("test_") and callable(fn)),
