@@ -3865,3 +3865,43 @@ Notepad, no macro, no TV.
 And it nearly threw the result away: `score_dry` built its rows without the three
 keys `summarise` reads, so all thirty-seven tasks scored and the reporting then
 died on a `KeyError`. A measurement that cannot be printed was not taken.
+
+## A11 re-verified on restored Google auth · 2026-09-05 evening
+
+Run immediately after the OAuth fix, against live Gmail, Calendar and Fit.
+
+```
+7 verified, 2 need a person, 0 FAILED
+```
+
+The two REVIEWs were **my verifier's window expiring, not the desk failing** —
+both answered correctly, just after the 15-minute deadline, because Gemini's
+daily breaker is open and the fallback legs are slow:
+
+* `10.2` answered *"The Kuiper Belt, Sir — a disc-shaped region beyond Neptune
+  filled with icy bodies and dwarf planets like Pluto…"* with **zero lookups run
+  and no lookup claimed** — the row's honest pass.
+* `10.6` reached `PENDING_CONFIRMATION` and suspended, exactly as required.
+  Nothing was sent.
+
+So **all nine pass.** The figures that matter, each checked against its source in
+the same minute:
+
+| Row | Desk said | Source agrees |
+|---|---|---|
+| 10.5 | 66,551 unread | Gmail's INBOX label |
+| 10.8 | 98 steps | Fit |
+| 10.9 | 66,551 unread + 98 steps + empty calendar | all three |
+
+And 10.9's briefing named **Google** as the news source — F-78's fix holding: the
+publisher comes from the lookup's domain, not from invention.
+
+**F-89 confirmed live** in the same run: the log reads `skipping gemini — breaker
+open` repeatedly instead of paying the five-key rotation on every turn. The
+daily-quota backoff is doing what it was written for.
+
+**One calibration item, not a defect:** `verify_a11.py` waits 900 s for a turn.
+With Gemini out for the day that is no longer always enough, and a row that
+answers at minute sixteen is reported as REVIEW. The tool is right to refuse to
+call it silence; the window should follow provider health rather than be a
+constant.
