@@ -577,11 +577,15 @@ Sequence (from the roadmap's after-the-gate list, which still stands):
 
 ## 7 · Resume point — start here
 
-**Stamped 2026-09-05, evening. Everything below is measured, not remembered.**
+**Stamped 2026-09-05, evening. Everything below is measured, not remembered** —
+every claim in this section was re-checked against the machine at the moment it
+was written, not carried over from earlier in the day.
+
+Head is **`f5b818e`**, tree clean, everything pushed.
 
 ```powershell
 cd F:\work\JARVIS-Project
-git log --oneline -1
+git log --oneline -1        # f5b818e or later
 cd jarvis-backend
 venv\Scripts\python.exe run_harnesses.py   # expect 121/121, 4136 checks, 0 failed
 ```
@@ -590,9 +594,17 @@ venv\Scripts\python.exe run_harnesses.py   # expect 121/121, 4136 checks, 0 fail
 
 `JARVIS_NEVER_LOCK=1`, `JARVIS_AUTO_LOCK=0`, `JARVIS_GESTURE=0`,
 `JARVIS_AMBIENT_VISION=0` in `.env`, after he was locked out of his own desk and
-pulled the power (F-83…F-86). **Camera never opens, no lock path can fire**,
-proved on a real boot — `G3 daemon started`, `camera auto-select`, `soft-locked`
-and `LockWorkStation` all appear zero times.
+pulled the power (F-83…F-86). **Camera never opens, no lock path can fire** —
+re-checked while stamping this: all four values as above, desk answering `200`,
+and `G3 daemon started`, `camera auto-select`, `soft-locked`, `LockWorkStation`
+each appearing **zero** times in the live boot log.
+
+The interlock is code, not just configuration: `modules/lock_policy.py` is
+consulted at all three paths that can lock this machine — `lock_workstation`,
+the gesture soft lock, and monitor-off — so clearing one env var does not quietly
+re-arm it. Windows' own screensaver lock is untouched and should stay on; that
+is his security, and it never locked anyone out of a session they can sign back
+into.
 
 **Turn these back on when he is at the desk**, and gate the four lock checks in
 §4.5's table before trusting the feature again.
