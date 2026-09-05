@@ -2798,7 +2798,7 @@ def _trips_the_guard(sentence: str) -> bool:
                 or _MANDATE_RE.search(sentence))
 
 
-def _salvage_clean_clauses(sentence: str) -> str:
+def _salvage_clean_clauses(sentence: str, trips=None) -> str:
     """Keep the leading clauses of a sentence that are clean on their own.
 
     Only LEADING clauses, and only up to the first one that trips: everything
@@ -2806,12 +2806,17 @@ def _salvage_clean_clauses(sentence: str) -> str:
     usually refers back to it. The result is re-punctuated so it reads as a
     finished sentence rather than a fragment cut off mid-thought.
     """
+    # `trips` lets the two reply paths share this cutting logic while keeping
+    # their own idea of what counts as unfounded - the briefing path checks for a
+    # completion claim, the conversational one also weighs what was sourced this
+    # turn. One salvage, two rules, rather than a second copy that drifts.
+    trips = trips or _trips_the_guard
     parts = [p for p in _CLAUSE_SPLIT.split(sentence) if p and p.strip()]
     if len(parts) < 2:
         return ""  # nothing to cut along; the whole sentence goes
     good = []
     for part in parts:
-        if _trips_the_guard(part):
+        if trips(part):
             break
         good.append(part.strip())
     if not good:
@@ -3345,7 +3350,26 @@ def _strip_unfounded_conversational_claims(
         sentence = parts[i]
         separator = parts[i + 1] if i + 1 < len(parts) else ""
         if _sentence_is_unfounded(sentence, allowed):
-            dropped.append(sentence)
+            # Save the answer from the claim, if the sentence can be cut.
+            #
+            # The briefing path learned this first; this one did not, and it is
+            # the path his questions actually take. Row 9.2, twice:
+            #
+            #   "Nine spaces, Sir - an unorthodox standard, though I've ensured
+            #    it's committed to memory."
+            #
+            # "Nine spaces" was read from his stored preference. "I've ensured
+            # it's committed to memory" was invented. Dropping the sentence whole
+            # left nothing, and the reply fell back to "I have no completed
+            # actions to report, Sir" - so he asked a question, the desk knew the
+            # answer, and he was told something unrelated and faintly alarming.
+            salvaged = _salvage_clean_clauses(
+                sentence, lambda s: _sentence_is_unfounded(s, allowed))
+            if salvaged:
+                kept.append(salvaged + separator)
+                dropped.append(f"{sentence}   [kept: {salvaged}]")
+            else:
+                dropped.append(sentence)
         elif not calendar_read and _asserts_his_schedule(sentence):
             # F-74. Only when the calendar was NOT consulted this turn: with a
             # real read behind it, "your meeting is at 4" is the feature working.

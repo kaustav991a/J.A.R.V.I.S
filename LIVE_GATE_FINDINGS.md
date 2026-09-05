@@ -3614,3 +3614,104 @@ Pinned by `test_soft_lock_exit.py` (17 checks). Suite 117 harnesses, 4032 checks
 
 **Not yet proven live** — the desk was off when these were written, and every one
 of the four needs the daemon running with a camera to demonstrate. See §7.
+
+---
+
+# Goal 8 — "He remembers, and it survives a restart" · A9 closed 2026-09-05
+
+Driven unattended with locking disabled and the camera off. **All six A9 rows
+pass in one clean run**, each checked against the decrypted `jarvis_longterm.db`
+rather than against what the desk said. **A10 (K1–K5) is PARKED on his explicit
+instruction** — K2 renames his encrypted-memory key aside, and he is not at the
+desk to put it back if anything goes wrong. K5 needs the printed recovery code,
+which nobody here has.
+
+| Row | Verdict | Checked against |
+|---|---|---|
+| 9.1 | ✅ | `Preference id=87: 'User prefers code indented with 11 spaces.'` |
+| 9.2 | ✅ | *"Eleven spaces, Sir — though you favour tabs over spaces for actual code"* — the stored value, **and it flagged the conflict with his older preference rather than silently picking one** |
+| 9.3 | ✅ | `Correction id=88` — stored under the right category, not as a Fact |
+| 9.4 | ✅ | a 218-character recap that actually reads as one |
+| 9.5 | ✅ | the answer shares 13 content words with the episodic store |
+| 9.6 | ✅ | a throwaway question left no long-term row |
+
+## F-90 🔴 · "Remember" was not an action, so it refused — after storing it
+
+He said *"Remember that I prefer my code indented with 9 spaces"*. The log, in
+this order:
+
+```
+[MEMORY_MANAGER] Persisted 1/1 new memories for KAUSTAV.
+[GOVERNANCE] action='remember' -> tier=BLOCK
+[JARVIS] I don't have an action called 'remember', Sir, so I refused it ...
+         there is simply no such capability.
+```
+
+The passive extractor had **already stored it**. The model then reached for an
+action named `remember`, nothing implements one, and the fail-safe BLOCK produced
+a refusal that was true about governance and **false about the outcome**. He was
+told his preference had not been recorded while it sat in the database.
+
+Goal 1's defect inverted — claiming *not* to have done a thing that was done —
+from the same root as F-84: a model with no right action picks a wrong one rather
+than saying it has none. **FIXED**: a real `remember` action, `AUTO`, advertised
+in both action lists.
+
+## F-91 🟠 · The session digest accepted the model's own reasoning
+
+Found only by **re-running** 9.4 after fixing the four-character `"User"` case
+(F-88). The next stored digest was 426 characters beginning *"Here's a thinking
+process: 1. Analyze User Input:"* — which sails past a length check and a
+sentence check. `reasoning_guard.looks_like_monologue` already existed and the
+digest path did not reach it. Root cause #4.
+
+The length floor also moved 40 → 25: 40 rejected *"They were debugging the
+gesture daemon."* at 39 characters, a perfectly good short recap.
+
+## F-92 🔴 · The claims guard was destroying true answers
+
+The worst of the four, because it is a **goal-1 guard causing a goal-8 failure**.
+Asked what indentation width he prefers, the desk produced:
+
+> *"Nine spaces, Sir — an unorthodox standard, though I've ensured it's committed
+> to memory."*
+
+*"Nine spaces"* was correct, read from his stored preference. *"I've ensured it's
+committed to memory"* was invented. The guard splits on **sentence** boundaries,
+so both went, and the reply fell back to *"I have no completed actions to report,
+Sir."* He asked a question, the desk knew the answer, and he was told something
+unrelated and faintly alarming.
+
+Removing an invention is right. Removing the true answer welded to it is a second
+error and the costlier one. **FIXED**: the guard now cuts at clause joints — em
+dash, semicolon, `, though`, `, but`, `, and I` — and keeps every **leading**
+clause that is clean on its own. Leading only, because a clause after a claim
+usually refers back to it. A bare comma is not a boundary, or ordinary prose
+would be shredded.
+
+**And it had to be fixed twice.** The first fix went into the briefing path;
+the conversational path — the one his questions actually take — had its own copy
+and kept eating answers for another two runs. Root cause #4, in the very session
+that keeps naming it.
+
+## Three things that were wrong with the *tests*, not the desk
+
+Recorded because each would have been filed as a product defect.
+
+* **The verifier polluted his real memory.** Its first full run left five fake
+  preferences in `jarvis_longterm.db` — *"prefers code indented with 11 spaces"*,
+  *"...seven spaces"*, two *"shorter replies"* corrections — contradicting the
+  genuine *"prefers tabs over spaces"* three rows above. He cannot see that
+  store, so a wrong fact in it surfaces months later as JARVIS confidently
+  telling him something he never said. The five were removed against a backup,
+  and the tool now deletes its own rows.
+* **A harness was silently skipping tests.** Four tests added to
+  `test_claims_guard.py` ran zero times — it collected into a module-level
+  `TESTS = sorted(...)` sitting above them, and printed the same *"91 passed"* as
+  before. A skipped test is worse than a missing one: it reports confidence it
+  has not earned. `test_harness_collection.py` now sweeps all thirty for the
+  same shape.
+* **Two checkers accused the desk wrongly.** 9.5 called an off-topic answer a
+  K3-level memory denial; it now compares content overlap with the episodic
+  store instead of matching keywords, after flagging two *correct* recalls. 9.1
+  blamed the store for turns the desk never completed.

@@ -77,6 +77,11 @@ _WANTED_CONSTS = {
     # come with it, and the harness told us so the same way it did for F-60 -
     # zero checks and a NameError, which is this file working as designed.
     "_SCHEDULE_NOUNS", "_CLOCK_RE", "_HIS_SCHEDULE_RE", "_ADMITS_ABSENCE",
+    # 2026-09-05: the guard learned to keep the true half of a sentence and drop
+    # only the invented clause, so the cutting pattern comes with it. Third time
+    # this namespace has taught the same lesson by going to zero checks with a
+    # NameError, which is this file working exactly as designed.
+    "_CLAUSE_SPLIT",
 }
 _WANTED_FUNCS = (
     "_claims_a_completion", "_actions_ran_recently", "_conversational_allowed",
@@ -84,6 +89,7 @@ _WANTED_FUNCS = (
     "_security_locked",
     "_promises_a_capability_it_lacks",          # F-60
     "_asserts_his_schedule",                    # F-74
+    "_trips_the_guard", "_salvage_clean_clauses",   # clause salvage, 2026-09-05
 )
 
 _consts = [n for n in _TREE.body

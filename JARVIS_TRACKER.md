@@ -105,7 +105,7 @@ the other repo.
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **117 harnesses, 4032 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
+| Automatic suite | **120 harnesses, 4102 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -270,7 +270,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 | A24 watchdog | 5 | machine | ✅ **all 5, 2026-09-05** — `1.4` wrong token 403 / real token 200 / nothing restarted; `1.5` PASS-SUB by console control signal, the literal interactive Ctrl+C still owed |
 | A5 workspace | 5 | machine | ✅ 4, `4.3` owed — cause found and fixed 2026-08-29 (F-69: the refusal was right, the three layers above it were not); needs its live re-run |
 | A7 governance | 5 | machine | ✅ 5 via the text door |
-| A9/A10 memory | 6 + K | machine / **his recovery code** | ✅ 9.1, 9.2, 9.6, K1, K5b · K2–K5 need him with the code in reach |
+| A9/A10 memory | 6 + 5 | machine | ✅ **A9 all 6, 2026-09-05** — `tools/verify_a9.py`, every row checked against the DECRYPTED store, not the reply. Four findings: F-88, F-90, F-91 + the claims guard eating true answers. **A10 (K1–K5) PARKED on his instruction** — K2 renames his memory key aside and he is away from the desk |
 | A11 information | 9 | machine + live tokens | ✅ **all 9 VERIFIED AGAINST THEIR SOURCES, 2026-08-29** — `tools/verify_a11.py`, three consecutive clean runs: *9 verified, 0 need a person, 0 failed*. Six 🔴/🟠 found doing it: F-74, F-74b, F-75, F-77, F-78, F-79 |
 | A16 login | 6 | mic + face | ✅ `17.6` 🛑, `17.8` · rest need him |
 | A21 camera | 12 | phone camera | ✅ `21.1`, `21.2`, `21.9`-half |
