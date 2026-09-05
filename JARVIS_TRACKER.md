@@ -34,7 +34,7 @@
 |---|---|---|---|
 | **He never claims what he did not do** | The top severity in this project, and it is about character rather than correctness: an assistant that reports an action it did not take cannot be delegated anything. ✅ **CLOSED 2026-08-29 — all nine A11 rows pass and both habit-1 guards are sealed. See §4.5.** Closing it meant finding three 🔴 first: he invented an appointment, quoted a headline from an empty source, and misstated why he refused something. One residual is named there, and it is the microphone door, which no row in this batch has ever used | `1.1` `1.2` `A11 information` | ✅ 2026-09-05 |
 | **He is up before you are, and stays up** | Nothing else on this page means anything on a machine where a dependency died quietly — session 4 lost every vision row to an `ollama` that was down and said nothing. ⚠️ **ONE ROW SHORT, 2026-09-05**: everything but `18.5`, which needs a camera. Three findings, one of them goal 1's own defect living in the HUD — see §4.6 | `0.2` `0.3` `0.4` `3.2` `A1 pre-flight` `A24 watchdog` `A17 resilience` | — |
-| **He reaches for the right tool the first time** | The one number that decides whether he is *dependable* rather than *impressive*. The cause was upstream of retrieval: he was handed five file tools and asked to book a dentist. Mechanism fixed and measured offline at 39/40; the live re-measure is the open loop | `2.1` `2.2` `2.3` | — |
+| **He reaches for the right tool the first time** | The one number that decides whether he is *dependable* rather than *impressive*. ✅ **MEASURED 2026-09-05 at 88%** (23 of the 26 tasks where the model got to choose), and the open loop is closed: `--dry` gets that number with an untouched desk. F-93 accounts for two of the three misses — the preload put the right tool on the shelf and the search then hid it, so the model looped six times and gave up. See §4.7 | `2.1` `2.2` `2.3` | — |
 | **He acts on your behalf, with the brakes on** | The difference between a voice interface and an agent: 56 tools behind a door he opens by saying *"work through this"*, every CONFIRM read back verbatim before it fires, and a refusal that holds when the request is about someone else | `A5 workspace` `A6 OS/apps` `A7 governance` `A22 agentic` `A23 partner refusals` | — |
 | **He hears you, across the room** | Fourteen rows and **not one has ever been run**. Everything proved so far went through a keyboard, so the whole microphone path — wake word, barge-in, contention while he is speaking — is unknown rather than working. The spoken recovery code is here too, and it is the only done item not sealed | `0.1` `A3 voice` | — |
 | **He sees what you show him** | A camera, a screen read, and twenty-five gesture rows. The one vision row that has run invented two of its four claims, so this is where habit 1 and the senses meet | `A13 vision` `A21 camera` `A18–A20 gesture` | — |
@@ -105,7 +105,7 @@ the other repo.
 
 | | Measured | How it was measured |
 |---|---|---|
-| Automatic suite | **120 harnesses, 4102 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
+| Automatic suite | **121 harnesses, 4136 checks, 0 failed** | `jarvis-backend\venv\Scripts\python.exe run_harnesses.py` — the system python fakes failures. Remeasured 2026-08-29 after the `fix/durable-state` merge: the two harnesses it brought had never been executed by a real interpreter and both were wrong |
 | Mobile app suite | **883/883** jest | its own repo, `F:\work\JARVIS-Mobile` |
 | **Live tool selection** | **19/34 = 56%** | `run_evals.py --live`, 40 real tasks, 2026-08-22 |
 | Hardware gate rows ticked | **~15 of 192** (8%) | rows passed through their own door |
@@ -200,9 +200,9 @@ harmless now that the preload reaches the web tools anyway, but recorded.
 
 | | Item | Status | Verified end to end? |
 |---|---|---|---|
-| 2.1 | ~~Fix descriptions/aliases/ranking~~ — **the diagnosis was wrong**; retrieval was already 40/40. The shelf is **preloaded from the goal** instead: expected tool in front of the model **4/40 → 39/40**, harnessed in `test_shelf_preload.py` (34 checks). **The `--live` re-measure is still owed** — it drives real actions on his desk, so it needs his go-ahead | ⚠️ **mechanism fixed + measured offline; live number pending** | harness 34 checks + offline **4/40 → 39/40**. ⚠️ **the LIVE number is NOT re-measured** — this is the one open loop |
+| 2.1 | the live tool-selection re-measure | ✅ **MEASURED 2026-09-05.** `run_evals.py --dry` scores the same number with **nothing executed**: 23 hits / 3 genuine misses across the 26 tasks where the model actually chose = **88%**, against the live run's 24/27 = 89%. The other 12 named no tool at all — provider weather, reported separately now | **MEASURED, not sealed** — `--dry` over all 37 tasks, twice (23/26 dry, 24/27 live); `test_dry_engine.py` **27 checks** pins that nothing executes and that the stub can neither pass for a real result nor make the model retry. Two of the three misses were F-93, now fixed and pinned in `test_shelf_preload.py`; the third is a description that steers to `github_status` first, still open |
 | 2.2 | Settle **F-59** — the agent gate | ✅ **done 2026-08-22.** Measured first, and it was worse than the finding said: the gate accepts **0 of the 14** A22 phrases, not some. The two wired shapes are a file-recency read and a file write, so **six waves of tool work — 56 tools, the shelf, `search_tools`, the skills, MCP — were reachable only by a request about a file.** Neither recorded option was right: the narrowness is CORRECT (the code says why — *"a false positive routes a trivial command through a multi-step loop"*) and the rows are testing the real product. **Kaustav chose an explicit trigger:** he says *"work through this: …"* or *"figure out …"* and the whole tool layer is reachable; anything else routes exactly as it does today. No false positives to tune, because opting in is not a guess | **SEALED** — harness `test_agent_trigger.py` **52 checks**, every A22 phrase quoted verbatim · the trigger is **stripped** from the goal (the shelf's preload searches the goal text) · a triggered non-file goal gets the new `open` base of ONE tool so the preload fills the rest — handing a TV goal five file tools was tier 2.1's finding and a new door would have reintroduced it · **all 8 checked gate phrases now surface their tool** · retrieval eval still **40/40** · both doors verified to share one gate |
-| 2.3 | Only if retrieval tops out and it is still wrong: the tiered brain (a stronger model for tool selection) | ☐ **still blocked by 2.1's live re-measure**, which now measures something different: before the trigger, the live eval could only exercise file goals | — |
+| 2.3 | Only if retrieval tops out and it is still wrong: the tiered brain | ☐ **unblocked, and probably unnecessary.** 2.1's number is in: retrieval is not the limit and neither is the model — of three genuine misses, two were F-93 (the shelf hiding the preloaded tool from the search) and one was a description that steers to `github_status` first. Fix those before reaching for a bigger model |
 
 ### Tier 3 · Unattended reliability
 
@@ -271,7 +271,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 | A5 workspace | 5 | machine | ✅ 4, `4.3` owed — cause found and fixed 2026-08-29 (F-69: the refusal was right, the three layers above it were not); needs its live re-run |
 | A7 governance | 5 | machine | ✅ 5 via the text door |
 | A9/A10 memory | 6 + 5 | machine | ✅ **A9 all 6, 2026-09-05** — `tools/verify_a9.py`, every row checked against the DECRYPTED store, not the reply. Four findings: F-88, F-90, F-91 + the claims guard eating true answers. **A10 (K1–K5) PARKED on his instruction** — K2 renames his memory key aside and he is away from the desk |
-| A11 information | 9 | machine + live tokens | ✅ **all 9 VERIFIED AGAINST THEIR SOURCES, 2026-08-29** — `tools/verify_a11.py`, three consecutive clean runs: *9 verified, 0 need a person, 0 failed*. Six 🔴/🟠 found doing it: F-74, F-74b, F-75, F-77, F-78, F-79 |
+| A11 information | 9 | machine + live tokens | ✅ **all 9, RE-VERIFIED 2026-09-05** against live Gmail/Calendar/Fit right after the OAuth fix — 66,551 unread and 98 steps both matched their source in the same minute. Two rows reported REVIEW: that was the verifier's 15-minute window expiring, not the desk, and both were graded from the log against the tool's own criteria |
 | A16 login | 6 | mic + face | ✅ `17.6` 🛑, `17.8` · rest need him |
 | A21 camera | 12 | phone camera | ✅ `21.1`, `21.2`, `21.9`-half |
 | A22 agentic | 24 | machine + TV | ✅ 7 · **8 blocked by F-59** · TV/phone rows owed |
@@ -426,6 +426,72 @@ Twice in one goal, the instrument was the thing at fault. That is the same lesso
 goal 1 ended on, arriving from the other direction: **an unverified measurement
 is not evidence, even when it is your own.**
 
+## 4.7 · Goal 3 — the number is in, and it is 88%
+
+**"He reaches for the right tool the first time."** Row `2.1` had been open since
+the tool-layer arc closed at 39/40 *offline*. The live number now exists, and so
+does a way to take it again without touching the desk.
+
+| | |
+|---|---|
+| Tasks where the model actually chose | 26 |
+| Right tool | **23 (88%)** |
+| Genuine misses | 3 |
+| Named no tool at all | 12 — Groq 400ing on tool-call validation, Gemini rate-limited |
+| Live run, same day | 24/27 = 89% |
+
+**The dry scorer reproduces the live number.** `run_evals.py --dry` swaps a
+`DryEngine` in for the real one: the call is recorded, a marked reply comes back,
+nothing executes. That matters because the live run is not an unattended test —
+run while he was out it opened Notepad, ran the `deep_work` macro, spent search
+quota and fired seven TV commands, none of which was the measurement.
+
+### F-93, which accounts for two of the three misses
+
+The preload and the search were fighting each other. For *"click the sign in
+button on the page"* the runner did exactly the right thing:
+
+```
+[AGENT] shelf preload for this goal: web_click
+[AGENT] shelf: 6 resident of 56 catalogued, 0 free slot(s)
+```
+
+`web_click` is rank 1 for that query at score 12.0 — and `search()` hides
+resident tools, so it was filtered out. The model saw `web_type`, `web_back`,
+`web_scroll`, was told there was no room to load them, and searched again. **Six
+times, then gave up.** Hiding what is already loaded is right; the missing piece
+was the sentence that ends it, and the shelf now leads with *"You already have
+web_click loaded — call it directly rather than searching again."*
+
+The third miss is `github_commit`: the model called `github_status` first, which
+is what `github_commit`'s own description tells it to do. That is a description
+steering wrongly, not a retrieval or model failure.
+
+### So `2.3` is unblocked and probably unnecessary
+
+The tiered brain was contingent on retrieval topping out while selection stayed
+wrong. Retrieval was never the limit and the model is not obviously the limit
+either — two misses were a shelf bug and one is a wording problem. Fix those
+before reaching for a bigger model.
+
+### What I got wrong measuring this
+
+Three times in one afternoon, all the same shape — reporting an outcome I had not
+checked:
+
+* I read `[ACTION ENGINE] Processing payload: {'action_type': 'tv_power'}` lines
+  and told him his TV had been switched on and Netflix started. **Every one had
+  failed on the next line** — *"I couldn't reach the TV, Sir. It may be off"* —
+  which he knew, because it had been off since morning.
+* I called `github_commit` unfindable "by its own exact name" after probing the
+  shelf with `allow_confirm=False`, a setting I had chosen myself.
+* I then added a skip for CONFIRM tasks on that theory without checking the
+  caller, which already passes `presence="at_desk"` for exactly those tasks. It
+  would have cut three runnable tasks out of the denominator.
+
+F-88, F-90 and F-92 are that same defect in the product. Finding it in myself
+three times while writing them up is the least surprising thing in this document.
+
 ---
 
 ## 4 · Open findings — all six are decisions
@@ -511,79 +577,75 @@ Sequence (from the roadmap's after-the-gate list, which still stands):
 
 ## 7 · Resume point — start here
 
-**Stamped 2026-09-05, evening.** Read the incident first; everything else can wait.
+**Stamped 2026-09-05, evening. Everything below is measured, not remembered.**
 
 ```powershell
 cd F:\work\JARVIS-Project
 git log --oneline -1
 cd jarvis-backend
-venv\Scripts\python.exe run_harnesses.py   # expect 117/117, 4032 checks, 0 failed
+venv\Scripts\python.exe run_harnesses.py   # expect 121/121, 4136 checks, 0 failed
 ```
 
-### 🔴 START HERE: he was locked out of his own desk and pulled the power
+### The desk is locked down while he is away, deliberately
 
-2026-09-05, away from home. The desk soft-locked, he could not get back in from
-Telegram **or** from the lock screen, and he shut the machine off at the case.
-**Four independent defects lined up** — F-83, F-84, F-85, F-86 in
-`LIVE_GATE_FINDINGS.md`. All four are fixed and pinned by `test_soft_lock_exit.py`
-(17 checks), and **none of them has been proved live**, because the desk was off
-when they were written and each needs the daemon running with a camera.
+`JARVIS_NEVER_LOCK=1`, `JARVIS_AUTO_LOCK=0`, `JARVIS_GESTURE=0`,
+`JARVIS_AMBIENT_VISION=0` in `.env`, after he was locked out of his own desk and
+pulled the power (F-83…F-86). **Camera never opens, no lock path can fire**,
+proved on a real boot — `G3 daemon started`, `camera auto-select`, `soft-locked`
+and `LockWorkStation` all appear zero times.
 
-**The first hardware session must gate these four before anything else:**
+**Turn these back on when he is at the desk**, and gate the four lock checks in
+§4.5's table before trusting the feature again.
 
-| Check | How |
+### What closed today
+
+| Goal | State |
 |---|---|
-| motion alone cannot arm the lock | cover the camera / point it at an empty room, wait past `JARVIS_LOCK_AFTER` (`.env` pins 120 s) — it must **NOT** lock |
-| a real absence still locks | sit in frame until recognised, then leave — it **must** lock, or the feature is gone |
-| "turn off the soft lock" unlocks | say it, and send it over Telegram. It must reach `unlock_desk`, **never** `os_control lock_screen` |
-| the admin override opens the overlay | type `JARVIS_ADMIN_OVERRIDE_CODE` blind at the lock screen + Enter |
+| **1 · never claims what he did not do** | CLOSED. `A11` **re-verified 2026-09-05** on restored Google auth — 66,551 unread and 98 steps each matched their source in the same minute |
+| **3 · reaches for the right tool** | **MEASURED at 88%** (§4.7). `run_evals.py --dry` gets the live number with nothing executed. F-93 fixed |
+| **8 · remembers, survives a restart** | `A9` all six (§4.6-adjacent). **`A10` PARKED on his instruction** — K2 renames his memory key aside and he is away |
+| **2 · up before you are** | one row short: `18.5` needs a camera |
 
-Until that session, know that **the desk can still lock itself while he is away.**
-The remote unlock now exists, which is the door that was missing. If it is ever
-needed in a hurry: `JARVIS_AUTO_LOCK=0` in `.env` disarms auto-lock at boot.
+### Run these two; they are the durable part
 
-### The lesson, written down because it is mine
+```powershell
+venv\Scripts\python.exe tools\verify_a11.py    # 9 rows vs Gmail/Calendar/Fit
+venv\Scripts\python.exe tools\verify_a9.py     # 6 rows vs the DECRYPTED store
+venv\Scripts\python.exe run_evals.py --dry      # tool choice, nothing executed
+```
 
-I told him that afternoon: *"the presence probe is disabled and the gesture
-soft-lock needs the camera daemon, which isn't running."* True **when I checked
-it** — and I then restarted the desk to leave it healthy, which started the G3
-daemon and armed the very thing I had just called inert. I never re-checked.
+**One calibration item:** `verify_a11.py` waits 900 s per turn. With Gemini's
+daily breaker open that is sometimes not enough, and a row answering at minute
+sixteen reports REVIEW. Refusing to call that silence is right; the window should
+follow provider health rather than be a constant.
 
-**A statement about live state has a shelf life, and mine expired the moment I
-changed that state myself.** He acted on a false all-clear.
+### Google auth — read this before touching it
 
-### Where the goals stand
+Re-authorised 2026-09-05 after five lost sign-ins. **Use
+`tools/google_reauth_manual.py` in an INCOGNITO window.** His signed-in Chrome
+profile returns a bare 401 at the consent endpoint for *any* scope; incognito
+works. The manual tool keeps no listener to lose — `run_local_server` lost the
+authorisation four separate ways in one afternoon (F-94).
 
-* **Goal 1, "He never claims what he did not do" — CLOSED** (§4.5). Nine A11 rows
-  verified against Gmail, Calendar and Fit by `tools/verify_a11.py`. Re-run it
-  monthly: `venv\Scripts\python.exe tools\verify_a11.py`.
-* **Goal 2, "He is up before you are, and stays up" — one row short** (§4.6).
-  Everything but `18.5`, which needs a camera. Three findings, one of them goal
-  1's own defect living in the HUD (F-81).
-* **Next**: the hardware session above. It clears `18.5`, the four lock rows,
-  `0.5`+`3.1`, and row `0.1`'s spoken override phrase in one sitting.
+**If Gmail goes dark around 2026-09-12**, the app is in Testing publishing status
+and the refresh token expired again. Fix: **Publish app** on the OAuth consent
+screen, project `jarvis-494505`.
 
-### What is still his
+### Next
 
-0. **🔴 Google OAuth is in TESTING mode, and that is why the token keeps
-   dying.** 2026-09-05: the access token expired at 12:18 IST, the refresh was
-   rejected (`invalid_grant: Token has been expired or revoked`), and the consent
-   screen then returned a bare **401** in his browser. One cause behind both:
-   Google expires refresh tokens after **7 days** for apps still in Testing, and
-   refuses consent to accounts off the test-user list. Fix in Google Cloud
-   console, project `jarvis-494505` → APIs & Services → OAuth consent screen:
-   **Publish app** (permanent), or add himself under Test users (buys 7 days).
-   Until then Gmail, Calendar and Fit go dark weekly, and every row that reads
-   them fails for a reason that has nothing to do with the code.
-   `tools/google_reauth_fixed.py` prints a stable URL on a fixed port for this.
-1. **`GEMINI_API_KEY`** — the legacy singular key in `.env` is `400
-   API_KEY_INVALID`. Delete it.
+1. **`18.5`** and the four lock rows — one hardware session, camera on, him present.
+2. **`A10` K1–K4** — needs his clearance; K5 needs the printed recovery code.
+3. **`2.1`'s third miss** — `github_commit`'s description tells the model to look
+   at `github_status` first, and it obeys. A wording fix, not a model problem.
+4. **`3.3`, the soak** — still the only item whose cost is elapsed time.
+
+### Still his
+
+1. **`GEMINI_API_KEY`** — the legacy singular key is `400 API_KEY_INVALID`. Delete it.
 2. **F-70** — are the four Gemini keys four separate Google **projects**? The
-   20/day quota is per project.
-3. **F-68** — declare `LLM_PROVIDER_VISION` in `render.yaml`, or drop the
-   dashboard override.
-4. **`WATCHDOG_TOKEN=`** is empty in `.env`, so the shutdown token is regenerated
-   every boot and only printed to the log.
+   20/day quota is per project, and all four are exhausted daily.
+3. **F-68** — declare `LLM_PROVIDER_VISION` in `render.yaml`, or drop the override.
+4. **`WATCHDOG_TOKEN=`** is empty, so the shutdown token regenerates every boot.
 5. **Row 0.1** — say the override phrase into the microphone once.
 
 
