@@ -488,6 +488,13 @@ class OSAgent:
 
     def lock_workstation(self) -> str:
         """Instantly locks the Windows session."""
+        from modules.lock_policy import never_lock
+        if never_lock():
+            print("[OS AGENT] lock_workstation REFUSED — JARVIS_NEVER_LOCK is set.",
+                  flush=True)
+            return ("I am not permitted to lock this machine at the moment, Sir "
+                    "— you set JARVIS_NEVER_LOCK while you were away. Windows' own "
+                    "screen lock is still active and unaffected.")
         try:
             ctypes.windll.user32.LockWorkStation()
             return "Workstation locked securely, Sir."

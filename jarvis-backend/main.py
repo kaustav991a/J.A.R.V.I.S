@@ -989,6 +989,11 @@ async def lifespan(app: FastAPI):
     try:
         from modules import boot_preflight
         boot_preflight.log_preflight()
+        # The clock is the one input nothing thinks to doubt. A desk that
+        # is six days behind answers every 'today' question wrongly and
+        # says nothing about it (2026-09-05).
+        threading.Thread(target=boot_preflight.log_clock,
+                         name='clock-check', daemon=True).start()
         # And whether those ids are still MODELS. Presence was never the problem:
         # F-46 and F-67 were both configured, both hardcoded, and both retired by
         # the provider — one broke memory extraction on every turn for weeks, the

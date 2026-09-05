@@ -295,6 +295,70 @@ def test_the_guard_is_in_the_dispatch_not_a_fifth_copy():
           "...and the streaming legs check their first chunk, as ollama does")
 
 
+# ── a DAILY quota deserves a longer answer than a busy minute ──────────
+#
+# Measured 2026-09-05. Every Gemini key was out of its daily free-tier
+# allowance. The breaker held for 180s, expired, and the next turn paid the
+# whole five-key rotation again. One turn ran so long the verifier's 900-second
+# window expired and recorded NO ANSWER - for a desk that was queueing behind a
+# provider it already knew was finished for the day. The answer arrived minutes
+# later, and was correct.
+
+
+def _err(text):
+    class Q(Exception):
+        pass
+    return Q(text)
+
+
+def test_a_daily_quota_is_told_apart_from_a_busy_minute():
+    import modules.llm_router as r
+    check(r._is_daily_limit(_err(
+        "429 You exceeded your current quota "
+        "GenerateRequestsPerDayPerProjectPerModel-FreeTier")),
+        "a per-DAY free-tier message is recognised as daily")
+    check(r._is_daily_limit(_err(
+        "Rate limit reached ... on tokens per day (TPD): Limit 200000")),
+        "so is Groq's tokens-per-day wording")
+    check(not r._is_daily_limit(_err(
+        "429 Rate limit reached ... requests per minute")),
+        "a per-MINUTE limit is NOT treated as daily - shutting a provider out "
+        "for an hour over a one-minute burst would be its own outage")
+    check(not r._is_daily_limit(_err("503 service unavailable")),
+        "and neither is a plain outage")
+
+
+def test_the_cooldown_matches_the_failure():
+    import modules.llm_router as r
+    r._cloud_down_until.clear()
+    r._trip_cloud_breaker("gemini", _err(
+        "429 exceeded your current quota GenerateRequestsPerDayPerProjectPerModel"))
+    r._trip_cloud_breaker("groq", _err("429 rate limit, requests per minute"))
+    day = r._cloud_down_until["gemini"] - time.monotonic()
+    burst = r._cloud_down_until["groq"] - time.monotonic()
+    check(day > 3000, f"a daily limit shuts the leg for an hour ({day:.0f}s)")
+    check(120 < burst < 400, f"a burst keeps the short cooldown ({burst:.0f}s)")
+    check(day > burst * 5, "and the two are not remotely the same answer")
+    r._cloud_down_until.clear()
+
+
+def test_a_daily_trip_still_leaves_a_way_through():
+    """The breaker must never empty the chain - shutting every leg out for an
+    hour would turn a quota into an outage."""
+    _reset_world()
+    called, restore = _with_providers({})
+    try:
+        import modules.llm_router as r
+        r._cloud_down_until["gemini"] = time.monotonic() + 3600
+        said = _ask()
+    finally:
+        restore()
+        import modules.llm_router as r
+        r._cloud_down_until.clear()
+    check(said and "<" not in said,
+          f"a turn still gets answered with a leg shut out for an hour: {said!r}")
+
+
 if __name__ == "__main__":
     import traceback
 

@@ -168,13 +168,53 @@ def _goals(md: str) -> list[dict]:
                 f"[build_tracker_html] FAILED: the goal {cells[0]!r} lists no "
                 f"members. A goal that groups nothing is a heading, and the page "
                 f"would show it as complete.")
-        out.append({"title": cells[0], "why": cells[1], "members": members})
+        # A 4th column, when present, is the BUG-FREE claim: a date means the
+        # goal has been driven top to bottom with nothing outstanding. It is
+        # written by hand and then checked by `_check_bugfree`, which refuses to
+        # build if the claim and the member states disagree. An indicator that
+        # cannot be wrong is worth having; one that can is worse than none.
+        claim = _strip_md(cells[3]).strip() if len(cells) > 3 else ""
+        out.append({"title": cells[0], "why": cells[1], "members": members,
+                    "bugfree": claim})
     if not out:
         raise SystemExit(
             "[build_tracker_html] FAILED: section 0 has no goal rows. The page "
             "opens on goals; without them it would silently fall back to the "
             "ladder, which is the view this arrangement replaced.")
     return out
+
+
+def _check_bugfree(goals: list[dict], by_id: dict, by_batch: dict) -> None:
+    """A goal may only claim BUG-FREE when every member is actually done.
+
+    The whole project's failure mode, stated once more: a page that says a thing
+    is finished because someone wrote that it was finished. The membership check
+    already refuses to build on an ungrouped row; this refuses to build on a
+    green badge over an unfinished goal, which is the same lie with a nicer
+    colour.
+    """
+    liars = []
+    for g in goals:
+        claim = (g.get("bugfree") or "").strip()
+        if not claim or claim in ("-", "\u2014", "\u2013"):
+            continue
+        unfinished = []
+        for m in g["members"]:
+            item = by_id.get(m) or by_batch.get(m)
+            if item is None:
+                continue  # membership check owns this one
+            if item["kind"] != DONE:
+                unfinished.append(m)
+        if unfinished:
+            liars.append(f"  {g['title']!r} claims BUG-FREE ({claim}) but "
+                         f"{len(unfinished)} member(s) are not done: "
+                         f"{', '.join(unfinished)}")
+    if liars:
+        raise SystemExit(
+            "[build_tracker_html] FAILED: a goal claims to be bug-free while "
+            "its own rows say otherwise.\n" + "\n".join(liars) +
+            "\n  Either finish the rows or clear the claim. The badge exists to "
+            "be trusted at a glance, which it cannot be if it can be wrong.")
 
 
 def _check_membership(goals: list[dict], tiers: list[dict],
@@ -345,6 +385,8 @@ def main() -> int:
 
     goals = _goals(md)
     goal_owner = _check_membership(goals, tiers, gate)
+    _check_bugfree(goals, {i["id"]: i for t in tiers for i in t["items"]},
+                   {b["batch"]: b for b in gate})
 
     doc = _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
                   gate_stat, open_loops, sealed_rows, goals, _decision(md))
@@ -481,9 +523,17 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
         n = len(kinds) or 1
         state_word = ("held" if done == len(kinds) else
                       "started" if done or part else "not begun")
+        claim = (g.get("bugfree") or "").strip()
+        badge = ""
+        if claim and claim not in ("-", "\u2014", "\u2013"):
+            badge = (f"<span class='bugfree' title='every row driven and "
+                     f"verified; no finding open against this goal'>"
+                     f"BUG-FREE {_strip_md(claim)}</span>")
         goals_html.append(
-            f"<section class='goal {state_word.replace(' ', '-')}'>"
+            f"<section class='goal {state_word.replace(' ', '-')}"
+            f"{' isclean' if badge else ''}'>"
             f"<h3><span>{_strip_md(g['title'])}</span>"
+            f"{badge}"
             f"<span class='tally'>{done}/{len(kinds)} {state_word}</span></h3>"
             f"<div class='gbody'>"
             f"<p class='why'>{_strip_md(g['why'])}</p>"
@@ -616,6 +666,10 @@ def _render(state, tiers, gate, findings, ship, counts, pct_done, asof,
  .goal.started h3 {{ box-shadow:inset 3px 0 0 var(--part) }}
  .goal.not-begun h3 {{ box-shadow:inset 3px 0 0 var(--todo) }}
  .goal .tally {{ white-space:nowrap; font-size:12px }}
+ .goal .bugfree {{ white-space:nowrap; font-size:10.5px; letter-spacing:.06em;
+   font-weight:700; color:#04150f; background:var(--done); border-radius:3px;
+   padding:2px 7px; margin-left:auto; margin-right:9px }}
+ .goal.isclean h3 {{ box-shadow:inset 3px 0 0 var(--done) }}
  .gbody {{ padding:13px 15px 4px }}
  .why {{ margin:0 0 11px; color:var(--dim); font-size:13px; line-height:1.55 }}
  .goal .bar {{ min-width:0; margin-bottom:9px }}

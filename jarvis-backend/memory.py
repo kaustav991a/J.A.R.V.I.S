@@ -151,6 +151,50 @@ def clear_working_memory():
 # remembers what you were *just* doing instead of starting from zero.
 SESSION_RECAP_PREFIX = "[PREVIOUS SESSION RECAP]"
 
+# The shortest thing that could honestly be called a recap of a conversation.
+#
+# Set at 40 first, which rejected "They were debugging the gesture daemon." - a
+# perfectly good one-line recap at 39 characters. The bar has to sit below the
+# shortest HONEST summary and above the longest degenerate one; the failure being
+# guarded against was four characters, and the artefact and sentence checks below
+# do most of the work. Twenty-five leaves room for a terse recap while still
+# refusing a bare label or a fragment.
+_MIN_DIGEST_CHARS = 25
+
+# Artefacts of the transcript that is pasted into the prompt. Every line in it
+# begins "User: " or "JARVIS: ", so a model that fails to summarise and echoes
+# instead produces exactly these.
+_DIGEST_ARTEFACTS = {"user", "jarvis", "user:", "jarvis:", "summary",
+                     "none", "n/a", "null"}
+
+
+def looks_like_a_digest(text: str) -> tuple[bool, str]:
+    """Is this a session recap, or is it what a failed call left behind?
+
+    Measured 2026-09-05, driving row `9.4`. The stored digest for KAUSTAV was
+    **four characters long: "User"** - the transcript's own role label, echoed
+    back by a degraded provider. It had been saved because the only test was
+    `if digest:`, and a non-empty string is not the same thing as a summary.
+
+    The consequence is quiet and total: on wake, `seed_from_last_digest` puts
+    *"Earlier, before standby: User"* into working memory and reports success.
+    The row's promise - that a wake is seeded with prior context - fails without
+    anything failing. That is this project's recurring shape, and the memory
+    layer is the worst place for it, because the gate's own skull at `K3` is
+    about exactly this: forgetting that does not look like forgetting.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False, "empty"
+    if len(t) < _MIN_DIGEST_CHARS:
+        return False, f"only {len(t)} characters - a recap is 2-3 sentences"
+    if t.strip().strip(":").lower() in _DIGEST_ARTEFACTS:
+        return False, f"{t[:20]!r} is a transcript label, not a summary"
+    if not any(c in t for c in ".!?"):
+        return False, "no sentence in it"
+    return True, "ok"
+
+
 def save_session_digest(user: str, digest: str) -> None:
     """Persists (or replaces) the single rolling session digest for a user.
 
@@ -209,6 +253,12 @@ def consolidate_working_memory(user: str = "KAUSTAV") -> str | None:
         and not str(m.get("content", "")).startswith(SESSION_RECAP_PREFIX)
     ]
     if len(real_turns) < 2:
+        # Not a failure - there is genuinely nothing to summarise - but it was
+        # silent, and a silent "no digest written" is indistinguishable from a
+        # summariser that broke. Row 9.4 was investigated twice over this.
+        print(f"[MEMORY] No session digest for {user}: only {len(real_turns)} "
+              f"real turn(s) to summarise. The previous digest is untouched.",
+              flush=True)
         return None
 
     transcript_lines = []
@@ -237,6 +287,15 @@ def consolidate_working_memory(user: str = "KAUSTAV") -> str | None:
             timeout=20.0,
         )
         digest = (digest or "").strip()
+        ok, why = looks_like_a_digest(digest)
+        if not ok:
+            # Storing it would be worse than storing nothing: the wake path
+            # cannot tell a bad recap from a good one, and a bad one displaces
+            # the last good one (the table is keyed by user).
+            print(f"[MEMORY] Session digest REJECTED for {user} ({why}): "
+                  f"{digest[:60]!r}. Keeping the previous digest rather than "
+                  f"overwriting it with this.", flush=True)
+            return None
         if digest:
             save_session_digest(user, digest)
             print(f"[MEMORY] Session digest stored for {user}: {digest[:80]}...", flush=True)
@@ -253,6 +312,14 @@ def seed_from_last_digest(user: str = "KAUSTAV") -> str | None:
     """
     digest = get_last_session_digest(user)
     if not digest:
+        return None
+    ok, why = looks_like_a_digest(digest)
+    if not ok:
+        # A digest written before the check existed, or by a future path that
+        # bypasses it. Seeding "Earlier, before standby: User" is worse than
+        # seeding nothing - it spends context to say something untrue.
+        print(f"[MEMORY] Stored digest for {user} is not usable ({why}): "
+              f"{digest[:60]!r}. Waking without a recap.", flush=True)
         return None
     # Guard against double-seeding the same recap.
     with _wm_lock:

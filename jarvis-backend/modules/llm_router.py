@@ -124,6 +124,28 @@ def _reset_ollama_breaker() -> None:
 # turn pays the cost instead of all of them.
 CLOUD_COOLDOWN = float(os.getenv("JARVIS_CLOUD_COOLDOWN", "180"))
 
+# A DAILY quota is not a blip, and 180 seconds is the wrong answer to it.
+#
+# Measured 2026-09-05. Every Gemini key was out of its daily free-tier
+# allowance. The breaker opened for 180s, expired, and the next turn paid the
+# whole five-key rotation again - each key timing out or 429-ing - before
+# escalating. One turn ("what did we discuss earlier?") took so long that the
+# verifier's 900-second window expired and recorded NO ANSWER for a desk that
+# was merely queueing behind a provider it already knew was finished for the
+# day. The answer did arrive, minutes later, and was correct.
+#
+# So the cooldown is matched to the failure: a per-minute limit clears in
+# minutes, a per-DAY limit does not clear before tomorrow. Capped at an hour
+# rather than set to midnight, because a rolling-window quota would otherwise
+# stay shut out far longer than it needs to be.
+DAILY_COOLDOWN = float(os.getenv("JARVIS_DAILY_COOLDOWN", "3600"))
+
+# What in an error text means "not until tomorrow" rather than "not this minute".
+_DAILY_SIGNS = ("per day", "perday", "daily", "tokens per day", " tpd",
+                "requests per day", " rpd", "free_tier_requests",
+                "generaterequestsperdayperprojectpermodel",
+                "exceeded your current quota")
+
 # provider name -> monotonic deadline; >now means the breaker is OPEN
 _cloud_down_until: dict = {}
 
@@ -144,13 +166,24 @@ def _should_trip(err: Exception) -> bool:
     return any(sign in text for sign in _BREAKER_SIGNS)
 
 
+def _is_daily_limit(err: Exception) -> bool:
+    """Is this "out until tomorrow", rather than "busy right now"?"""
+    return any(sign in f"{type(err).__name__} {err}".lower()
+               for sign in _DAILY_SIGNS)
+
+
 def _trip_cloud_breaker(name: str, err: Exception) -> None:
     if not _should_trip(err):
         return
-    _cloud_down_until[name] = time.monotonic() + CLOUD_COOLDOWN
-    print(f"[ROUTER] ⚡ '{name}' circuit breaker OPEN for {CLOUD_COOLDOWN:.0f}s "
-          f"({type(err).__name__}). Later calls skip it instead of paying the "
-          f"whole key rotation again.", flush=True)
+    daily = _is_daily_limit(err)
+    cooldown = DAILY_COOLDOWN if daily else CLOUD_COOLDOWN
+    _cloud_down_until[name] = time.monotonic() + cooldown
+    why = ("its DAILY allowance is gone — re-trying every few minutes just "
+           "pays the key rotation again for a provider that is finished until "
+           "the quota resets" if daily else
+           "later calls skip it instead of paying the whole key rotation again")
+    print(f"[ROUTER] ⚡ '{name}' circuit breaker OPEN for {cooldown:.0f}s "
+          f"({type(err).__name__}) — {why}.", flush=True)
 
 
 def _reject_empty(name: str, out, stream: bool):

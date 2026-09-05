@@ -30,18 +30,18 @@
 > Members are the ladder's own ids and the gate's own batch labels, so nothing is
 > renamed to fit a grouping.
 
-| Goal | What is different for him when it holds | Members |
-|---|---|---|
-| **He never claims what he did not do** | The top severity in this project, and it is about character rather than correctness: an assistant that reports an action it did not take cannot be delegated anything. ✅ **CLOSED 2026-08-29 — all nine A11 rows pass and both habit-1 guards are sealed. See §4.5.** Closing it meant finding three 🔴 first: he invented an appointment, quoted a headline from an empty source, and misstated why he refused something. One residual is named there, and it is the microphone door, which no row in this batch has ever used | `1.1` `1.2` `A11 information` |
-| **He is up before you are, and stays up** | Nothing else on this page means anything on a machine where a dependency died quietly — session 4 lost every vision row to an `ollama` that was down and said nothing. ⚠️ **ONE ROW SHORT, 2026-08-30**: everything but `18.5`, which needs a camera. Three findings, one of them goal 1's own defect living in the HUD — see §4.6 | `0.2` `0.3` `0.4` `3.2` `A1 pre-flight` `A24 watchdog` `A17 resilience` |
-| **He reaches for the right tool the first time** | The one number that decides whether he is *dependable* rather than *impressive*. The cause was upstream of retrieval: he was handed five file tools and asked to book a dentist. Mechanism fixed and measured offline at 39/40; the live re-measure is the open loop | `2.1` `2.2` `2.3` |
-| **He acts on your behalf, with the brakes on** | The difference between a voice interface and an agent: 56 tools behind a door he opens by saying *"work through this"*, every CONFIRM read back verbatim before it fires, and a refusal that holds when the request is about someone else | `A5 workspace` `A6 OS/apps` `A7 governance` `A22 agentic` `A23 partner refusals` |
-| **He hears you, across the room** | Fourteen rows and **not one has ever been run**. Everything proved so far went through a keyboard, so the whole microphone path — wake word, barge-in, contention while he is speaking — is unknown rather than working. The spoken recovery code is here too, and it is the only done item not sealed | `0.1` `A3 voice` |
-| **He sees what you show him** | A camera, a screen read, and twenty-five gesture rows. The one vision row that has run invented two of its four claims, so this is where habit 1 and the senses meet | `A13 vision` `A21 camera` `A18–A20 gesture` |
-| **He knows it is you, and who else is there** | An assistant with this much reach has to be certain who is asking. The face must be re-enrolled on the angles actually used before any camera row after it can be believed, and two of these batches need another person in the room | `0.5` `A16 login` `Group B` `Group C` |
-| **He remembers, and it survives a restart** | What he knows has to outlive the process — and a claim that is only true for a while must not be stored as though it were permanent | `A9/A10 memory` |
-| **He reaches you when you are away from the desk** | The always-on half: the phone, the cloud gateway, a briefing that arrives without the app being open. Eleven rows, none run, all needing the phone in hand | `Group D` |
-| **He is still right after a week nobody watched** | The long pole, and the only item whose cost is elapsed time rather than work. Nothing here currently proves *sustained* reliability, and that is what "rely on it" means | `3.1` `3.3` |
+| Goal | What is different for him when it holds | Members | Bug-free |
+|---|---|---|---|
+| **He never claims what he did not do** | The top severity in this project, and it is about character rather than correctness: an assistant that reports an action it did not take cannot be delegated anything. ✅ **CLOSED 2026-08-29 — all nine A11 rows pass and both habit-1 guards are sealed. See §4.5.** Closing it meant finding three 🔴 first: he invented an appointment, quoted a headline from an empty source, and misstated why he refused something. One residual is named there, and it is the microphone door, which no row in this batch has ever used | `1.1` `1.2` `A11 information` | ✅ 2026-09-05 |
+| **He is up before you are, and stays up** | Nothing else on this page means anything on a machine where a dependency died quietly — session 4 lost every vision row to an `ollama` that was down and said nothing. ⚠️ **ONE ROW SHORT, 2026-09-05**: everything but `18.5`, which needs a camera. Three findings, one of them goal 1's own defect living in the HUD — see §4.6 | `0.2` `0.3` `0.4` `3.2` `A1 pre-flight` `A24 watchdog` `A17 resilience` | — |
+| **He reaches for the right tool the first time** | The one number that decides whether he is *dependable* rather than *impressive*. The cause was upstream of retrieval: he was handed five file tools and asked to book a dentist. Mechanism fixed and measured offline at 39/40; the live re-measure is the open loop | `2.1` `2.2` `2.3` | — |
+| **He acts on your behalf, with the brakes on** | The difference between a voice interface and an agent: 56 tools behind a door he opens by saying *"work through this"*, every CONFIRM read back verbatim before it fires, and a refusal that holds when the request is about someone else | `A5 workspace` `A6 OS/apps` `A7 governance` `A22 agentic` `A23 partner refusals` | — |
+| **He hears you, across the room** | Fourteen rows and **not one has ever been run**. Everything proved so far went through a keyboard, so the whole microphone path — wake word, barge-in, contention while he is speaking — is unknown rather than working. The spoken recovery code is here too, and it is the only done item not sealed | `0.1` `A3 voice` | — |
+| **He sees what you show him** | A camera, a screen read, and twenty-five gesture rows. The one vision row that has run invented two of its four claims, so this is where habit 1 and the senses meet | `A13 vision` `A21 camera` `A18–A20 gesture` | — |
+| **He knows it is you, and who else is there** | An assistant with this much reach has to be certain who is asking. The face must be re-enrolled on the angles actually used before any camera row after it can be believed, and two of these batches need another person in the room | `0.5` `A16 login` `Group B` `Group C` | — |
+| **He remembers, and it survives a restart** | What he knows has to outlive the process — and a claim that is only true for a while must not be stored as though it were permanent | `A9/A10 memory` | — |
+| **He reaches you when you are away from the desk** | The always-on half: the phone, the cloud gateway, a briefing that arrives without the app being open. Eleven rows, none run, all needing the phone in hand | `Group D` | — |
+| **He is still right after a week nobody watched** | The long pole, and the only item whose cost is elapsed time rather than work. Nothing here currently proves *sustained* reliability, and that is what "rely on it" means | `3.1` `3.3` | — |
 
 ---
 
@@ -267,7 +267,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 | Batch | Rows | Needs | State |
 |---|---|---|---|
 | A1 pre-flight | 5 | machine | ✅ all 5 |
-| A24 watchdog | 5 | machine | ✅ **all 5, 2026-08-30** — `1.4` wrong token 403 / real token 200 / nothing restarted; `1.5` PASS-SUB by console control signal, the literal interactive Ctrl+C still owed |
+| A24 watchdog | 5 | machine | ✅ **all 5, 2026-09-05** — `1.4` wrong token 403 / real token 200 / nothing restarted; `1.5` PASS-SUB by console control signal, the literal interactive Ctrl+C still owed |
 | A5 workspace | 5 | machine | ✅ 4, `4.3` owed — cause found and fixed 2026-08-29 (F-69: the refusal was right, the three layers above it were not); needs its live re-run |
 | A7 governance | 5 | machine | ✅ 5 via the text door |
 | A9/A10 memory | 6 + K | machine / **his recovery code** | ✅ 9.1, 9.2, 9.6, K1, K5b · K2–K5 need him with the code in reach |
@@ -278,7 +278,7 @@ Detail and running order: **`LIVE_GATE_CHECKLIST.md`**. Findings ledger:
 | A3 voice | 14 | **microphone** | ☐ none |
 | A6 OS/apps | 7 | his desktop | ☐ mostly |
 | A13 vision | 4 | camera + ollama | ☐ `12.1` FAILS (F-61 fixed, needs re-run) |
-| A17 resilience | 7 | machine + HUD | ✅ **6 of 7, 2026-08-30** — driven unattended by `tools/verify_a17.py` + the HUD in a browser. `18.5` OWED (needs a camera). Three findings: F-80, F-81, F-82 |
+| A17 resilience | 7 | machine + HUD | ✅ **6 of 7, 2026-09-05** — driven unattended by `tools/verify_a17.py` + the HUD in a browser. `18.5` OWED (needs a camera). Three findings: F-80, F-81, F-82 |
 | A18–A20 gesture | 25 | **his hands** | ☐ none |
 | A23 partner refusals | 2 | machine | ⚠️ refused, but via the wrong path — **F-57** |
 | Group B | 7 | **second device**, pinned MAC | ☐ none — set the probe up *before* the session |
@@ -375,7 +375,7 @@ can change them.
 
 ## 4.6 · Goal 2 — one row short, and the row is a camera
 
-**"He is up before you are, and stays up."** Driven 2026-08-30 while he was away
+**"He is up before you are, and stays up."** Driven 2026-09-05 while he was away
 from the desk: no speakers, no phone, no camera. Nine of its ten outstanding rows
 now pass against the machine; `18.5` needs the gesture daemon, which needs a
 camera, and is recorded as owed rather than reasoned about.
@@ -511,7 +511,7 @@ Sequence (from the roadmap's after-the-gate list, which still stands):
 
 ## 7 · Resume point — start here
 
-**Stamped 2026-08-30, evening.** Read the incident first; everything else can wait.
+**Stamped 2026-09-05, evening.** Read the incident first; everything else can wait.
 
 ```powershell
 cd F:\work\JARVIS-Project
@@ -522,7 +522,7 @@ venv\Scripts\python.exe run_harnesses.py   # expect 117/117, 4032 checks, 0 fail
 
 ### 🔴 START HERE: he was locked out of his own desk and pulled the power
 
-2026-08-30, away from home. The desk soft-locked, he could not get back in from
+2026-09-05, away from home. The desk soft-locked, he could not get back in from
 Telegram **or** from the lock screen, and he shut the machine off at the case.
 **Four independent defects lined up** — F-83, F-84, F-85, F-86 in
 `LIVE_GATE_FINDINGS.md`. All four are fixed and pinned by `test_soft_lock_exit.py`
@@ -556,7 +556,7 @@ changed that state myself.** He acted on a false all-clear.
 
 * **Goal 1, "He never claims what he did not do" — CLOSED** (§4.5). Nine A11 rows
   verified against Gmail, Calendar and Fit by `tools/verify_a11.py`. Re-run it
-  monthly: `venv\Scripts\python.exe toolserify_a11.py`.
+  monthly: `venv\Scripts\python.exe tools\verify_a11.py`.
 * **Goal 2, "He is up before you are, and stays up" — one row short** (§4.6).
   Everything but `18.5`, which needs a camera. Three findings, one of them goal
   1's own defect living in the HUD (F-81).

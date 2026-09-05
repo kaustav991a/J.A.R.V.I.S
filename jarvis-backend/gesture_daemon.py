@@ -113,6 +113,12 @@ _ACTION_LABEL = {
 def _monitor_power(off: bool) -> None:
     if sys.platform != "win32":
         return
+    if off:
+        from modules.lock_policy import never_lock
+        if never_lock():
+            print("[GESTURE] monitor-off SUPPRESSED — JARVIS_NEVER_LOCK is set.",
+                  flush=True)
+            return
     try:
         import ctypes
         if off:
@@ -337,6 +343,13 @@ class GestureDaemon:
 
     def _lock(self, pointer) -> None:
         if self._locked:
+            return
+        from modules.lock_policy import never_lock
+        if never_lock():
+            # Said once per attempt rather than silently: a guard that hides the
+            # thing it prevented is how nobody notices it is on.
+            print("[GESTURE] soft lock SUPPRESSED — JARVIS_NEVER_LOCK is set.",
+                  flush=True)
             return
         self._locked = True
         gesture_state["locked"] = True

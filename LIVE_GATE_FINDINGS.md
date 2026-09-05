@@ -3384,7 +3384,7 @@ captured — NOT proof of silence"* rather than "said nothing".
 
 ---
 
-# Goal 2 — "He is up before you are, and stays up" · 2026-08-30
+# Goal 2 — "He is up before you are, and stays up" · 2026-09-05
 
 Driven unattended while he was away from the desk: no speakers, no phone, no
 camera. That rules out `18.5` and nothing else in this goal, which is why it was
@@ -3509,7 +3509,14 @@ token is not stable across restarts.
 
 ---
 
-# 🔴 INCIDENT, 2026-08-30 — locked out of his own desk, ended in a hard power-off
+# 🔴 INCIDENT, 2026-09-05 — locked out of his own desk, ended in a hard power-off
+
+> **A note on the date.** Every log line quoted below is stamped `2026-08-30`,
+> because the desk's clock was **six days behind** and only resynced when he
+> power-cycled the machine. The real date is 2026-09-05. Anything that reasons
+> about "today" on that desk — the health day window, the calendar day, the
+> briefing — was working from the wrong date for the whole session, which is
+> worth knowing before trusting any date-sensitive row run that day.
 
 He was away from home. The desk soft-locked, he could not get back in from
 Telegram or from the lock screen itself, and he powered the machine off at the

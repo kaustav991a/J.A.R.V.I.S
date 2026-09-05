@@ -522,3 +522,96 @@ def log_model_liveness() -> dict:
         _safe_print("[PREFLIGHT] Gemini key check failed (" +
                     type(e).__name__ + ": " + str(e)[:100] + ") - continuing.")
     return rep
+
+
+# ===========================================================================
+# CLOCK
+# ===========================================================================
+
+# How far the system clock may be from real time before anything it stamps is
+# suspect. Generous, because this is not about accuracy - it is about being in
+# the wrong DAY.
+CLOCK_SKEW_WARN_S = 120.0
+
+
+def check_clock(fetch_date=None) -> dict:
+    """Compare the system clock against a network source.
+
+    2026-09-05: the desk ran a full session with its clock **six days behind**
+    (log lines stamped 2026-08-30). Windows resynced only after he power-cycled
+    the machine. For that entire session:
+
+        * "what's on my calendar today" asked about the wrong day
+        * the health day window covered the wrong 24 hours
+        * every memory row was written with a timestamp six days old
+        * the briefing told him the date, confidently and wrongly
+
+    Nothing anywhere said the clock might be wrong, because **the clock is the
+    one input nothing thinks to doubt.** It is the same shape as every finding
+    this week - a source that is wrong quietly and layers above it reporting
+    results anyway - and it is worse than most, because it silently invalidates
+    any measurement taken during the session, including the gate's own.
+
+    An HTTPS `Date` header is enough: it needs no NTP client, no extra
+    dependency, and is accurate to about a second, which is three orders of
+    magnitude better than the error being looked for.
+    """
+    import datetime as _dt
+
+    if fetch_date is None:
+        def fetch_date():
+            import urllib.request
+            req = urllib.request.Request("https://www.google.com",
+                                         method="HEAD")
+            with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310
+                return r.headers.get("Date")
+
+    try:
+        raw = fetch_date()
+    except Exception as e:  # noqa: BLE001
+        # Offline is not "clock wrong". Say which one this is.
+        return {"checked": False, "reason": f"no network time source: {e}"}
+    if not raw:
+        return {"checked": False, "reason": "no Date header in the response"}
+    try:
+        from email.utils import parsedate_to_datetime
+        network = parsedate_to_datetime(raw)
+    except Exception as e:  # noqa: BLE001
+        return {"checked": False, "reason": f"unparseable Date {raw!r}: {e}"}
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    skew = (now - network).total_seconds()
+    return {
+        "checked": True,
+        "skew_s": skew,
+        "ok": abs(skew) <= CLOCK_SKEW_WARN_S,
+        "network_utc": network.isoformat(timespec="seconds"),
+        "system_utc": now.isoformat(timespec="seconds"),
+        "wrong_day": network.date() != now.date(),
+    }
+
+
+def format_clock(rep: dict) -> str:
+    if not rep.get("checked"):
+        return f"[CLOCK] not checked - {rep.get('reason', 'unknown')}"
+    if rep.get("ok"):
+        return f"[CLOCK] system clock agrees with the network ({rep['skew_s']:+.1f}s)."
+    skew = rep["skew_s"]
+    days = abs(skew) / 86400.0
+    lead = "AHEAD OF" if skew > 0 else "BEHIND"
+    extra = ""
+    if rep.get("wrong_day"):
+        extra = (f"  ⚠ THE DATE IS WRONG: this machine says "
+                 f"{rep['system_utc'][:10]}, the network says "
+                 f"{rep['network_utc'][:10]}. Anything about \"today\" - the "
+                 f"calendar, the health day, the briefing, every memory "
+                 f"timestamp - will be wrong until this is fixed. "
+                 f"Run:  w32tm /resync")
+    return (f"[CLOCK] ⚠ system clock is {abs(skew):.0f}s ({days:.1f} days) "
+            f"{lead} network time.{extra}")
+
+
+def log_clock() -> dict:
+    rep = check_clock()
+    _safe_print(format_clock(rep))
+    return rep
