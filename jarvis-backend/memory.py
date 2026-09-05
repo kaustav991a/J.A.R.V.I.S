@@ -192,6 +192,23 @@ def looks_like_a_digest(text: str) -> tuple[bool, str]:
         return False, f"{t[:20]!r} is a transcript label, not a summary"
     if not any(c in t for c in ".!?"):
         return False, "no sentence in it"
+    # A model's own reasoning is long, well-punctuated, and completely useless as
+    # a recap. Measured 2026-09-05, the SECOND time this row was driven: the
+    # stored digest was 426 characters beginning
+    #
+    #     "Here's a thinking process: 1. Analyze User Input: ..."
+    #
+    # which passed the length and sentence checks comfortably. It is the same
+    # failure as the four-character "User" one layer up - a degraded provider's
+    # output stored as though it were an answer - and the guard for it already
+    # existed elsewhere in the codebase. Root cause #4: written once, not reached
+    # from here.
+    try:
+        from modules.reasoning_guard import looks_like_monologue
+        if looks_like_monologue(t):
+            return False, "it is the model's reasoning, not a recap"
+    except Exception:  # noqa: BLE001
+        pass
     return True, "ok"
 
 

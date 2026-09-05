@@ -49,15 +49,23 @@ def check(cond, label):
 _SOURCE = BRAIN.read_text(encoding="utf-8", errors="replace")
 _TREE = ast.parse(_SOURCE)
 
+# `_CLAUSE_SPLIT` joined the set on 2026-09-05, when the guard learned to keep
+# the true half of a sentence and drop only the invented clause. This harness
+# execs the functions under test in ISOLATION rather than importing brain, which
+# is the right call - it keeps the pure logic testable without a live desk - but
+# it means a refactor that adds a helper breaks it with a NameError until the
+# helper is named here too.
 _WANTED_CONSTS = {"_ALLOWED_REPORTING", "_IRREGULAR_PARTICIPLES",
-                  "_COMPLETION_RE", "_MANDATE_RE", "_BARE_COMPLETION"}
+                  "_COMPLETION_RE", "_MANDATE_RE", "_BARE_COMPLETION",
+                  "_CLAUSE_SPLIT"}
 _consts = [n for n in _TREE.body
            if isinstance(n, ast.Assign)
            and any(isinstance(t, ast.Name) and t.id in _WANTED_CONSTS
                    for t in n.targets)]
 _func = [n for n in _TREE.body
          if isinstance(n, ast.FunctionDef)
-         and n.name in ("_claims_a_completion", "_strip_unfounded_action_claims")]
+         and n.name in ("_claims_a_completion", "_strip_unfounded_action_claims",
+                        "_trips_the_guard", "_salvage_clean_clauses")]
 
 _NS: dict = {}
 if _func and _consts:

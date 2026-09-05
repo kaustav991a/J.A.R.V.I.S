@@ -190,6 +190,7 @@ ACTION_CATALOGUE = """Available Actions for JSON Output:
 - "gui_action": single input (scroll/keypress). target="keyboard_type"|"keyboard_press"|"mouse_scroll".
 - "close_app": close an app. target=app name.
 - "os_control": target="mute"|"unmute"|"volume_up"|"volume_down"|"next_track"|"prev_track"|"play_pause"|"lock_screen".
+- "remember": store something he asked you to remember. target = the fact itself, in plain words. Use it for "remember that ...", "note that ...", "keep in mind ...".
 - "unlock_desk": clear the gesture SOFT LOCK / auto-lock. Use this for "unlock the desk", "turn off the soft lock", "disable auto lock". target="" disarms auto-lock, target="keep" unlocks once and leaves it armed. NEVER answer an unlock request with os_control lock_screen.
 - "system_status": CPU/RAM/disk diagnostics. target="hardware".
 - "get_telemetry": full live system snapshot. target="snapshot".
@@ -367,6 +368,7 @@ CORE ACTIONS (always available):
 - "system_status": CPU/RAM/disk diagnostics. target="hardware".
 - "get_telemetry": full live system snapshot. target="snapshot".
 - "os_control": target="mute"|"unmute"|"volume_up"|"volume_down"|"next_track"|"prev_track"|"play_pause"|"lock_screen".
+- "remember": store something he asked you to remember. target = the fact itself, in plain words. Use it for "remember that ...", "note that ...", "keep in mind ...".
 - "unlock_desk": clear the gesture SOFT LOCK / auto-lock. Use this for "unlock the desk", "turn off the soft lock", "disable auto lock". target="" disarms auto-lock, target="keep" unlocks once and leaves it armed. NEVER answer an unlock request with os_control lock_screen.
 - "tavily_search": FAST AI lookup — PREFER for quick facts, definitions, current events, prices, "what is/who is/when is/latest". target=query. AUTO.
 - "web_search": deeper/multi-result research. target=query.
@@ -2781,6 +2783,50 @@ def _strip_unsourced_state_claims(text: str, sourced: set) -> str:
     return cleaned or "All primary systems are online, Sir."
 
 
+# Where a sentence can honestly be cut in two. An em dash or a "though" joins a
+# statement to an aside; a comma alone does not, and splitting on one would
+# shred ordinary prose.
+_CLAUSE_SPLIT = re.compile(
+    r"\s*(?:\u2014|\u2013|;|\s-\s|,\s*(?:though|but|and I|and I\u2019ve|and I've|"
+    r"so I|so I\u2019ve|so I've)\b)\s*", re.I)
+
+
+def _trips_the_guard(sentence: str) -> bool:
+    low = sentence.lower()
+    bare = any(p in low for p in _BARE_COMPLETION)
+    return bool(_claims_a_completion(sentence) or bare
+                or _MANDATE_RE.search(sentence))
+
+
+def _salvage_clean_clauses(sentence: str) -> str:
+    """Keep the leading clauses of a sentence that are clean on their own.
+
+    Only LEADING clauses, and only up to the first one that trips: everything
+    after a claim is discarded, because a clause that follows an invented action
+    usually refers back to it. The result is re-punctuated so it reads as a
+    finished sentence rather than a fragment cut off mid-thought.
+    """
+    parts = [p for p in _CLAUSE_SPLIT.split(sentence) if p and p.strip()]
+    if len(parts) < 2:
+        return ""  # nothing to cut along; the whole sentence goes
+    good = []
+    for part in parts:
+        if _trips_the_guard(part):
+            break
+        good.append(part.strip())
+    if not good:
+        return ""
+    # ", " rather than " ": the separator that joined the clauses has been cut
+    # away, and "Thirteen spaces, Sir a decidedly eccentric choice." reads as a
+    # typo rather than as a sentence someone meant.
+    out = ", ".join(good).strip().rstrip(",;:- \u2014\u2013")
+    if len(out) < 3:
+        return ""
+    if out[-1] not in ".!?":
+        out += "."
+    return out
+
+
 def _strip_unfounded_action_claims(text: str) -> str:
     """Remove sentences in which JARVIS claims to have ACTED on the user's data.
 
@@ -2811,12 +2857,35 @@ def _strip_unfounded_action_claims(text: str) -> str:
         return text
     kept, dropped = [], []
     for sentence in re.split(r"(?<=[.!?])\s+", text):
-        low = sentence.lower()
-        bare = any(p in low for p in _BARE_COMPLETION)
-        if _claims_a_completion(sentence) or bare or _MANDATE_RE.search(sentence):
-            dropped.append(sentence)
-        else:
+        if not _trips_the_guard(sentence):
             kept.append(sentence)
+            continue
+        # The sentence contains a claim. Before dropping it whole, see whether
+        # the ANSWER can be saved from it.
+        #
+        # 2026-09-05, row 9.2. Asked what indentation width he prefers, the desk
+        # produced:
+        #
+        #   "Thirteen spaces, Sir - a decidedly eccentric choice, though I've
+        #    ensured your workspace configuration honours it."
+        #
+        # "Thirteen spaces" was correct and came from his stored preference.
+        # "I've ensured your workspace configuration honours it" was invented.
+        # The guard split on sentence boundaries only, so BOTH went, the reply
+        # fell back to "I have no completed actions to report, Sir", and a
+        # working memory lookup was recorded as a failure.
+        #
+        # Removing an invented claim is right. Removing the true answer welded
+        # to it is a second error, and a costlier one: he loses the thing he
+        # asked for and is told something misleading instead. So the sentence is
+        # cut at its clause joints and every leading clause that is clean on its
+        # own is kept.
+        salvaged = _salvage_clean_clauses(sentence)
+        if salvaged:
+            kept.append(salvaged)
+            dropped.append(f"{sentence}   [kept: {salvaged}]")
+        else:
+            dropped.append(sentence)
     if dropped:
         print(f"[BRAIN] briefing: dropped {len(dropped)} unfounded action "
               f"claim(s) — it reports, it does not act.", flush=True)

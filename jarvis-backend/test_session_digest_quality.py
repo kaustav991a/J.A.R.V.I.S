@@ -95,6 +95,25 @@ def test_a_wall_of_words_with_no_sentence_is_refused():
     check(not ok, f"text with no sentence in it is refused ({why})")
 
 
+def test_a_monologue_is_refused():
+    """The second failure this row produced, found only by re-running it.
+
+    On the next drive the stored digest was 426 characters beginning "Here's a
+    thinking process: 1. Analyze User Input:" - the model's own reasoning,
+    which sails past a length check and a sentence check. Same failure as the
+    four-character one, one layer up, and the guard for it already existed in
+    `reasoning_guard`: written once, not reached from here.
+    """
+    mono = ("Here's a thinking process:" + chr(10) * 2
+            + "1.  **Analyze User Input:** The user said go to sleep." + chr(10)
+            + "2.  **Recall context:** indentation and email counts." + chr(10)
+            + "3.  **Draft the summary.**")
+    ok, why = looks_like_a_digest(mono)
+    check(not ok, f"a reasoning monologue is not a session digest ({why})")
+    check("reasoning" in why,
+          f"and the reason names what it actually is: {why!r}")
+
+
 def test_a_real_recap_passes():
     """The guard must not be so strict that a working desk stops storing."""
     ok, why = looks_like_a_digest(GOOD)

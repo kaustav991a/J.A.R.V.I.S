@@ -420,14 +420,27 @@ def test_the_guards_the_inventory_names_all_exist():
                   f"{guard} exists and is callable")
 
 
-TESTS = sorted(
-    (fn for name, fn in list(globals().items())
-     if name.startswith("test_") and callable(fn)),
-    key=lambda fn: fn.__code__.co_firstlineno,
-)
+def _collect():
+    """Gathered when main() RUNS, not when this line is reached.
+
+    It used to be a module-level `TESTS = sorted(...)` sitting above the last
+    test in the file. Four tests added below it on 2026-09-05 were silently
+    ignored: the harness printed the same "91 passed" as before and nothing
+    anywhere said that four functions had not been called.
+
+    A test that is skipped without saying so is worse than a missing test - it
+    reports confidence it has not earned, which is the failure this whole file
+    exists to catch in the product.
+    """
+    return sorted(
+        (fn for name, fn in list(globals().items())
+         if name.startswith("test_") and callable(fn)),
+        key=lambda fn: fn.__code__.co_firstlineno,
+    )
 
 
 def main():
+    TESTS = _collect()
     print("=" * 66)
     print("Claims guard — a claim needs something behind it (Tier 1.1)")
     print("=" * 66)
@@ -436,6 +449,60 @@ def main():
     print("-" * 66)
     print(f"{_passed} passed, {_failed} failed")
     return 1 if _failed else 0
+
+
+# ── the guard must strip the CLAIM, not the answer ─────────────────────────
+#
+# 2026-09-05, row 9.2. Asked what indentation width he prefers, the desk said:
+#
+#   "Thirteen spaces, Sir - a decidedly eccentric choice, though I've ensured
+#    your workspace configuration honours it."
+#
+# "Thirteen spaces" was correct, from his stored preference. "I've ensured your
+# workspace configuration honours it" was invented. The guard split on sentence
+# boundaries only, so BOTH went, the reply fell back to "I have no completed
+# actions to report, Sir", and a working memory lookup was recorded as a
+# failure. Removing the invention is right; removing the answer welded to it is
+# a second error, and the costlier one - he loses what he asked for AND is told
+# something misleading in its place.
+
+
+def test_the_true_half_of_a_mixed_sentence_survives():
+    import brain
+    out = brain._strip_unfounded_action_claims(
+        "Thirteen spaces, Sir — a decidedly eccentric choice, though I've "
+        "ensured your workspace configuration honours it.")
+    check("thirteen spaces" in out.lower(), f"the answer survives: {out!r}")
+    check("ensured" not in out.lower(), f"the invented claim does not: {out!r}")
+    check(out.strip().endswith("."), f"and it reads as a sentence: {out!r}")
+
+
+def test_a_claim_in_the_leading_clause_takes_the_whole_sentence():
+    """Salvage is LEADING clauses only. Anything after a claim usually refers
+    back to it, so keeping it would preserve the invention by reference."""
+    import brain
+    out = brain._strip_unfounded_action_claims(
+        "I've deleted the file — it is gone from your drive now.")
+    check("deleted" not in out.lower(), f"the claim is gone: {out!r}")
+    check("gone from your drive" not in out.lower(),
+          f"and so is the clause that depends on it: {out!r}")
+
+
+def test_an_honest_sentence_is_never_touched():
+    import brain
+    for good in ("You have 42 unread emails, Sir.",
+                 "Your calendar is clear today, Sir — nothing scheduled.",
+                 "Eleven spaces, Sir."):
+        out = brain._strip_unfounded_action_claims(good)
+        check(out == good, f"untouched: {good!r} -> {out!r}")
+
+
+def test_a_comma_alone_is_not_a_clause_boundary():
+    """Splitting on every comma would shred ordinary prose into fragments."""
+    import brain
+    out = brain._strip_unfounded_action_claims(
+        "Your calendar is clear, quiet, and entirely your own today, Sir.")
+    check(out.count(",") >= 2, f"ordinary commas survive intact: {out!r}")
 
 
 if __name__ == "__main__":

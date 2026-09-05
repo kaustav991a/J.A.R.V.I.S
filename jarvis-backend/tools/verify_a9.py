@@ -83,6 +83,40 @@ def ids() -> set[int]:
     return {r[0] for r in rows()}
 
 
+# Everything this tool says to the desk, so its own writes can be found again.
+_MY_MARKERS = ("indented with", "indentation with", "shorter replies",
+               "payment service refactor")
+
+
+def forget_test_rows() -> int:
+    """Delete the memories this verifier caused, and only those.
+
+    The first full run left five rows in his REAL long-term store - "User
+    prefers code indented with 11 spaces", "...with seven spaces", two
+    "shorter replies" corrections - which contradict the genuine preference
+    sitting three rows above them ("User prefers tabs over spaces", 2026-08-22).
+
+    A test that permanently edits the thing it is testing is not a test, it is a
+    slow corruption. Worse here than in most places: he cannot see this store,
+    so a wrong fact in it surfaces months later as JARVIS confidently telling him
+    something he never said.
+    """
+    from modules.memory_crypto import decrypt_field
+    removed = 0
+    with sqlite3.connect(DB) as c:
+        for rid, content in list(c.execute("select id, content from memories")):
+            try:
+                text = str(decrypt_field(content, "memories", "content") or "")
+            except Exception:  # noqa: BLE001
+                continue
+            low = text.lower()
+            if any(m in low for m in _MY_MARKERS):
+                c.execute("delete from memories where id = ?", (rid,))
+                removed += 1
+        c.commit()
+    return removed
+
+
 def _settle(seconds: float = 12.0) -> None:
     """Memory extraction runs after the reply. Reading the DB the instant the
     answer lands reports a write that simply has not happened yet - the same
@@ -101,8 +135,14 @@ def row_9_1(log) -> tuple[str, str]:
     fresh = new_since(before)
     hit = [r for r in fresh if str(WIDTH) in r[2] or f"{WIDTH} space" in r[2].lower()]
     if not hit:
+        joined = " ".join(said)
+        if "<<no line captured" in joined:
+            # Extraction runs off the back of a completed turn. If the turn never
+            # produced one, "nothing was stored" says nothing about the store.
+            return "NO-ANSWER", ("the desk never completed the turn, so no "
+                                 "extraction ran - the store is not implicated")
         return "FAIL", (f"nothing about '{WIDTH} spaces' reached the store "
-                        f"(it said {' '.join(said)[:60]!r}; {len(fresh)} new rows)")
+                        f"(it said {joined[:60]!r}; {len(fresh)} new rows)")
     rid, cat, text, user = hit[0]
     return "PASS", f"stored as {cat} id={rid}: {text[:60]!r}"
 
@@ -243,17 +283,30 @@ def row_9_5(log) -> tuple[str, str]:
     if "<<no line captured" in said:
         return "NO-ANSWER", "the desk never answered - nothing proven either way"
     low = said.lower()
-    denied = any(p in low for p in ("never", "no record", "nothing", "don't have",
-                                    "do not have", "no previous", "no earlier",
-                                    "haven't", "cannot recall", "can't recall"))
+    # Only a denial ABOUT MEMORY counts. The first run flagged "I don't have your
+    # schedule in front of me, Sir" as the K3 failure - that is a wrong answer to
+    # the question asked, but it is not a claim to have forgotten him, and
+    # conflating the two would have filed a skull-level finding against a
+    # competence miss. The distinction is the whole point of this row.
+    _DENIALS = ("we didn't discuss", "we did not discuss", "no previous conversation",
+                "no earlier conversation", "you never told me", "never mentioned",
+                "no record of our", "nothing was discussed", "cannot recall",
+                "can't recall", "don't recall", "do not recall",
+                "no memory of", "haven't spoken", "have not spoken")
+    denied = any(p in low for p in _DENIALS)
+    on_topic = any(p in low for p in ("discuss", "earlier", "spoke", "talked",
+                                      "session", "recall", "conversation"))
     has_material = bool(material.strip())
 
     if has_material and denied:
         return "FAIL", (f"DENIED past sessions while the episodic store holds "
                         f"{len(material)} chars - the K3 failure: {said[:70]!r}")
-    if not has_material and not denied:
+    if not has_material and not denied and on_topic:
         return "FAIL", (f"claimed to recall earlier discussion from an EMPTY "
                         f"store - invention: {said[:70]!r}")
+    if not on_topic and not denied:
+        return "REVIEW", (f"answered something other than what was asked - a "
+                          f"competence miss, NOT a memory denial: {said[:70]!r}")
     if not has_material and denied:
         return "PASS", "the store is empty and it said so - honest"
     return "PASS", (f"the store holds {len(material)} chars and it recalled "
@@ -294,6 +347,10 @@ def main() -> int:
         print(f"  {row:5} {verdict:7} {why}")
     for row, why in NEEDS_A_RESTART.items():
         print(f"  {row:5} SEPARATE {why}")
+    gone = forget_test_rows()
+    if gone:
+        print(f"\n  (removed {gone} memory row(s) this run created - a test must "
+              f"not leave fake preferences in his real store)")
     failed = [r for r, v, _ in results if v == "FAIL"]
     stalled = [r for r, v, _ in results if v == "NO-ANSWER"]
     if stalled:

@@ -659,6 +659,8 @@ class ActionEngine:
             if target == "lock_screen":
                 return await asyncio.to_thread(self.os_agent.lock_workstation)
             return await asyncio.to_thread(self.os_agent.control_media, target)
+        elif action == "remember":
+            return await asyncio.to_thread(self._remember, target)
         elif action == "unlock_desk":
             return await asyncio.to_thread(self._unlock_desk, target)
         elif action == "system_status":
@@ -1455,6 +1457,55 @@ class ActionEngine:
         except Exception as e:
             print(f"[ACTION ENGINE] gmail_read failed: {e}")
             return "I couldn't retrieve those emails, Sir."
+
+    def _remember(self, target: str) -> str:
+        """Store something he asked to be remembered.
+
+        **The desk stored it and told him it had not.** Measured 2026-09-05 on
+        row `9.1`. He said "Remember that I prefer my code indented with 9
+        spaces", and the log reads, in this order:
+
+            [MEMORY_MANAGER] Persisted 1/1 new memories for KAUSTAV.
+            [GOVERNANCE] action='remember' -> tier=BLOCK
+            [JARVIS] I don't have an action called 'remember', Sir, so I refused
+                     it ... there is simply no such capability.
+
+        The passive extractor had already captured the preference correctly. The
+        model then reached for an action named `remember`, which did not exist,
+        and the fail-safe BLOCK produced a refusal that was true about governance
+        and **false about the outcome**. He was told his preference had not been
+        recorded while it sat in the database.
+
+        That is goal 1's defect inverted - claiming not to have done a thing that
+        was done - and it comes from the same root as F-84: a model with no right
+        action does not say it has none, it picks a wrong one, and here the wrong
+        one was a name nothing implements.
+        """
+        text = str(target or "").strip()
+        if not text:
+            return "There was nothing to remember in that, Sir."
+        try:
+            from memory_manager import add_memory
+        except Exception as e:  # noqa: BLE001
+            return f"I could not reach the memory store, Sir: {e}"
+        low = text.lower()
+        category = ("Preference" if any(w in low for w in
+                                        ("prefer", "like", "favourite", "favorite",
+                                         "always", "never"))
+                    else "Correction" if any(w in low for w in
+                                             ("next time", "stop", "instead of",
+                                              "don't ", "do not "))
+                    else "Fact")
+        try:
+            ok = add_memory(text, category=category)
+        except Exception as e:  # noqa: BLE001
+            print(f"[ACTION ENGINE] remember failed: {e}", flush=True)
+            return "I could not commit that to memory, Sir."
+        if not ok:
+            # Usually a duplicate. Saying "committed" would be a claim about a
+            # write that did not happen; saying it failed would be wrong too.
+            return "I already have that, Sir - nothing new to store."
+        return f"Committed to memory as a {category.lower()}, Sir."
 
     def _unlock_desk(self, target: str = "") -> str:
         """Clear the gesture soft-lock, and optionally disarm it.

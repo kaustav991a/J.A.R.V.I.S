@@ -50,6 +50,7 @@
     "open_link": "AUTO",
     "os_control": "AUTO",
     "unlock_desk": "AUTO",
+    "remember": "AUTO",
     "tv_control": "AUTO",
     "launch_app": "AUTO",
     "close_app": "AUTO",

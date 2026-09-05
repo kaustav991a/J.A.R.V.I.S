@@ -148,6 +148,49 @@ def test_the_model_is_told_the_action_exists():
           "one the model already chose once")
 
 
+# ── 2b · "remember" was the SAME defect, found five hours later ────────────
+#
+# 2026-09-05, row 9.1. He said "Remember that I prefer my code indented with 9
+# spaces". The log, in this order:
+#
+#     [MEMORY_MANAGER] Persisted 1/1 new memories for KAUSTAV.
+#     [GOVERNANCE] action='remember' -> tier=BLOCK
+#     [JARVIS] I don't have an action called 'remember', Sir, so I refused it
+#              ... there is simply no such capability.
+#
+# The extractor had already stored it. The model reached for an action nothing
+# implements, the fail-safe BLOCK fired correctly, and the refusal told him his
+# preference had NOT been recorded while it sat in the database. Goal 1's defect
+# inverted: claiming not to have done a thing that was done.
+
+
+def test_remember_is_a_real_action():
+    from action_engine import ActionEngine
+    check(hasattr(ActionEngine, "_remember"),
+          "there is an action that can store a memory on request")
+
+
+def test_governance_knows_remember():
+    from governance_manager import GovernanceManager
+    g = GovernanceManager()
+    check(g.is_known("remember"),
+          "governance knows 'remember' - unknown means BLOCK, which is what "
+          "produced the false refusal")
+    ruleset = json.loads((HERE / "governance.json").read_text(encoding="utf-8"))
+    check(ruleset.get("rules", {}).get("remember") == "AUTO",
+          "and storing something he asked to be stored needs no confirmation")
+
+
+def test_the_model_is_told_remember_exists():
+    """The half that actually failed, in both cases."""
+    src = (HERE / "brain.py").read_text(encoding="utf-8")
+    check(src.count('"remember":') >= 2,
+          f"'remember' is in the action list(s) the model reads "
+          f"({src.count(chr(34) + 'remember' + chr(34) + ':')} mentions)")
+    check("remember that" in src.lower(),
+          "with the phrasing he actually uses")
+
+
 # ── 3 · the admin override opens the lock screen ───────────────────────────
 
 def test_the_lock_overlay_accepts_the_admin_override():
