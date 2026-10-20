@@ -89,7 +89,7 @@ langchain-protocol==0.0.18
 langgraph==1.2.6
 langgraph-checkpoint==4.1.1
 langgraph-prebuilt==1.1.0
-langgraph-sdk==0.4.2
+langgraph-sdk==0.4.4
 langsmith==0.9.3
 libclang==18.1.1
 lightdsa==0.0.3
